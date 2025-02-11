@@ -1,12 +1,12 @@
 # Radiometric Correction for Micasense RedEdge-P
 
-This Python module provides a simplified alternative for converting raw images from the Micasense RedEdge-P sensor into radiance or reflectance, using (only) reference panel data (no DSL data considered).
+This Python module provides a simplified alternative for converting raw images from the Micasense RedEdge-P sensor into radiance or reflectance, using (only) reference panel data (no Downwelling Light Sensor -- DLS data considered).
 
 All functions are derived from the original [Micasense image processing repository](https://github.com/micasense/imageprocessing) but have been streamlined to mitigate issues caused by Exif metadata inconsistencies. These issues were encountered while pre-processing images captured with the camera firmware v1.4.5 in preparation for geometric correction using photogrammetry software.
 
-For processing, it is only required the path and metadata for the images to be corrected and reference panel. Metadata can be extracted using [ExifTool](https://exiftool.org/), for example. The only caution needed here is to maintain the same names used in the original Exif information.
+For processing, it is only required the path and metadata for the images and for the reference panel. Images metadata can be extracted for example using [ExifTool](https://exiftool.org/). The only caution needed here is to maintain the same field labels adopted in the original Exif information.
 
-An example of how the pre-processing would work in this case is presented below.
+An example of how the pre-processing would work in practice is presented below.
 
 First, lets import the required libraries and module.
 
@@ -95,6 +95,6 @@ for ii, band in enumerate( list(reflectance_level_reference_panel.keys()) ): # I
                plugin=plugin ) # maintain resolution
 ```
 
-So, in summary, with the function ```rct.Image(image, metadata)``` an object with the image and its associated information is created, while the function ```self.detect_reference_panel(reflectance_level_reference_panel, percent_inner_area, sat_threshold)``` detects the reference panel automatically on undistorted radiance images and calculate the conversion factor necessay to transform radiance to reflectance. The final step includes transforming the target image to radiance using the function ```self.digital_numbers_to_radiance()``` and dividing the output by the conversion factor calculated using the reference panel.
+In summary, with the function ```rct.Image(image, metadata)``` an object with the image and associated information is created, while the function ```self.detect_reference_panel(reflectance_level_reference_panel, percent_inner_area, sat_threshold)``` detects the reference panel automatically on undistorted radiance images and calculate the conversion factor necessay to transform radiance to reflectance. The final step includes transforming the target image to radiance using the function ```self.digital_numbers_to_radiance()``` and dividing the output by the conversion factor calculated using the reference panel.
 
-For more details about the steps required for pre-processing Micasense multispectral images see the Tutorials provided by Micasense in their repository.
+For more details about the steps required for pre-processing Micasense multispectral images see the tutorials (e.g. ['Tutorial 1'](https://github.com/micasense/imageprocessing/blob/master/MicaSense%20Image%20Processing%20Tutorial%201.ipynb)) provided by Micasense in their repository.

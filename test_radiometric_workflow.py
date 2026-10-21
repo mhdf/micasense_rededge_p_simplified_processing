@@ -75,6 +75,37 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(rct.list_capture_names(RAW), ['IMG_0005', 'IMG_0010'])
         self.assertEqual(wf.capture_names(' A , B,,C '), ['A', 'B', 'C'])
 
+    def test_panel_regions_are_saved_and_loaded_keeping_other_captures(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'regions.json'
+            wf.save_panel_regions(path, 'IMG_0005', {'Blue': [[1, 2], [30, 2], [30, 40]], 'Red': None})
+            wf.save_panel_regions(path, 'IMG_0100', {'Green': [[5, 5], [20, 5], [20, 20]]})
+            self.assertEqual(wf.load_panel_regions(path), {'IMG_0005': {'Blue': [[1, 2], [30, 2], [30, 40]]},
+                                                           'IMG_0100': {'Green': [[5, 5], [20, 5], [20, 20]]}})
+            wf.save_panel_regions(path, 'IMG_0005', {'Blue': None})      # nothing left for this capture
+            self.assertEqual(list(wf.load_panel_regions(path)), ['IMG_0100'])
+            self.assertFalse(Path(str(path) + '.tmp').exists())
+
+    def test_a_file_that_is_not_a_regions_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'regions.json'
+            for content in ({'version': 9, 'geometry': 'undistorted', 'captures': {}},
+                            {'version': 1, 'geometry': 'original', 'captures': {}},
+                            {'version': 1, 'geometry': 'undistorted', 'captures': {'A': [1]}}):
+                path.write_text(json.dumps(content), encoding='utf-8')
+                with self.assertRaises(wf.ConfigError):
+                    wf.load_panel_regions(path)
+
+    def test_regions_file_problems_are_reported_by_the_validation(self):
+        config = wf.merge_config({'PANEL.manual_regions_file': 'missing.json'})
+        self.assertIn('Panel regions file not found', '\n'.join(wf.validate_config(config, ROOT)))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'regions.json'
+            wf.save_panel_regions(path, 'IMG_0005', {'Infrared': [[1, 2], [30, 2], [30, 40]]})
+            config = wf.merge_config({'PANEL.manual_regions_file': str(path)})
+            self.assertIn("band 'Infrared' of IMG_0005 is not in PANEL.reflectance_by_band",
+                          '\n'.join(wf.validate_config(config, ROOT)))
+
     def test_irradiance_series_changes_names_the_capture(self):
         series = {'Blue': [('c1', 100.0), ('c2', 101.0), ('c3', 150.0), ('c4', 100.0), ('c5', 100.0)],
                   'Green': [('c1', 100.0), ('c2', 100.0)],
@@ -157,6 +188,36 @@ class RunTests(unittest.TestCase):
         comparison = result['panel']['comparison']
         self.assertEqual(comparison['flags'], [])
         self.assertTrue(all(entry['factor_ratio'] == 1.0 for entry in comparison['bands'].values()))
+
+    def test_a_region_drawn_by_hand_replaces_the_automatic_one_for_that_band_only(self):
+        automatic = self.panel_only['panel']['before']['bands']
+        regions = self.folder / 'regions.json'
+        wf.save_panel_regions(regions, 'IMG_0005', {'Blue': automatic['Blue']['panel_bounds']})
+        result = wf.run(config_for(self.folder / 'manual_blue', **{'PANEL.manual_regions_file': str(regions)}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        bands = result['panel']['before']['bands']
+        self.assertEqual(bands['Blue']['region_source'], 'manual')
+        self.assertEqual({band for band, audit in bands.items() if audit['region_source'] == 'automatic'},
+                         set(wf.BAND_NAMES) - {'Blue'})
+        self.assertEqual(bands['Blue']['radiance_to_reflectance_factor'], automatic['Blue']['radiance_to_reflectance_factor'])
+
+    def test_regions_drawn_by_hand_allow_a_panel_without_a_readable_qr_code(self):
+        regions = self.folder / 'regions_no_qr.json'
+        square = [[600, 300], [700, 300], [700, 400], [600, 400]]
+        wf.save_panel_regions(regions, 'IMG_0010', {band: square for band in wf.BAND_NAMES})
+        result = wf.run(config_for(self.folder / 'no_qr', **{'INPUTS.reference_panel_capture': 'IMG_0010',
+                                                             'INPUTS.image_captures': 'IMG_0005',
+                                                             'PANEL.manual_regions_file': str(regions)}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertTrue(all(audit['region_source'] == 'manual' for audit in result['panel']['before']['bands'].values()))
+
+    def test_an_invalid_region_names_the_band(self):
+        regions = self.folder / 'regions_bad.json'
+        wf.save_panel_regions(regions, 'IMG_0005', {'Green': [[1, 1], [9000, 1], [9000, 50]]})
+        result = wf.run(config_for(self.folder / 'bad_region', **{'PANEL.manual_regions_file': str(regions)}), ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn("Panel of band 'Green' in IMG_0005", result['errors'][0])
+        self.assertIn('not inside', result['errors'][0])
 
     def test_progress_reports_the_stages_in_order(self):
         events = []

@@ -29,6 +29,7 @@ import tifffile
 import radiometric_correction_tools as rct
 
 REQUEST_VERSION = 1
+REGIONS_VERSION = 1
 RESULT_FILE_NAME = 'radiometric_result.json'
 STAGES = ('LOAD_CAPTURES', 'PANEL_CALIBRATION', 'REFLECTANCE', 'DLS_CHECKS', 'PROVENANCE')
 
@@ -59,6 +60,10 @@ FIELDS = [
      'label': 'Inner area of the panel', 'help': 'Fraction (0 to 1] of the panel used to measure its radiance.'},
     {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000,
      'label': 'Saturation threshold', 'help': 'Pixels above this value are left out of the panel radiance.'},
+    {'key': 'PANEL.manual_regions_file', 'kind': 'file', 'default': '',
+     'label': 'Panel regions drawn by hand (optional)',
+     'help': 'json file written by panel_selector.py. A band with a region there uses it instead of the QR code; '
+             'the other bands are detected automatically.'},
     {'key': 'CORRECTION.use_dls', 'kind': 'bool', 'default': False,
      'label': 'Correct illumination changes with the DLS',
      'help': 'Multiply the reflectance by E_panel / E_image of each band (Panchro included). Off: panel only.'},
@@ -119,6 +124,39 @@ def capture_names(text):
     return [name.strip() for name in str(text).split(',') if name.strip()]
 
 
+def load_panel_regions(path):
+    """
+    Read the regions of the reference panel drawn by hand
+    Outputs: {capture name: {band name: [[x, y], ...]}}, the vertices being pixels of the undistorted image
+    """
+    saved = json.loads(Path(path).read_text(encoding='utf-8'))
+    if saved.get('version') != REGIONS_VERSION or saved.get('geometry') != 'undistorted':
+        raise ConfigError(f"{path}: not a panel regions file (version {REGIONS_VERSION}, undistorted geometry)")
+    regions = saved.get('captures')
+    if not isinstance(regions, dict) or not all(isinstance(bands, dict) for bands in regions.values()):
+        raise ConfigError(f"{path}: 'captures' must be {{capture: {{band: [[x, y], ...]}}}}")
+    return regions
+
+
+def save_panel_regions(path, capture, regions):
+    """
+    Save the regions of one capture ({band: [[x, y], ...]}, None or missing bands are not saved), keeping the other
+    captures of the file. The file is replaced atomically
+    """
+    path = Path(path)
+    captures = load_panel_regions(path) if path.is_file() else {}
+    kept = {band: [[int(x), int(y)] for x, y in polygon] for band, polygon in regions.items() if polygon is not None}
+    if kept:
+        captures[capture] = kept
+    else:
+        captures.pop(capture, None)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps({'version': REGIONS_VERSION, 'geometry': 'undistorted', 'captures': captures},
+                                    indent=2), encoding='utf-8')
+    os.replace(temporary, path)
+    return path
+
+
 def validate_config(config, root='.'):
     """ Return the list of problems of a configuration (empty if it is valid). Paths are resolved from root """
     problems = []
@@ -164,6 +202,19 @@ def validate_config(config, root='.'):
         problems.append("INPUTS.results_folder is empty")
     if config['INPUTS.exiftool_path'] and not resolve_path(root, config['INPUTS.exiftool_path']).is_file():
         problems.append(f"ExifTool not found: {resolve_path(root, config['INPUTS.exiftool_path'])}")
+    if config['PANEL.manual_regions_file']:
+        regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
+        if not regions_file.is_file():
+            problems.append(f"Panel regions file not found: {regions_file}")
+        else:
+            try:
+                regions = load_panel_regions(regions_file)
+                for capture, bands in regions.items():
+                    for band in bands:
+                        if band not in config['PANEL.reflectance_by_band']:
+                            problems.append(f"{regions_file}: band '{band}' of {capture} is not in PANEL.reflectance_by_band")
+            except (ValueError, OSError) as error:
+                problems.append(str(error))
     panel = config['INPUTS.reference_panel_capture'].strip()
     if not panel:
         problems.append("INPUTS.reference_panel_capture is empty")
@@ -266,6 +317,9 @@ def _run_stages(config, root, results_folder, result, progress):
     _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct; panel capture {panel_name}", 0, len(names))
 
     # PANEL_CALIBRATION
+    regions = {}
+    if config['PANEL.manual_regions_file']:
+        regions = load_panel_regions(resolve_path(root, config['PANEL.manual_regions_file']))
     panels = {}
     for label, name in (('before', panel_name), ('after', panel_after_name)):
         if not name:
@@ -275,7 +329,8 @@ def _run_stages(config, root, results_folder, result, progress):
         for band, image in objects.items():
             try:
                 image.detect_reference_panel(levels, config['PANEL.percent_inner_area'],
-                                             config['PANEL.saturation_threshold'])
+                                             config['PANEL.saturation_threshold'],
+                                             manual_bounds=regions.get(name, {}).get(band))
             except Exception as error:
                 raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
         panels[label] = objects

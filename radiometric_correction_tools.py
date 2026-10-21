@@ -106,6 +106,24 @@ def map_band_files(image_paths, metadata_list, expected_bands=None):
     return band_files
 
 
+# DLS correction - ratio between the irradiance at the panel capture and at the image capture
+def dls_irradiance_ratio(panel_image, image):
+    """
+    Inputs: panel and target rct.Image objects of the SAME band
+    Outputs: E_panel / E_image, to be multiplied by the panel-calibrated reflectance. It is 1 for the panel capture
+    The panchromatic band is not corrected: no DLS channel is assumed to match it
+    """
+    if panel_image.band_name != image.band_name:
+        raise MetadataError(f"DLS correction needs the same band: panel is '{panel_image.band_name}' "
+                            f"({panel_image.image_path}), image is '{image.band_name}' ({image.image_path})")
+    if image.band_name == 'Panchro':
+        raise ValueError("DLS correction is not defined for the 'Panchro' band; use the panel-only conversion for it")
+    if (panel_image.irradiance_scale_to_si is None) != (image.irradiance_scale_to_si is None):
+        raise MetadataError(f"'XMP:IrradianceScaleToSIUnits' exists in only one of {panel_image.image_path} "
+                            f"and {image.image_path}")
+    return panel_image.dls_irradiance() / image.dls_irradiance()
+
+
 def find_capture_paths(images_folder, capture_name):
     """ Return the sorted image paths of a capture, e.g. 'IMG_0005' -> IMG_0005_1.tif, IMG_0005_2.tif, ... """
     paths = sorted(str(path) for path in Path(images_folder).glob(capture_name + '_*.tif'))
@@ -166,6 +184,10 @@ class Image(object):
         # Exposure time & gain (gain = ISO/100)
         self.exposure_time = float( _metadata_positive(self.metadata, 'EXIF:ExposureTime', image_path) )
         self.gain          = float( _metadata_positive(self.metadata, 'EXIF:ISOSpeed', image_path) ) / 100.0
+
+        # Downwelling light sensor (DLS) - optional, only needed when the DLS correction is requested
+        self.horizontal_irradiance = self.metadata.get('XMP:HorizontalIrradiance')
+        self.irradiance_scale_to_si = self.metadata.get('XMP:IrradianceScaleToSIUnits')
 
 
     # Undistort the image
@@ -260,6 +282,36 @@ class Image(object):
 
         #
         return image_radiance
+
+
+    # Horizontal irradiance measured by the DLS for this band
+    def dls_irradiance(self):
+        """
+        Return the DLS horizontal irradiance of this band (XMP:HorizontalIrradiance), multiplied by
+        XMP:IrradianceScaleToSIUnits when it exists. The scale is only needed to express the value in SI units:
+        it cancels when two images of the same camera are compared, so it is not guessed when it is absent
+        """
+        irradiance = _metadata_positive(self.metadata, 'XMP:HorizontalIrradiance', self.image_path)
+        scale = 1.0
+        if self.irradiance_scale_to_si is not None:
+            scale = float( _metadata_positive(self.metadata, 'XMP:IrradianceScaleToSIUnits', self.image_path) )
+        return float(irradiance) * scale
+
+
+    # Convert radiance to reflectance, optionally correcting the illumination change with the DLS
+    def digital_numbers_to_reflectance(self, radiance_to_reflectance_factor, panel_image=None):
+        """
+        Inputs: radiance to reflectance factor from detect_reference_panel() of the same band and, optionally,
+                the panel image (rct.Image) of that band. When given, the DLS is used (see dls_irradiance_ratio)
+                and the result is panel-anchored: reflectance = radiance * factor * (E_panel / E_image)
+        Outputs: reflectance image (float)
+        """
+        reflectance = self.digital_numbers_to_radiance() * radiance_to_reflectance_factor
+        self.dls_ratio = None
+        if panel_image is not None:
+            self.dls_ratio = dls_irradiance_ratio(panel_image, self)
+            reflectance = reflectance * self.dls_ratio
+        return reflectance
 
 
     # Automaticaly detect the reference panel and return radiance to reflectance conversion factor

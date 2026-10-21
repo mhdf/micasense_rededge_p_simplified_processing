@@ -127,6 +127,78 @@ class ExampleImageTests(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "band 'Blue' not in the reference panel"):
             rct.Image(path, metadata).detect_reference_panel(levels, 0.7)
 
+    # --- DLS correction ---------------------------------------------------------------------------------------
+
+    def panel_and_target(self, band='Blue', **target_changes):
+        panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, self.exiftool_path)
+        panel = rct.Image(*panel_files[band])
+        factor = panel.detect_reference_panel(REFLECTANCE_LEVELS, 0.7)[1]
+        path, metadata = self.band_files[band]
+        target = rct.Image(path, dict(metadata, **target_changes))
+        return panel, target, factor
+
+    def test_dls_ratio_is_irradiance_at_panel_over_irradiance_at_image(self):
+        panel, target, _ = self.panel_and_target('Blue')
+        self.assertAlmostEqual(rct.dls_irradiance_ratio(panel, target), 138.05218450296033 / 156.04327208007237)
+
+    def test_dls_reproduces_panel_only_result_at_the_panel_capture(self):
+        panel, _, factor = self.panel_and_target('Blue')
+        panel_only = panel.digital_numbers_to_reflectance(factor)
+        with_dls = panel.digital_numbers_to_reflectance(factor, panel_image=panel)
+        self.assertEqual(panel.dls_ratio, 1.0)
+        self.assertTrue((panel_only == with_dls).all())
+
+    def test_panel_only_mode_is_the_original_conversion(self):
+        _, target, factor = self.panel_and_target('Blue')
+        self.assertTrue((target.digital_numbers_to_reflectance(factor) ==
+                         target.digital_numbers_to_radiance() * factor).all())
+        self.assertIsNone(target.dls_ratio)
+
+    def test_doubling_the_image_irradiance_halves_the_reflectance(self):
+        panel, target, factor = self.panel_and_target('Blue')
+        _, doubled, _ = self.panel_and_target('Blue', **{'XMP:HorizontalIrradiance': 2 * target.horizontal_irradiance})
+        stable = target.digital_numbers_to_reflectance(factor, panel_image=panel)
+        brighter = doubled.digital_numbers_to_reflectance(factor, panel_image=panel)
+        self.assertTrue(abs(brighter - stable / 2).max() < 1e-12)
+
+    def test_common_irradiance_scale_cancels_in_the_ratio(self):
+        panel, target, _ = self.panel_and_target('Blue')
+        scale = {'XMP:IrradianceScaleToSIUnits': 0.01}
+        panel_scaled = rct.Image(panel.image_path, dict(panel.metadata, **scale))
+        target_scaled = rct.Image(target.image_path, dict(target.metadata, **scale))
+        self.assertAlmostEqual(rct.dls_irradiance_ratio(panel_scaled, target_scaled),
+                               rct.dls_irradiance_ratio(panel, target))
+
+    def test_scale_present_in_only_one_image_is_rejected(self):
+        panel, target, _ = self.panel_and_target('Blue', **{'XMP:IrradianceScaleToSIUnits': 0.01})
+        with self.assertRaisesRegex(rct.MetadataError, 'exists in only one'):
+            rct.dls_irradiance_ratio(panel, target)
+
+    def test_missing_nonpositive_or_nonnumeric_irradiance_is_rejected(self):
+        panel, target, _ = self.panel_and_target('Blue')
+        for value, message in [(None, 'missing metadata field'), (0, 'must be positive'),
+                               (-3.0, 'must be positive'), (float('nan'), 'no finite values'),
+                               ('abc', 'not numeric')]:
+            bad = rct.Image(target.image_path, dict(target.metadata, **{'XMP:HorizontalIrradiance': value}))
+            with self.assertRaisesRegex(rct.MetadataError, message):
+                rct.dls_irradiance_ratio(panel, bad)
+
+    def test_dls_without_irradiance_does_not_affect_panel_only_mode(self):
+        metadata = {key: val for key, val in self.band_files['Blue'][1].items() if 'Irradiance' not in key}
+        image = rct.Image(self.band_files['Blue'][0], metadata)
+        self.assertIsNotNone(image.digital_numbers_to_reflectance(2.0))
+
+    def test_different_bands_are_rejected(self):
+        panel, _, _ = self.panel_and_target('Blue')
+        green = rct.Image(*self.band_files['Green'])
+        with self.assertRaisesRegex(rct.MetadataError, 'needs the same band'):
+            rct.dls_irradiance_ratio(panel, green)
+
+    def test_panchro_is_not_dls_corrected(self):
+        panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, self.exiftool_path)
+        with self.assertRaisesRegex(ValueError, "not defined for the 'Panchro' band"):
+            rct.dls_irradiance_ratio(rct.Image(*panel_files['Panchro']), rct.Image(*self.band_files['Panchro']))
+
     def test_missing_capture_is_reported(self):
         with self.assertRaises(FileNotFoundError):
             rct.find_capture_paths(RAW, 'IMG_9999')

@@ -15,6 +15,8 @@ import radiometric_correction_tools as rct
 ROOT = Path(__file__).resolve().parent
 RAW = ROOT / 'images' / 'raw'
 BANDS = ['Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR']
+REFLECTANCE_LEVELS = { "Blue": 0.477, "Green": 0.478, "Panchro": 0.479,
+                       "Red": 0.478, "Red edge": 0.478, "NIR": 0.477 }
 
 
 def fake_metadata(band, capture='A'):
@@ -98,6 +100,32 @@ class ExampleImageTests(unittest.TestCase):
         path, metadata = self.band_files['Blue']
         with self.assertRaisesRegex(rct.MetadataError, "'EXIF:ISOSpeed' is not numeric"):
             rct.Image(path, dict(metadata, **{'EXIF:ISOSpeed': 'abc'}))
+
+    def test_panel_detection_records_an_audit(self):
+        panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, self.exiftool_path)
+        path, metadata = panel_files['Blue']
+        panel = rct.Image(path, metadata)
+        _, factor, _, _ = panel.detect_reference_panel(REFLECTANCE_LEVELS, percent_inner_area=0.7, sat_threshold=65000)
+        audit = panel.panel_audit
+        self.assertEqual(audit['band_name'], 'Blue')
+        self.assertEqual(audit['radiance_to_reflectance_factor'], factor)
+        self.assertAlmostEqual(audit['reflectance_level'] / audit['radiance_mean'], factor)
+        self.assertEqual(audit['n_saturated'], 0)
+        self.assertGreater(audit['n_pixels'], 0)
+        # factor obtained with the original code on the same images
+        self.assertAlmostEqual(factor, 2.0371197142446085, places=9)
+
+    def test_panel_detection_without_qr_code_is_a_clear_error(self):
+        path, metadata = self.band_files['Blue']        # target capture, no reference panel
+        with self.assertRaisesRegex(ValueError, 'IMG_0010_1.tif: no QR code found'):
+            rct.Image(path, metadata).detect_reference_panel(REFLECTANCE_LEVELS, 0.7)
+
+    def test_panel_band_without_reflectance_level_is_a_clear_error(self):
+        panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, self.exiftool_path)
+        path, metadata = panel_files['Blue']
+        levels = {band: val for band, val in REFLECTANCE_LEVELS.items() if band != 'Blue'}
+        with self.assertRaisesRegex(KeyError, "band 'Blue' not in the reference panel"):
+            rct.Image(path, metadata).detect_reference_panel(levels, 0.7)
 
     def test_missing_capture_is_reported(self):
         with self.assertRaises(FileNotFoundError):

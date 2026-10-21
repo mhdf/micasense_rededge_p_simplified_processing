@@ -280,7 +280,11 @@ class Image(object):
             barcode_source = 'undistorted'
         else: # if barcode is not detected in the undistroted image, use the QR code from the original image
             gray = (self.image // 256).astype(np.uint8)
-            barcode = decode(gray, symbols=[ZBarSymbol.QRCODE])[0]
+            barcode = decode(gray, symbols=[ZBarSymbol.QRCODE])
+            if( len(barcode) == 0 ):
+                raise ValueError(f"{self.image_path}: no QR code found for the reference panel "
+                                 f"(band {self.band_name}), in either the undistorted or the original image")
+            barcode = barcode[0]
             barcode_source = 'original'
         barcode_data = barcode.data.decode("utf-8")
 
@@ -330,13 +334,12 @@ class Image(object):
             panel_bounds = cv2.convexHull(cv2.perspectiveTransform(pts, warp_matrix), clockwise=False)
             panel_bounds = np.squeeze(panel_bounds)  # remove nested lists
 
-            #
-            for i, point in enumerate(panel_bounds):
-                mean, std, _, _ = self.region_stats( region=panel_bounds, 
-                                                     sat_threshold=sat_threshold )
-                bounds.append( panel_bounds.astype(np.int32) )
-                costs.append(std / mean)
-        
+            # Keep the rotation with the most homogeneous region (lowest coefficient of variation)
+            mean, std, _, _ = self.region_stats( region=panel_bounds,
+                                                 sat_threshold=sat_threshold )
+            bounds.append( panel_bounds.astype(np.int32) )
+            costs.append(std / mean)
+
         idx = costs.index(min(costs))
         panel_bounds = bounds[idx]
 
@@ -358,15 +361,38 @@ class Image(object):
         cv2.fillPoly(panel_mask, [panel_bounds], 255)
         # plt.imshow( panel_mask  )
 
-        # Extract pixel values inside the polygon
-        masked_values_average = image_panel_radiance[ panel_mask == 255 ].mean()
+        # Extract pixel values inside the polygon, leaving out saturated pixels
+        inside_panel = panel_mask == 255
+        saturated = inside_panel & (self.image > sat_threshold)
+        panel_radiance = image_panel_radiance[ inside_panel & ~saturated ]
+        if panel_radiance.size == 0:
+            raise ValueError(f"{self.image_path}: every pixel in the reference panel region is saturated")
+        masked_values_average = panel_radiance.mean()
         # print('Mean Radiance in panel region: {:1.4f} W/m^2/nm/sr'.format( masked_values_average ))
 
         # Specific calibrated reflectance level for the band - provided by Micasense
+        if self.band_name not in reflectance_level_reference_panel:
+            raise KeyError(f"{self.image_path}: band '{self.band_name}' not in the reference panel reflectance levels "
+                           f"{list(reflectance_level_reference_panel)}")
         panel_reflectance_level = reflectance_level_reference_panel[ self.band_name ]
 
         # Calculate radiance to reflectance conversion factor
         radiance_to_reflectance_factor = panel_reflectance_level / masked_values_average
+
+        # Keep what was used, so the calibration can be audited (self.panel_audit)
+        self.panel_audit = { 'image_path': str(self.image_path),
+                             'band_name': self.band_name,
+                             'barcode_data': barcode_data,
+                             'barcode_source': barcode_source,
+                             'panel_bounds': panel_bounds,
+                             'percent_inner_area': percent_inner_area,
+                             'sat_threshold': sat_threshold,
+                             'n_pixels': int(inside_panel.sum()),
+                             'n_saturated': int(saturated.sum()),
+                             'radiance_mean': float(masked_values_average),
+                             'radiance_std': float(panel_radiance.std()),
+                             'reflectance_level': float(panel_reflectance_level),
+                             'radiance_to_reflectance_factor': float(radiance_to_reflectance_factor) }
 
         return panel_bounds, radiance_to_reflectance_factor, barcode_data, barcode_source
 

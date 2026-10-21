@@ -300,22 +300,19 @@ class ExampleImageTests(unittest.TestCase):
         self.assertEqual(set(ratios), set(BANDS))
         self.assertTrue(all(source == 'metadata' for _, source in ratios.values()))
 
-    def test_missing_panchro_irradiance_is_estimated_from_the_other_bands_only_if_allowed(self):
-        import numpy as np
+    def test_missing_irradiance_is_an_error_in_every_band_including_panchro(self):
         panel, target = self.capture_dicts()
-        broken = dict(target, Panchro=self.changed(target['Panchro'], **{'XMP:HorizontalIrradiance': None}))
-        ratios = rct.capture_dls_ratios(panel, broken)
-        others = [ratio for band, (ratio, _) in ratios.items() if band != 'Panchro']
-        self.assertEqual(ratios['Panchro'][1], 'estimated_from_other_bands')
-        self.assertAlmostEqual(ratios['Panchro'][0], float(np.median(others)))
-        with self.assertRaises(rct.MetadataError):
-            rct.capture_dls_ratios(panel, broken, panchro_fallback=False)
+        for band in BANDS:
+            broken = dict(target, **{band: self.changed(target[band], **{'XMP:HorizontalIrradiance': None})})
+            with self.assertRaisesRegex(rct.MetadataError, "XMP:HorizontalIrradiance"):
+                rct.capture_dls_ratios(panel, broken)
 
-    def test_other_missing_irradiance_is_never_estimated(self):
+    def test_invalid_irradiance_is_an_error_in_panchro(self):
         panel, target = self.capture_dicts()
-        broken = dict(target, Blue=self.changed(target['Blue'], **{'XMP:HorizontalIrradiance': None}))
-        with self.assertRaises(rct.MetadataError):
-            rct.capture_dls_ratios(panel, broken)
+        for value in (0, -5.0, float('nan'), 'abc'):
+            broken = dict(target, Panchro=self.changed(target['Panchro'], **{'XMP:HorizontalIrradiance': value}))
+            with self.assertRaises(rct.MetadataError):
+                rct.capture_dls_ratios(panel, broken)
 
     def test_ratio_outside_the_plausible_range_gives_a_warning(self):
         panel, target = self.capture_dicts()
@@ -345,14 +342,6 @@ class ExampleImageTests(unittest.TestCase):
             warnings.simplefilter('always')
             checks = rct.check_dls_capture(panel, dict(target, Green=odd))
         self.assertTrue(any("Band 'Green'" in flag and 'median' in flag for flag in checks['flags']))
-
-    def test_estimated_ratio_is_flagged(self):
-        panel, target = self.capture_dicts()
-        broken = dict(target, Panchro=self.changed(target['Panchro'], **{'XMP:HorizontalIrradiance': None}))
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter('always')
-            checks = rct.check_dls_capture(panel, broken, rct.capture_dls_ratios(panel, broken))
-        self.assertTrue(any("'Panchro' DLS ratio was estimated from other bands" in flag for flag in checks['flags']))
 
     def test_sun_angle_discrepancy_is_none_without_the_fields(self):
         _, target = self.capture_dicts()

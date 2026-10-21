@@ -63,8 +63,8 @@ Finally, lets iterate over the different bands saving images after transforming 
 reference_panel_objs = { band: rct.Image( *reference_panel_files[band] ) for band in bands }
 image_objs = { band: rct.Image( *image_files[band] ) for band in bands }
 
-# DLS ratios (E_panel / E_image) of all the bands. If the irradiance of the Panchro band is missing, it is estimated
-# from the other bands (panchro_fallback=False raises an error instead)
+# DLS ratios (E_panel / E_image) of all the bands. A missing or invalid irradiance in any band, Panchro included,
+# raises an error: nothing is estimated from other bands
 dls_ratios = rct.capture_dls_ratios( reference_panel_objs, image_objs ) if use_dls else {}
 
 band_records = []
@@ -125,7 +125,7 @@ reflectance(image) = radiance(image) * panel_reflectance / panel_radiance * E_pa
 
 - At the panel capture the ratio is 1, so the result reproduces the panel-only conversion. Panel-only is the default and never reads the DLS fields.
 - It is a relative correction: it assumes that the panel and the DLS saw the same illumination when the panel was imaged. ```XMP:IrradianceScaleToSIUnits``` is applied when it exists; it cancels in the ratio, so nothing is assumed when it is absent (it must be in both captures or in none).
-- The Panchro band is corrected like the others, with the irradiance written in its own file. In the example images its ratio (0.8842) agrees with those of the multispectral bands (0.883 to 0.888). How the camera derives that value is not documented here. If it is missing, ```rct.capture_dls_ratios()``` uses the median ratio of the other bands and says so in the record (```panchro_fallback=False``` raises an error instead). The ratio of any other band is never estimated.
+- The Panchro band is corrected like the others, with the irradiance written in its own file. In the example images its ratio (0.8842) agrees with those of the multispectral bands (0.883 to 0.888). How the camera derives that value is not documented here. A missing or invalid irradiance in any band, Panchro included, raises an error: no ratio is estimated from other bands.
 - This correction does not account for the DLS orientation or shading, so check the data as described below before relying on it.
 
 ### Checks of the DLS data

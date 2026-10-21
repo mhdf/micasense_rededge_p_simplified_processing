@@ -116,8 +116,8 @@ def dls_irradiance_ratio(panel_image, image):
     """
     Inputs: panel and target rct.Image objects of the SAME band
     Outputs: E_panel / E_image, to be multiplied by the panel-calibrated reflectance. It is 1 for the panel capture
-    The Panchro band is treated like the others, using the irradiance written in its own file (see capture_dls_ratios
-    for what to do when it is missing). A ratio outside DLS_CHECKS['ratio_range'] gives a warning
+    The Panchro band is treated like the others, using the irradiance written in its own file.
+    A ratio outside DLS_CHECKS['ratio_range'] gives a warning
     """
     if panel_image.band_name != image.band_name:
         raise MetadataError(f"DLS correction needs the same band: panel is '{panel_image.band_name}' "
@@ -133,27 +133,14 @@ def dls_irradiance_ratio(panel_image, image):
     return ratio
 
 
-def capture_dls_ratios(panel_images, images, panchro_fallback=True):
+def capture_dls_ratios(panel_images, images):
     """
-    DLS ratios (E_panel / E_image) of all the bands of a capture
+    DLS ratios (E_panel / E_image) of all the bands of a capture, Panchro included
     Inputs: dictionaries {band name: rct.Image} for the panel capture and for the image capture
-    Outputs: dictionary {band name: (ratio, source)}, source being 'metadata' or, for the Panchro band only and when
-             panchro_fallback is True and its own irradiance is missing or invalid, 'estimated_from_other_bands'
-             (the median ratio of the other bands). Any other missing or invalid value raises MetadataError
+    Outputs: dictionary {band name: (ratio, source)}, with source 'metadata'. A missing or invalid irradiance in
+             any band raises MetadataError: no ratio is estimated from other bands
     """
-    ratios = {}
-    for band, image in images.items():
-        try:
-            ratios[band] = (dls_irradiance_ratio(panel_images[band], image), 'metadata')
-        except MetadataError:
-            if not (panchro_fallback and band == 'Panchro'):
-                raise
-    if 'Panchro' in images and 'Panchro' not in ratios:
-        others = [ratio for ratio, _ in ratios.values()]
-        if not others:
-            raise MetadataError("No DLS ratio of any band to estimate the 'Panchro' band from")
-        ratios['Panchro'] = (float(np.median(others)), 'estimated_from_other_bands')
-    return ratios
+    return { band: (dls_irradiance_ratio(panel_images[band], image), 'metadata') for band, image in images.items() }
 
 
 # Checks of the DLS data - thresholds (adjust them if needed). They are guesses, not validated limits
@@ -229,9 +216,6 @@ def check_dls_capture(panel_images, images, ratios=None):
         if not low <= value <= high:
             flags.append(f"Band '{band}' DLS ratio {value:.3f} is outside the plausible range {low}-{high}")
 
-    for band, source in result['ratio_sources'].items():
-        if source != 'metadata':
-            flags.append(f"Band '{band}' DLS ratio was {source.replace('_', ' ')}")
     result['flags'], result['unavailable'] = flags, unavailable
     for flag in flags:
         warnings.warn(flag, RuntimeWarning)

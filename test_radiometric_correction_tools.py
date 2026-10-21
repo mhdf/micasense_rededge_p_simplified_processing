@@ -112,8 +112,11 @@ class ExampleImageTests(unittest.TestCase):
         self.assertAlmostEqual(audit['reflectance_level'] / audit['radiance_mean'], factor)
         self.assertEqual(audit['n_saturated'], 0)
         self.assertGreater(audit['n_pixels'], 0)
-        # factor obtained with the original code on the same images
-        self.assertAlmostEqual(factor, 2.0371197142446085, places=9)
+        # the original code (panel region measured on the distorted image) gave 2.03712; sampling the region on the
+        # undistorted image, where the QR code is found, changes it by about -0.3 %
+        self.assertAlmostEqual(factor, 2.0371197142446085, delta=0.01 * 2.0371197142446085)
+        self.assertLess(factor, 2.0371197142446085)
+        self.assertLess(audit['radiance_std'] / audit['radiance_mean'], 0.03)
 
     def test_panel_detection_without_qr_code_is_a_clear_error(self):
         path, metadata = self.band_files['Blue']        # target capture, no reference panel

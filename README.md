@@ -30,7 +30,7 @@ import radiometric_correction_tools as rct
 exiftool_path = os.environ.get('exiftoolpath')
 ```
 
-Next, it is necessary to provide some information required for processing, including: (i) name of the captures with the reference panel and with the images to be transformed from raw Digital Numbers (DNs) to reflectance, (ii) reflectance levels for different bands in the reference panel, a value provided by Micasense with each reference panel, and (iii) whether the DLS should be used. The files of each capture are matched to the bands using the band name written in their metadata (```XMP:BandName```), not the order of the files: in the example images the file ```_3``` is the Red band and ```_6``` is the Panchro band.
+Next, it is necessary to provide some information required for processing, including: (i) name of the captures with the reference panel and with the images to be transformed from raw Digital Numbers (DNs) to reflectance, (ii) reflectance levels for different bands in the reference panel, a value provided by Micasense with each reference panel, and (iii) whether the DLS should be used. The files of each capture are matched to the bands using the band name written in their metadata (```XMP:BandName```), not the order of the files: in the example images the file ```_3``` is the Red band and ```_6``` is the Panchro band. Each result keeps the name of its source file, so ```IMG_0010_3.tif``` is the Red band both before and after the correction.
 
 ```
 # Name of the captures: the reference panel and the images to be corrected
@@ -81,7 +81,7 @@ for band in bands: # Iterate over bands
 
     ##
     # Save reflectance image
-    tifffile.imwrite( root_path / results_folder / (image_to_process_name + '_' + band.replace(' ', '_') + '.tif'),
+    tifffile.imwrite( root_path / results_folder / Path(image_files[band][0]).name,
                       image_reflectance )  # keeps the float values (no rescaling to integers)
 ```
 

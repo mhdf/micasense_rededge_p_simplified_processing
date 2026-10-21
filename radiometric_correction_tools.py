@@ -191,8 +191,10 @@ class Image(object):
 
 
     # Undistort the image
-    def undistorted(self): 
-        """ return the undistorted image from input image """
+    def undistorted(self, image=None):
+        """ return the undistorted version of the image (default: the input image, or any array of the same size) """
+        if image is None:
+            image = self.image
         # get the optimal new camera matrix
         new_cam_mat, _ = cv2.getOptimalNewCameraMatrix( self.camera_matrix,
                                                         self.distortion_parameters,
@@ -204,23 +206,25 @@ class Image(object):
                                                   new_cam_mat,
                                                   self.size,
                                                   cv2.CV_32F)  # cv2.CV_32F for 32 bit floats
-        # Compute the undistorted 16-bit image
-        image_undistorted = cv2.remap(self.image, map1, map2, cv2.INTER_LINEAR)
+        # Compute the undistorted image (16-bit for the raw image)
+        image_undistorted = cv2.remap(image, map1, map2, cv2.INTER_LINEAR)
         return image_undistorted
 
 
     # Calculate region statistics
-    def region_stats(self, region, sat_threshold=None):
+    def region_stats(self, region, sat_threshold=None, image=None):
         """
         Provide regional statistics for an image over a region
-        Inputs: image is any image ndarray, region is a skimage shape
+        Inputs: region is a skimage shape, image is any image ndarray (default: the input image)
         Outputs: mean, std, count, and saturated count tuple for the region
         """
+        if image is None:
+            image = self.image
         rev_panel_pts = np.fliplr( region )  # image coords are reversed
-        w, h = self.image.shape[0:2]
+        w, h = image.shape[0:2]
         mask = measure.grid_points_in_poly((w, h), rev_panel_pts)
         num_pixels = mask.sum()
-        panel_pixels = self.image[mask]
+        panel_pixels = image[mask]
         stdev = panel_pixels.std()
         mean_value = panel_pixels.mean()
         saturated_count = 0
@@ -373,6 +377,13 @@ class Image(object):
         reference_qr_pts    = np.asarray([[-p, p], [p, p], [p, -p], [-p, -p]], dtype=np.float32)
         bounds = []
         costs  = []
+
+        # The panel region must be applied to the same geometry where the QR code was found: the undistorted
+        # image, or the original image when the QR code was only found there
+        if barcode_source == 'undistorted':
+            panel_dn = image_undistorted
+        else:
+            panel_dn = self.image
         for rotation in range(0, 4):
             qr_points = np.roll(reference_qr_pts, rotation, axis=0)
 
@@ -388,7 +399,8 @@ class Image(object):
 
             # Keep the rotation with the most homogeneous region (lowest coefficient of variation)
             mean, std, _, _ = self.region_stats( region=panel_bounds,
-                                                 sat_threshold=sat_threshold )
+                                                 sat_threshold=sat_threshold,
+                                                 image=panel_dn )
             bounds.append( panel_bounds.astype(np.int32) )
             costs.append(std / mean)
 
@@ -404,10 +416,12 @@ class Image(object):
         ##
         # Calculate radiance for reference panel image
         image_panel_radiance = self.digital_numbers_to_radiance()
+        if barcode_source == 'undistorted':
+            image_panel_radiance = self.undistorted(image_panel_radiance)
         # plt.imshow( image_panel_radiance  )
 
         # Create an empty mask for panel region
-        panel_mask = np.zeros_like(self.image, dtype=np.uint8)
+        panel_mask = np.zeros_like(panel_dn, dtype=np.uint8)
 
         # Fill the polygon in the mask
         cv2.fillPoly(panel_mask, [panel_bounds], 255)
@@ -415,7 +429,7 @@ class Image(object):
 
         # Extract pixel values inside the polygon, leaving out saturated pixels
         inside_panel = panel_mask == 255
-        saturated = inside_panel & (self.image > sat_threshold)
+        saturated = inside_panel & (panel_dn > sat_threshold)
         panel_radiance = image_panel_radiance[ inside_panel & ~saturated ]
         if panel_radiance.size == 0:
             raise ValueError(f"{self.image_path}: every pixel in the reference panel region is saturated")

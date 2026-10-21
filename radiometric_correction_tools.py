@@ -12,7 +12,11 @@ The Micasense imagerocessing Library is licensed under the MIT License
 """
 
 # Standard Library Imports
+import hashlib
+import json
 import os
+import platform
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Third-Party Imports
@@ -124,6 +128,65 @@ def dls_irradiance_ratio(panel_image, image):
     return panel_image.dls_irradiance() / image.dls_irradiance()
 
 
+# Provenance record - what was used to produce the outputs, saved next to them
+def _jsonable(value):
+    """ Convert numpy values (and containers of them) to plain Python types for json """
+    if isinstance(value, dict):
+        return { str(key): _jsonable(val) for key, val in value.items() }
+    if isinstance(value, (list, tuple)):
+        return [ _jsonable(val) for val in value ]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def band_record(output_path, panel_image, image, reflectance):
+    """
+    Describe how one output band was produced
+    Inputs: path of the saved file, panel and target rct.Image of the band (after detect_reference_panel() and
+            digital_numbers_to_reflectance()) and the reflectance array that was saved
+    Outputs: dictionary that can be saved as json (see write_provenance)
+    """
+    return _jsonable({ 'band': image.band_name,
+                       'output_file': str(output_path),
+                       'output_dtype': str(reflectance.dtype),
+                       'output_shape': reflectance.shape,
+                       'image_file': str(image.image_path),
+                       'image_capture_id': image.metadata.get('XMP:CaptureId'),
+                       'panel_file': str(panel_image.image_path),
+                       'panel_capture_id': panel_image.metadata.get('XMP:CaptureId'),
+                       'panel': getattr(panel_image, 'panel_audit', None),
+                       'dls': { 'used': image.dls_ratio is not None,
+                                'ratio_panel_over_image': image.dls_ratio,
+                                'panel_horizontal_irradiance': panel_image.horizontal_irradiance,
+                                'image_horizontal_irradiance': image.horizontal_irradiance,
+                                'panel_irradiance_scale_to_si': panel_image.irradiance_scale_to_si,
+                                'image_irradiance_scale_to_si': image.irradiance_scale_to_si } })
+
+
+def write_provenance(path, band_records, parameters=None):
+    """
+    Save a json file with the records of the bands (see band_record), the parameters of the run and the software used
+    The module is identified by the hash of its text (line endings normalized), so changes in the code are noticed
+    """
+    import cv2
+    code = Path(__file__).read_bytes().replace(b'\r\n', b'\n')
+    dls_used = any(record['dls']['used'] for record in band_records)
+    record = { 'created_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+               'method': 'panel_and_dls' if dls_used else 'panel_only',
+               'software': { 'radiometric_correction_tools_sha256': hashlib.sha256(code).hexdigest(),
+                             'python': platform.python_version(),
+                             'numpy': np.__version__,
+                             'opencv': cv2.__version__ },
+               'parameters': _jsonable(parameters or {}),
+               'bands': band_records }
+    path = Path(path)
+    path.write_text(json.dumps(record, indent=2), encoding='utf-8')
+    return path
+
+
 def find_capture_paths(images_folder, capture_name):
     """ Return the sorted image paths of a capture, e.g. 'IMG_0005' -> IMG_0005_1.tif, IMG_0005_2.tif, ... """
     paths = sorted(str(path) for path in Path(images_folder).glob(capture_name + '_*.tif'))
@@ -188,6 +251,7 @@ class Image(object):
         # Downwelling light sensor (DLS) - optional, only needed when the DLS correction is requested
         self.horizontal_irradiance = self.metadata.get('XMP:HorizontalIrradiance')
         self.irradiance_scale_to_si = self.metadata.get('XMP:IrradianceScaleToSIUnits')
+        self.dls_ratio = None   # set by digital_numbers_to_reflectance() when the DLS correction is used
 
 
     # Undistort the image

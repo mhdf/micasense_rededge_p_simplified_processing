@@ -202,6 +202,47 @@ class ExampleImageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not defined for the 'Panchro' band"):
             rct.dls_irradiance_ratio(rct.Image(*panel_files['Panchro']), rct.Image(*self.band_files['Panchro']))
 
+    # --- Provenance record ------------------------------------------------------------------------------------
+
+    def test_provenance_of_a_panel_only_run(self):
+        panel, target, factor = self.panel_and_target('Blue')
+        reflectance = target.digital_numbers_to_reflectance(factor)
+        record = rct.band_record('out/IMG_0010_1.tif', panel, target, reflectance)
+        self.assertEqual(record['band'], 'Blue')
+        self.assertTrue(record['panel_file'].endswith('IMG_0005_1.tif'))
+        self.assertTrue(record['image_file'].endswith('IMG_0010_1.tif'))
+        self.assertEqual(record['output_dtype'], 'float64')
+        self.assertFalse(record['dls']['used'])
+        self.assertIsNone(record['dls']['ratio_panel_over_image'])
+        # the irradiances are recorded even when they are not used
+        self.assertAlmostEqual(record['dls']['image_horizontal_irradiance'], 156.04327208007237)
+        self.assertEqual(record['panel']['radiance_to_reflectance_factor'], factor)
+
+    def test_provenance_of_a_dls_run_is_saved_as_json(self):
+        import json, tempfile
+        panel, target, factor = self.panel_and_target('Blue')
+        reflectance = target.digital_numbers_to_reflectance(factor, panel_image=panel)
+        record = rct.band_record('out/IMG_0010_1.tif', panel, target, reflectance)
+        self.assertTrue(record['dls']['used'])
+        self.assertAlmostEqual(record['dls']['ratio_panel_over_image'], 138.05218450296033 / 156.04327208007237)
+        with tempfile.TemporaryDirectory() as folder:
+            path = rct.write_provenance(Path(folder) / 'provenance.json', [record],
+                                        parameters={'percent_inner_area': 0.7, 'levels': REFLECTANCE_LEVELS})
+            saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['method'], 'panel_and_dls')
+        self.assertEqual(saved['parameters']['percent_inner_area'], 0.7)
+        self.assertEqual(len(saved['software']['radiometric_correction_tools_sha256']), 64)
+        self.assertEqual(saved['bands'][0]['panel']['panel_bounds'], record['panel']['panel_bounds'])
+
+    def test_method_is_panel_only_without_dls(self):
+        import json, tempfile
+        panel, target, factor = self.panel_and_target('Blue')
+        reflectance = target.digital_numbers_to_reflectance(factor)
+        record = rct.band_record('out/IMG_0010_1.tif', panel, target, reflectance)
+        with tempfile.TemporaryDirectory() as folder:
+            saved = json.loads(rct.write_provenance(Path(folder) / 'p.json', [record]).read_text(encoding='utf-8'))
+        self.assertEqual(saved['method'], 'panel_only')
+
     def test_missing_capture_is_reported(self):
         with self.assertRaises(FileNotFoundError):
             rct.find_capture_paths(RAW, 'IMG_9999')

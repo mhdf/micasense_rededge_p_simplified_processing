@@ -59,6 +59,7 @@ image_files = rct.read_band_files( rct.find_capture_paths(root_path / images_fol
 Finally, lets iterate over the different bands saving images after transforming them from DNs to radiance and at the end to reflectance.
 
 ```
+band_records = []
 for band in bands: # Iterate over bands
 
     # Reference panel image (path and metadata of the file of this band)
@@ -81,8 +82,14 @@ for band in bands: # Iterate over bands
 
     ##
     # Save reflectance image
-    tifffile.imwrite( root_path / results_folder / Path(image_files[band][0]).name,
-                      image_reflectance )  # keeps the float values (no rescaling to integers)
+    output_path = root_path / results_folder / Path(image_files[band][0]).name
+    tifffile.imwrite( output_path, image_reflectance )  # keeps the float values (no rescaling to integers)
+    band_records.append( rct.band_record(output_path, reference_panel_obj, image_obj, image_reflectance) )
+
+# Record of what was used to produce the results, saved with them
+rct.write_provenance( root_path / results_folder / (image_to_process_name + '_provenance.json'), band_records,
+                      parameters={ 'reflectance_level_reference_panel': reflectance_level_reference_panel,
+                                   'percent_inner_area': 0.7, 'sat_threshold': 65000, 'use_dls': use_dls } )
 ```
 
 In summary, with the function ```rct.Image(image, metadata)``` an object with the image and associated information is created, while the function ```self.detect_reference_panel(reflectance_level_reference_panel, percent_inner_area, sat_threshold)``` detects the reference panel automatically on undistorted radiance images and calculate the conversion factor necessay to transform radiance to reflectance. The final step includes transforming the target image to radiance using the function ```self.digital_numbers_to_radiance()``` and multiplying the output by the conversion factor calculated using the reference panel, which is what ```self.digital_numbers_to_reflectance(factor)``` does. The functions ```rct.find_capture_paths()``` and ```rct.read_band_files()``` list the files of a capture and match them to the bands.
@@ -91,7 +98,8 @@ In summary, with the function ```rct.Image(image, metadata)``` an object with th
 
 - Metadata are checked when an image is created. If a field is missing or invalid (non-numeric, wrong number of values, non-positive exposure, ISO and so on) a ```rct.MetadataError``` names the file and the field.
 - ```detect_reference_panel()``` raises a clear error if the QR code is not found, if the band has no reflectance level or if all panel pixels are saturated. Saturated pixels (above ```sat_threshold```) are left out of the panel mean.
-- After ```detect_reference_panel()```, ```reference_panel_obj.panel_audit``` holds what was used to calibrate the band: panel region, number of pixels and of saturated pixels, mean and standard deviation of the radiance, reflectance level and the final factor. Keep it with the results.
+- After ```detect_reference_panel()```, ```reference_panel_obj.panel_audit``` holds what was used to calibrate the band: panel region, number of pixels and of saturated pixels, mean and standard deviation of the radiance, reflectance level and the final factor.
+- ```rct.band_record()``` and ```rct.write_provenance()``` save a json file with the results (```IMG_0010_provenance.json``` in the example): for each band, the panel and image files and capture ids, the panel audit above, the DLS irradiances and ratio (the irradiances are recorded even when the DLS is not used), plus the method, the parameters of the run, the date and the software used (hash of ```radiometric_correction_tools.py```, python, numpy and opencv versions).
 
 ## Optional DLS correction
 

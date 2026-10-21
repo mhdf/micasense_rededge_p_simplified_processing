@@ -140,10 +140,27 @@ The limits are in ```rct.DLS_CHECKS```; they are first guesses, not validated va
 - ```rct.compare_panel_captures(before, after)```, for a panel photographed twice (for example before and after the flight): the panel factor of each band, and the DLS irradiance divided by the panel estimate, must not change more than 5 %. The first change shows that the light or the panel changed, the second that the DLS did not follow the light seen by the camera.
 - ```rct.classify_irradiance_changes(irradiances)```, for the irradiance of one band along the flight in acquisition order: a *spike* is a single capture that jumps and comes back (a shaded or tilted DLS), a *step* is a change that persists (the sun going behind a cloud).
 
+## Workflow runner (no user interface)
+
+```radiometric_workflow.py``` runs the whole example above, for all the captures of a folder, from a configuration with fixed keys. It has no user interface, so a window can be built on top of it (```FIELDS``` describes each key: default, kind of value, label and description).
+
+```
+python radiometric_workflow.py --write-default-config radiometric_inputs.json   # write the defaults, then edit them
+python radiometric_workflow.py --config radiometric_inputs.json                   # run
+python radiometric_workflow.py --request-json request.json                        # run from a request (see below)
+```
+
+- The configuration is a flat json file with the keys of ```FIELDS``` (```INPUTS.*``` folders and captures, ```PANEL.*``` reflectance levels and panel measurement, ```CORRECTION.use_dls```, ```CHECKS.*``` limits). Only the keys to change are needed; unknown keys are an error. Relative paths are resolved from ```--root``` (default: the current folder). Labels and descriptions may change in future versions, the keys will not.
+- With ```INPUTS.image_captures``` empty, every capture in the images folder except the panel capture(s) is corrected. The panel is detected once and used for all of them. A second panel capture (```INPUTS.reference_panel_capture_after```) is only compared with the first.
+- The stages are ```LOAD_CAPTURES```, ```PANEL_CALIBRATION```, ```REFLECTANCE```, ```DLS_CHECKS``` and ```PROVENANCE```. A capture that fails (for example a missing band file, or a missing DLS irradiance when ```CORRECTION.use_dls``` is on) is reported and the others continue.
+- Each corrected capture gets its ```<capture>_provenance.json```; the whole run gets ```radiometric_result.json``` in the results folder with the status (```completed```, ```completed_with_errors``` or ```failed```), the errors, the flags of all the checks, the panel calibration and the spikes/steps of the irradiance along the captures. The command prints ```RADIOMETRIC_RESULT_JSON=<path>``` and returns 0 only for ```completed``` (1 for errors, 2 for an unreadable request or configuration file).
+- A request is ```{"version": 1, "root": "<folder>", "config": {...}}```, so that another program can start the workflow as a separate process (the libraries needed here are usually not available in the Python of a photogrammetry program) and read the result file.
+- From Python: ```radiometric_workflow.run(config, root, progress)```, where ```progress``` receives ```{'stage', 'message', 'current', 'total'}```.
+
 ## Tests
 
 ```
-python -m unittest test_radiometric_correction_tools -v
+python -m unittest test_radiometric_correction_tools test_radiometric_workflow -v
 ```
 
 The tests use the example images and need ExifTool (set the environment variable ```exiftoolpath``` if it is not in the PATH).

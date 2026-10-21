@@ -356,6 +356,17 @@ def write_provenance(path, band_records, parameters=None, checks=None):
     return path
 
 
+def list_capture_names(images_folder):
+    """ Return the sorted names of the captures in a folder, e.g. IMG_0005_1.tif ... IMG_0005_6.tif -> 'IMG_0005' """
+    names = set()
+    for path in Path(images_folder).glob('*.tif'):
+        stem = path.stem
+        head, _, band_number = stem.rpartition('_')
+        if head and band_number.isdigit():
+            names.add(head)
+    return sorted(names)
+
+
 def find_capture_paths(images_folder, capture_name):
     """ Return the sorted image paths of a capture, e.g. 'IMG_0005' -> IMG_0005_1.tif, IMG_0005_2.tif, ... """
     paths = sorted(str(path) for path in Path(images_folder).glob(capture_name + '_*.tif'))

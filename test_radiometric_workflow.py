@@ -1,0 +1,252 @@
+"""
+Tests for radiometric_workflow.py (configuration, validation and runner), using the example images
+
+Run from this folder with:  python -m unittest test_radiometric_workflow -v
+"""
+
+import contextlib
+import io
+import json
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import numpy as np
+import tifffile
+
+import radiometric_correction_tools as rct
+import radiometric_workflow as wf
+
+ROOT = Path(__file__).resolve().parent
+RAW = ROOT / 'images' / 'raw'
+
+
+def config_for(results_folder, **changes):
+    values = {'INPUTS.images_folder': str(RAW), 'INPUTS.results_folder': str(results_folder)}
+    values.update(changes)
+    return values
+
+
+class ConfigurationTests(unittest.TestCase):
+
+    def test_defaults_cover_every_field_and_survive_json(self):
+        config = wf.default_config()
+        self.assertEqual(list(config), wf.FIELD_KEYS)
+        self.assertEqual(json.loads(json.dumps(config)), config)
+        self.assertEqual(len(set(wf.FIELD_KEYS)), len(wf.FIELD_KEYS))
+
+    def test_default_config_is_a_copy(self):
+        config = wf.default_config()
+        config['PANEL.reflectance_by_band']['Blue'] = 0.1
+        self.assertEqual(wf.default_config()['PANEL.reflectance_by_band']['Blue'], 0.477)
+
+    def test_unknown_key_is_an_error(self):
+        with self.assertRaisesRegex(wf.ConfigError, 'INPUTS.typo'):
+            wf.merge_config({'INPUTS.typo': 1})
+
+    def test_the_defaults_are_valid_for_the_example_folder(self):
+        self.assertEqual(wf.validate_config(wf.default_config(), ROOT), [])
+
+    def test_problems_are_listed_with_their_key(self):
+        # wrong types are reported first
+        config = wf.merge_config({'PANEL.saturation_threshold': 'high', 'CORRECTION.use_dls': 'yes',
+                                  'PANEL.reflectance_by_band': {'Blue': 2.0}})
+        text = '\n'.join(wf.validate_config(config, ROOT))
+        for expected in ('PANEL.saturation_threshold must be an integer', 'CORRECTION.use_dls must be true or false',
+                         "PANEL.reflectance_by_band['Blue']"):
+            self.assertIn(expected, text)
+        # then the values and the captures
+        config = wf.merge_config({'PANEL.percent_inner_area': 1.5, 'CHECKS.ratio_range_min': 3.0,
+                                  'INPUTS.reference_panel_capture': 'IMG_9999'})
+        text = '\n'.join(wf.validate_config(config, ROOT))
+        self.assertIn('PANEL.percent_inner_area must be in (0, 1]', text)
+        self.assertIn('CHECKS.ratio_range_min must be smaller', text)
+        self.assertIn("Capture 'IMG_9999' not found", text)
+
+    def test_missing_folder_and_exiftool_are_reported(self):
+        config = wf.merge_config({'INPUTS.images_folder': 'does/not/exist', 'INPUTS.exiftool_path': 'nope.exe'})
+        text = '\n'.join(wf.validate_config(config, ROOT))
+        self.assertIn('Images folder not found', text)
+        self.assertIn('ExifTool not found', text)
+
+    def test_captures_are_listed_from_the_file_names(self):
+        self.assertEqual(rct.list_capture_names(RAW), ['IMG_0005', 'IMG_0010'])
+        self.assertEqual(wf.capture_names(' A , B,,C '), ['A', 'B', 'C'])
+
+    def test_irradiance_series_changes_names_the_capture(self):
+        series = {'Blue': [('c1', 100.0), ('c2', 101.0), ('c3', 150.0), ('c4', 100.0), ('c5', 100.0)],
+                  'Green': [('c1', 100.0), ('c2', 100.0)],
+                  'Red': [('c1', 100.0), ('c2', -1.0), ('c3', 100.0)]}
+        changes = wf.irradiance_series_changes(series, 0.1)
+        self.assertEqual(list(changes), ['Blue'])
+        self.assertEqual([(e['capture'], e['kind']) for e in changes['Blue']], [('c3', 'spike')])
+
+
+class RunTests(unittest.TestCase):
+    """ The runs are done once and shared: each processes the six bands of the example capture """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = Path(tempfile.mkdtemp())
+        cls.panel_only = wf.run(config_for(cls.folder / 'panel_only'), ROOT)
+        cls.with_dls = wf.run(config_for(cls.folder / 'dls', **{'CORRECTION.use_dls': True}), ROOT)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.folder, ignore_errors=True)
+
+    def test_panel_only_run_completes_and_names_outputs_like_the_sources(self):
+        result = self.panel_only
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        names = sorted(Path(path).name for path in result['outputs'])
+        self.assertEqual(names, [f'IMG_0010_{number}.tif' for number in range(1, 7)])
+        self.assertEqual(list(result['captures']), ['IMG_0010'])
+        self.assertEqual(result['stages'], list(wf.STAGES))
+
+    def test_panel_only_output_equals_the_library_result(self):
+        folder = self.folder / 'panel_only'
+        panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), list(wf.BAND_NAMES))
+        panel = rct.Image(*panel_files['Blue'])
+        factor = panel.detect_reference_panel(wf.default_config()['PANEL.reflectance_by_band'], 0.7, 65000)[1]
+        target = rct.Image(*rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0010'),
+                                                list(wf.BAND_NAMES))['Blue'])
+        expected = target.digital_numbers_to_reflectance(factor)
+        saved = tifffile.imread(folder / 'IMG_0010_1.tif')
+        self.assertEqual(saved.dtype, np.float64)
+        self.assertTrue(np.array_equal(saved, expected))
+
+    def test_result_and_provenance_files_are_saved(self):
+        folder = self.folder / 'panel_only'
+        saved = json.loads((folder / wf.RESULT_FILE_NAME).read_text(encoding='utf-8'))
+        self.assertEqual(saved['status'], 'completed')
+        self.assertEqual(Path(saved['result_file']), folder / wf.RESULT_FILE_NAME)
+        self.assertEqual(set(saved['panel']['before']['bands']), set(wf.BAND_NAMES))
+        provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(provenance['method'], 'panel_only')
+        self.assertEqual(provenance['parameters']['config']['PANEL.percent_inner_area'], 0.7)
+        self.assertFalse((folder / (wf.RESULT_FILE_NAME + '.tmp')).exists())
+
+    def test_dls_run_corrects_every_band_including_panchro(self):
+        folder = self.folder / 'dls'
+        provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(provenance['method'], 'panel_and_dls')
+        ratios = {band['band']: band['dls']['ratio_panel_over_image'] for band in provenance['bands']}
+        self.assertEqual(set(ratios), set(wf.BAND_NAMES))
+        self.assertAlmostEqual(ratios['Blue'], 138.05218450296033 / 156.04327208007237)
+        self.assertAlmostEqual(ratios['Panchro'], 99.211212701455025 / 112.20932502581493)
+        ratio = tifffile.imread(folder / 'IMG_0010_6.tif').mean() / \
+                tifffile.imread(self.folder / 'panel_only' / 'IMG_0010_6.tif').mean()
+        self.assertAlmostEqual(ratio, ratios['Panchro'])
+
+    def test_dls_run_reports_the_tilt_flag_of_the_example(self):
+        flags = self.with_dls['flags']
+        self.assertEqual(len(flags), 1)
+        self.assertIn('IMG_0010', flags[0])
+        self.assertIn('sun angle', flags[0])
+
+    def test_thresholds_of_the_configuration_are_used_and_then_restored(self):
+        limits_before = dict(rct.DLS_CHECKS)
+        result = wf.run(config_for(self.folder / 'loose', **{'CHECKS.max_sun_angle_discrepancy_deg': 30.0}), ROOT)
+        self.assertEqual(result['flags'], [])
+        self.assertEqual(rct.DLS_CHECKS, limits_before)
+
+    def test_two_panel_captures_are_compared(self):
+        result = wf.run(config_for(self.folder / 'two_panels', **{'INPUTS.reference_panel_capture_after': 'IMG_0005'}), ROOT)
+        comparison = result['panel']['comparison']
+        self.assertEqual(comparison['flags'], [])
+        self.assertTrue(all(entry['factor_ratio'] == 1.0 for entry in comparison['bands'].values()))
+
+    def test_progress_reports_the_stages_in_order(self):
+        events = []
+        wf.run(config_for(self.folder / 'progress'), ROOT, events.append)
+        stages = [event['stage'] for event in events]
+        self.assertEqual([stage for i, stage in enumerate(stages) if i == 0 or stage != stages[i - 1]], list(wf.STAGES))
+
+    def test_invalid_configuration_fails_without_processing(self):
+        result = wf.run(config_for(self.folder / 'invalid', **{'INPUTS.reference_panel_capture': 'IMG_9999'}), ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn("Capture 'IMG_9999' not found", result['errors'][0])
+        self.assertEqual(result['outputs'], [])
+
+    def test_a_capture_without_a_panel_fails_with_a_clear_message(self):
+        result = wf.run(config_for(self.folder / 'no_panel', **{'INPUTS.reference_panel_capture': 'IMG_0010',
+                                                                'INPUTS.image_captures': 'IMG_0005'}), ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('no QR code found', result['errors'][0])
+        self.assertIn("Panel of band", result['errors'][0])
+
+    def test_a_missing_band_file_fails_that_capture_only(self):
+        images = self.folder / 'incomplete_images'
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            if path.name != 'IMG_0010_3.tif':
+                shutil.copy(path, images / path.name)
+        result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'incomplete')}, ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn("missing: ['Red']", result['captures']['IMG_0010']['errors'][0])
+        self.assertEqual(result['outputs'], [])
+
+    def test_missing_irradiance_in_one_band_fails_the_dls_correction_of_the_capture(self):
+        original = wf._read_capture
+
+        def without_panchro_irradiance(images_folder, name, bands, exiftool_path):
+            objects = original(images_folder, name, bands, exiftool_path)
+            if name == 'IMG_0010':
+                objects['Panchro'].metadata['XMP:HorizontalIrradiance'] = None
+            return objects
+
+        with mock.patch.object(wf, '_read_capture', without_panchro_irradiance):
+            result = wf.run(config_for(self.folder / 'no_irradiance', **{'CORRECTION.use_dls': True}), ROOT)
+            panel_only = wf.run(config_for(self.folder / 'no_irr_panel'), ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('HorizontalIrradiance', result['captures']['IMG_0010']['errors'][0])
+        self.assertEqual(result['outputs'], [])      # nothing is saved for a capture that cannot be corrected
+        self.assertEqual(panel_only['status'], 'completed', panel_only['errors'])
+
+
+class CommandLineTests(unittest.TestCase):
+
+    def run_main(self, arguments):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = wf.main(arguments)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_default_configuration_can_be_written_and_loaded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'inputs.json'
+            code, _, _ = self.run_main(['--write-default-config', str(path)])
+            self.assertEqual(code, 0)
+            self.assertEqual(wf.load_config(path), wf.default_config())
+
+    def test_request_json_runs_and_prints_the_result_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            request = Path(folder) / 'request.json'
+            request.write_text(json.dumps({'version': 1, 'root': str(ROOT),
+                                           'config': config_for(Path(folder) / 'out')}), encoding='utf-8')
+            code, out, err = self.run_main(['--request-json', str(request)])
+            self.assertEqual(code, 0, err)
+            self.assertIn('Status: completed', out)
+            line = [line for line in out.splitlines() if line.startswith('RADIOMETRIC_RESULT_JSON=')][0]
+            self.assertTrue(Path(line.split('=', 1)[1]).is_file())
+
+    def test_wrong_request_version_and_missing_file_return_2(self):
+        with tempfile.TemporaryDirectory() as folder:
+            request = Path(folder) / 'request.json'
+            request.write_text(json.dumps({'version': 99}), encoding='utf-8')
+            self.assertEqual(self.run_main(['--request-json', str(request)])[0], 2)
+            self.assertEqual(self.run_main(['--config', str(Path(folder) / 'missing.json')])[0], 2)
+
+    def test_invalid_configuration_returns_1_and_prints_the_errors(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'inputs.json'
+            path.write_text(json.dumps({'PANEL.percent_inner_area': 5}), encoding='utf-8')
+            code, _, err = self.run_main(['--config', str(path), '--root', str(ROOT)])
+            self.assertEqual(code, 1)
+            self.assertIn('PANEL.percent_inner_area must be in (0, 1]', err)
+
+
+if __name__ == '__main__':
+    unittest.main()

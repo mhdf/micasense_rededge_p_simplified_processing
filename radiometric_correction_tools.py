@@ -31,6 +31,39 @@ from shapely.geometry.polygon import Polygon as PolyS
 from skimage import measure
 
 
+# Polygons drawn on the images (reference panel regions)
+def _segments_intersect(a, b, c, d):
+    """ True if the segments ab and cd cross (touching at a shared end point is not crossing) """
+    def orientation(p, q, r):
+        value = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return int(value > 0) - int(value < 0)
+    return orientation(a, b, c) * orientation(a, b, d) < 0 and orientation(c, d, a) * orientation(c, d, b) < 0
+
+
+def validate_polygon(points, image_size, name='polygon'):
+    """
+    Check a polygon [[x, y], ...] drawn on an image of size (width, height): at least 3 vertices, inside the image,
+    with area and without crossing edges. Raises ValueError with the reason
+    """
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2 or len(points) < 3:
+        raise ValueError(f"{name}: a region needs at least 3 vertices [x, y]")
+    if not np.all(np.isfinite(points)):
+        raise ValueError(f"{name}: the region has non-finite coordinates")
+    width, height = image_size
+    if (points < 0).any() or (points[:, 0] > width - 1).any() or (points[:, 1] > height - 1).any():
+        raise ValueError(f"{name}: the region is not inside the {width} x {height} image")
+    count = len(points)
+    for i in range(count):
+        for j in range(i + 1, count):
+            if j == i + 1 or (i == 0 and j == count - 1):
+                continue
+            if _segments_intersect(points[i], points[(i + 1) % count], points[j], points[(j + 1) % count]):
+                raise ValueError(f"{name}: the edges of the region cross each other")
+    if cv2.contourArea(points.astype(np.float32)) <= 0:
+        raise ValueError(f"{name}: the region has no area")
+
+
 # Define the camera matrix
 def cv2_camera_matrix(principal_point, focal_length, focal_plane_resolution_px_per_mm): 
     center_x = principal_point[0] * focal_plane_resolution_px_per_mm[0]
@@ -592,11 +625,29 @@ class Image(object):
         return reflectance
 
 
-    # Automaticaly detect the reference panel and return radiance to reflectance conversion factor
-    def detect_reference_panel(self, reflectance_level_reference_panel, percent_inner_area, sat_threshold=65000):
-        
+    # Undistorted raw image, kept because the panel region is measured on it
+    def undistorted_dn(self):
+        if getattr(self, '_undistorted_dn', None) is None:
+            self._undistorted_dn = self.undistorted()
+        return self._undistorted_dn
+
+
+    # Image to show when a panel region is drawn by hand: undistorted, stretched to 8 bits
+    def display_image(self, low_percentile=1, high_percentile=99.5):
+        image = self.undistorted_dn().astype(float)
+        valid = image[image > 0]
+        low, high = np.percentile(valid if valid.size else image, [low_percentile, high_percentile])
+        return np.clip((image - low) / max(high - low, 1) * 255, 0, 255).astype(np.uint8)
+
+
+    # Locate the reference panel from its QR code
+    def locate_reference_panel(self, percent_inner_area, sat_threshold=65000):
+        """
+        Outputs: (panel bounds, QR code data, geometry where the QR code was found) or None if there is no QR code
+                 The bounds are in the undistorted image when the geometry is 'undistorted', otherwise in the original
+        """
         # Undistorted image
-        image_undistorted = self.undistorted()
+        image_undistorted = self.undistorted_dn()
         # plt.imshow( image_undistorted ) 
 
         # Convert from uint16 to uint8
@@ -612,8 +663,7 @@ class Image(object):
             gray = (self.image // 256).astype(np.uint8)
             barcode = decode(gray, symbols=[ZBarSymbol.QRCODE])
             if( len(barcode) == 0 ):
-                raise ValueError(f"{self.image_path}: no QR code found for the reference panel "
-                                 f"(band {self.band_name}), in either the undistorted or the original image")
+                return None
             barcode = barcode[0]
             barcode_source = 'original'
         barcode_data = barcode.data.decode("utf-8")
@@ -687,10 +737,47 @@ class Image(object):
         # polygon = patches.Polygon(panel_bounds, closed=True, edgecolor='r', facecolor='none')
         # ax.add_patch(polygon)
 
+        return panel_bounds, barcode_data, barcode_source
+
+
+    # Statistics of a region drawn by hand, to give feedback while it is drawn
+    def panel_region_stats(self, panel_bounds, sat_threshold=65000):
+        """
+        Inputs: polygon [[x, y], ...] in the undistorted image
+        Outputs: dictionary with the number of pixels, the saturated pixels and the variation (std / mean, in %) of the
+                 raw values inside; None if the polygon has no pixels
+        """
+        panel_bounds = np.asarray(panel_bounds, dtype=np.int32)
+        mean, std, count, saturated = self.region_stats(panel_bounds, sat_threshold, image=self.undistorted_dn())
+        if count == 0 or mean == 0:
+            return None
+        return {'n_pixels': int(count), 'n_saturated': int(saturated), 'variation_percent': float(100 * std / mean)}
+
+
+    # Calibrate the panel from a region: radiance to reflectance factor
+    def calibrate_panel_region(self, panel_bounds, geometry, reflectance_level_reference_panel, sat_threshold=65000,
+                               audit_extra=None, validate=True):
+        """
+        Inputs: polygon [[x, y], ...], the geometry of the image where it is drawn ('undistorted' or 'original'), the
+                reflectance of the panel by band and the saturation threshold
+                validate: check the polygon (see validate_polygon); the regions found from the QR code are not checked
+                because a panel close to the border of the image may be partly outside it
+        Outputs: the radiance to reflectance factor (also in self.panel_audit, with audit_extra)
+        """
+        panel_bounds = np.asarray(panel_bounds, dtype=np.int32)
+        if geometry == 'undistorted':
+            panel_dn = self.undistorted_dn()
+        elif geometry == 'original':
+            panel_dn = self.image
+        else:
+            raise ValueError(f"unknown geometry {geometry!r}")
+        if validate:
+            validate_polygon(panel_bounds, panel_dn.shape[1::-1], self.image_path)
+
         ##
         # Calculate radiance for reference panel image
         image_panel_radiance = self.digital_numbers_to_radiance()
-        if barcode_source == 'undistorted':
+        if geometry == 'undistorted':
             image_panel_radiance = self.undistorted(image_panel_radiance)
         # plt.imshow( image_panel_radiance  )
 
@@ -722,10 +809,8 @@ class Image(object):
         # Keep what was used, so the calibration can be audited (self.panel_audit)
         self.panel_audit = { 'image_path': str(self.image_path),
                              'band_name': self.band_name,
-                             'barcode_data': barcode_data,
-                             'barcode_source': barcode_source,
+                             'geometry': geometry,
                              'panel_bounds': panel_bounds,
-                             'percent_inner_area': percent_inner_area,
                              'sat_threshold': sat_threshold,
                              'n_pixels': int(inside_panel.sum()),
                              'n_saturated': int(saturated.sum()),
@@ -735,6 +820,36 @@ class Image(object):
                              # irradiance that the panel receives, from its radiance: E = pi * L / reflectance
                              'panel_irradiance_estimate': float(np.pi * masked_values_average / panel_reflectance_level),
                              'radiance_to_reflectance_factor': float(radiance_to_reflectance_factor) }
+        self.panel_audit.update(audit_extra or {})
+        return radiance_to_reflectance_factor
 
-        return panel_bounds, radiance_to_reflectance_factor, barcode_data, barcode_source
+
+    # Detect the reference panel (or use a region drawn by hand) and return radiance to reflectance conversion factor
+    def detect_reference_panel(self, reflectance_level_reference_panel, percent_inner_area, sat_threshold=65000,
+                               manual_bounds=None):
+        """
+        Inputs: reflectance of the panel by band, the inner fraction of the panel to measure, the saturation threshold
+                and, optionally, a polygon [[x, y], ...] drawn by hand in the undistorted image (then no QR code is
+                needed and percent_inner_area is not used)
+        Outputs: panel bounds, radiance to reflectance factor, QR code data (None if manual) and where the region was
+                 found ('undistorted', 'original' or 'manual')
+        """
+        if manual_bounds is not None:
+            panel_bounds = np.asarray(manual_bounds, dtype=np.int32)
+            barcode_data, barcode_source, geometry = None, 'manual', 'undistorted'
+            region_source = 'manual'
+        else:
+            located = self.locate_reference_panel(percent_inner_area, sat_threshold)
+            if located is None:
+                raise ValueError(f"{self.image_path}: no QR code found for the reference panel "
+                                 f"(band {self.band_name}), in either the undistorted or the original image")
+            panel_bounds, barcode_data, barcode_source = located
+            geometry, region_source = barcode_source, 'automatic'
+        factor = self.calibrate_panel_region(panel_bounds, geometry, reflectance_level_reference_panel, sat_threshold,
+                                             audit_extra={'region_source': region_source,
+                                                          'barcode_data': barcode_data,
+                                                          'barcode_source': barcode_source,
+                                                          'percent_inner_area': percent_inner_area},
+                                             validate=manual_bounds is not None)
+        return panel_bounds, factor, barcode_data, barcode_source
 

@@ -9,6 +9,8 @@ The tests that read the example images need ExifTool; set the environment variab
 import os
 import unittest
 import warnings
+
+import numpy as np
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,6 +57,30 @@ class MapBandFilesTests(unittest.TestCase):
     def test_missing_band_name_names_the_file(self):
         with self.assertRaisesRegex(rct.MetadataError, "a_1.tif: missing metadata field 'XMP:BandName'"):
             rct.map_band_files(['a_1.tif'], [{}])
+
+
+class ValidatePolygonTests(unittest.TestCase):
+
+    SIZE = (100, 80)
+
+    def test_a_simple_polygon_is_accepted(self):
+        rct.validate_polygon([[10, 10], [60, 10], [60, 50], [10, 50]], self.SIZE)
+        rct.validate_polygon([[10, 10], [60, 10], [30, 50]], self.SIZE)
+
+    def test_reasons_for_rejection(self):
+        cases = [([[10, 10], [20, 20]], 'at least 3 vertices'),
+                 ([[10, 10], [20, 20], [30, 30]], 'no area'),
+                 ([[10, 10], [60, 10], [60, 90]], 'not inside'),
+                 ([[-1, 10], [60, 10], [60, 50]], 'not inside'),
+                 ([[10, 10], [60, 50], [60, 10], [10, 50]], 'cross'),
+                 ([[10, 10], [float('nan'), 10], [60, 50]], 'non-finite')]
+        for points, message in cases:
+            with self.assertRaisesRegex(ValueError, message):
+                rct.validate_polygon(points, self.SIZE, 'region')
+
+    def test_the_name_is_in_the_message(self):
+        with self.assertRaisesRegex(ValueError, 'IMG_0005_1.tif: a region needs'):
+            rct.validate_polygon([[1, 1]], self.SIZE, 'IMG_0005_1.tif')
 
 
 class IrradianceChangesTests(unittest.TestCase):
@@ -402,6 +428,60 @@ class ExampleImageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             saved = json.loads(rct.write_provenance(Path(folder) / 'p.json', [record]).read_text(encoding='utf-8'))
         self.assertEqual(saved['method'], 'panel_only')
+
+    # --- Reference panel region drawn by hand -----------------------------------------------------------------
+
+    def panel_image(self, band='Blue'):
+        panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, self.exiftool_path)
+        return rct.Image(*panel_files[band])
+
+    def test_a_manual_region_equal_to_the_automatic_one_gives_the_same_factor(self):
+        automatic = self.panel_image()
+        bounds, factor, barcode_data, source = automatic.detect_reference_panel(REFLECTANCE_LEVELS, 0.7)
+        self.assertEqual(automatic.panel_audit['region_source'], 'automatic')
+        manual = self.panel_image()
+        m_bounds, m_factor, m_data, m_source = manual.detect_reference_panel(REFLECTANCE_LEVELS, 0.7, manual_bounds=bounds.tolist())
+        self.assertEqual(m_factor, factor)
+        self.assertEqual((m_data, m_source), (None, 'manual'))
+        self.assertEqual(manual.panel_audit['region_source'], 'manual')
+        self.assertEqual(manual.panel_audit['geometry'], 'undistorted')
+        self.assertEqual(manual.panel_audit['n_pixels'], automatic.panel_audit['n_pixels'])
+
+    def test_a_manual_region_needs_no_qr_code(self):
+        _, target = self.capture_dicts()
+        image = rct.Image(target['Blue'].image_path, target['Blue'].metadata)
+        self.assertIsNone(image.locate_reference_panel(0.7))
+        _, factor, _, source = image.detect_reference_panel(REFLECTANCE_LEVELS, 0.7,
+                                                              manual_bounds=[[600, 300], [700, 300], [700, 400], [600, 400]])
+        self.assertEqual(source, 'manual')
+        self.assertGreater(factor, 0)
+
+    def test_an_invalid_manual_region_is_rejected(self):
+        for bounds, message in (([[10, 10], [20, 20]], 'at least 3 vertices'),
+                                ([[10, 10], [5000, 10], [5000, 50]], 'not inside'),
+                                ([[10, 10], [60, 50], [60, 10], [10, 50]], 'cross')):
+            with self.assertRaisesRegex(ValueError, message):
+                self.panel_image().detect_reference_panel(REFLECTANCE_LEVELS, 0.7, manual_bounds=bounds)
+
+    def test_locate_reference_panel_returns_the_region_without_calibrating(self):
+        image = self.panel_image()
+        bounds, barcode_data, geometry = image.locate_reference_panel(0.7)
+        self.assertEqual(geometry, 'undistorted')
+        self.assertEqual(bounds.shape, (4, 2))
+        self.assertFalse(hasattr(image, 'panel_audit'))
+
+    def test_region_statistics_and_display_image(self):
+        image = self.panel_image()
+        bounds, _, _ = image.locate_reference_panel(0.7)
+        stats = image.panel_region_stats(bounds)
+        self.assertEqual(stats['n_saturated'], 0)
+        self.assertLess(stats['variation_percent'], 5)
+        outside = image.panel_region_stats([[0, 0], [3, 0], [3, 3]])   # corner of the undistorted image: black border
+        self.assertTrue(outside is None or outside['variation_percent'] >= 0)
+        shown = image.display_image()
+        self.assertEqual(shown.dtype, np.uint8)
+        self.assertEqual(shown.shape, image.image.shape)
+        self.assertGreater(shown.max(), 200)
 
     def test_missing_capture_is_reported(self):
         with self.assertRaises(FileNotFoundError):

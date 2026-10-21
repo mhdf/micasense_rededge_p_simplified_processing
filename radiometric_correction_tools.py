@@ -13,6 +13,7 @@ The Micasense imagerocessing Library is licensed under the MIT License
 
 # Standard Library Imports
 import os
+from pathlib import Path
 
 # Third-Party Imports
 import cv2
@@ -42,6 +43,85 @@ def cv2_camera_matrix(principal_point, focal_length, focal_plane_resolution_px_p
     return cam_mat
 
 
+# Metadata validation helpers - report the file and the field when metadata are missing or invalid
+class MetadataError(ValueError):
+    """ Raised when image metadata are missing or invalid, naming the file and the field """
+
+
+def _metadata_value(metadata, key, image_path):
+    if key not in metadata or metadata[key] is None:
+        raise MetadataError(f"{image_path}: missing metadata field '{key}'")
+    return metadata[key]
+
+
+def _metadata_floats(metadata, key, image_path, count=None):
+    """ Return a field as a list of finite floats, accepting a list or a string separated by commas/spaces """
+    value = _metadata_value(metadata, key, image_path)
+    if isinstance(value, str):
+        value = value.replace(',', ' ').split()
+    elif np.isscalar(value):
+        value = [value]
+    try:
+        numbers = [float(val) for val in value]
+    except (TypeError, ValueError):
+        raise MetadataError(f"{image_path}: metadata field '{key}' is not numeric: {metadata[key]!r}")
+    if len(numbers) == 0 or not np.all(np.isfinite(numbers)):
+        raise MetadataError(f"{image_path}: metadata field '{key}' has no finite values: {metadata[key]!r}")
+    if count is not None and len(numbers) != count:
+        raise MetadataError(f"{image_path}: metadata field '{key}' has {len(numbers)} values, expected {count}")
+    return numbers
+
+
+def _metadata_positive(metadata, key, image_path):
+    """ Return a field (unchanged) after checking that it is a single positive finite number """
+    value = _metadata_value(metadata, key, image_path)
+    number = _metadata_floats(metadata, key, image_path, count=1)[0]
+    if number <= 0:
+        raise MetadataError(f"{image_path}: metadata field '{key}' must be positive, got {value!r}")
+    return value
+
+
+# Map the files of one capture to their bands using the band name in the metadata (not the file order)
+def map_band_files(image_paths, metadata_list, expected_bands=None):
+    """
+    Inputs: image paths of one capture, their metadata (same order) and, optionally, the expected band names
+    Outputs: dictionary {band name: (image path, metadata)}, with exactly one file per band
+    """
+    if len(image_paths) != len(metadata_list):
+        raise ValueError("image_paths and metadata_list must have the same length")
+    band_files = {}
+    for image_path, metadata in zip(image_paths, metadata_list):
+        band_name = _metadata_value(metadata, 'XMP:BandName', image_path)
+        if band_name in band_files:
+            raise MetadataError(f"Band '{band_name}' appears twice: {band_files[band_name][0]} and {image_path}")
+        band_files[band_name] = (image_path, metadata)
+    capture_ids = { metadata.get('XMP:CaptureId') for _, metadata in band_files.values() }
+    if len(capture_ids) > 1:
+        raise MetadataError(f"Files belong to different captures (XMP:CaptureId): {sorted(map(str, capture_ids))}")
+    if expected_bands is not None:
+        missing = [band for band in expected_bands if band not in band_files]
+        unexpected = [band for band in band_files if band not in expected_bands]
+        if missing or unexpected:
+            raise MetadataError(f"Band mismatch - missing: {missing}, unexpected: {unexpected}")
+    return band_files
+
+
+def find_capture_paths(images_folder, capture_name):
+    """ Return the sorted image paths of a capture, e.g. 'IMG_0005' -> IMG_0005_1.tif, IMG_0005_2.tif, ... """
+    paths = sorted(str(path) for path in Path(images_folder).glob(capture_name + '_*.tif'))
+    if not paths:
+        raise FileNotFoundError(f"No images named '{capture_name}_*.tif' in {images_folder}")
+    return paths
+
+
+def read_band_files(image_paths, expected_bands=None, exiftool_path=None):
+    """ Read the metadata with ExifTool and map the files of one capture to their bands (see map_band_files) """
+    import exiftool
+    with exiftool.ExifToolHelper(executable=exiftool_path) as et:
+        metadata_list = [ et.get_metadata(image_path, params=['-b', '-F'])[0] for image_path in image_paths ]
+    return map_band_files(image_paths, metadata_list, expected_bands)
+
+
 #
 class Image(object):
 
@@ -55,31 +135,37 @@ class Image(object):
         self.image_path = image_path
         self.metadata = image_metadata
         self.image = plt.imread( image_path )
-        self.size = self.metadata['EXIF:ImageWidth'], self.metadata[ 'EXIF:ImageHeight' ]
-        self.bits_per_pixel = self.metadata[ 'EXIF:BitsPerSample' ]
-        self.band_name = self.metadata[ 'XMP:BandName' ]
+        self.size = _metadata_positive(self.metadata, 'EXIF:ImageWidth', image_path), \
+                    _metadata_positive(self.metadata, 'EXIF:ImageHeight', image_path)
+        self.bits_per_pixel = _metadata_positive(self.metadata, 'EXIF:BitsPerSample', image_path)
+        self.band_name = _metadata_value(self.metadata, 'XMP:BandName', image_path)
 
         # Parameters for camera matrix calculation
-        self.principal_point = [ float(val) for val in self.metadata[ 'XMP:PrincipalPoint' ].split(',') ]
-        self.focal_plane_resolution_px_per_mm = [ self.metadata[ 'EXIF:FocalPlaneXResolution' ] ]*2
-        self.focal_length = self.metadata[ 'EXIF:FocalLength' ]
-        self.distortion_parameters = np.array([ float(val) for val in \
-                                                self.metadata[ 'XMP:PerspectiveDistortion' ] ])[[0, 1, 3, 4, 2]]
+        self.principal_point = _metadata_floats(self.metadata, 'XMP:PrincipalPoint', image_path, count=2)
+        self.focal_plane_resolution_px_per_mm = [ _metadata_positive(self.metadata, 'EXIF:FocalPlaneXResolution', image_path) ]*2
+        self.focal_length = _metadata_positive(self.metadata, 'EXIF:FocalLength', image_path)
+        self.distortion_parameters = np.array(
+            _metadata_floats(self.metadata, 'XMP:PerspectiveDistortion', image_path, count=5) )[[0, 1, 3, 4, 2]]
         self.camera_matrix = cv2_camera_matrix(self.principal_point, self.focal_length , self.focal_plane_resolution_px_per_mm)
-        
+
         # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by Micasense (vignette_map)
-        self.k = list( map(float, self.metadata[ 'XMP:VignettingPolynomial2D' ].split(',')) ) # pol2DCoeff      
-        self.e = list( map(float, self.metadata[ 'XMP:VignettingPolynomial2DName' ].split(',')) ) # pol2DExponents
+        self.k = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2D', image_path) # pol2DCoeff
+        self.e = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2DName', image_path) # pol2DExponents
+        if len(self.e) != 2 * len(self.k):
+            raise MetadataError(f"{image_path}: 'XMP:VignettingPolynomial2DName' needs {2 * len(self.k)} exponents, "
+                                f"found {len(self.e)}")
 
         # Parameters for radiometric calibration - radiometric sensitivity
-        self.a1, self.a2, self.a3 = [ float(val) for val in self.metadata[ 'XMP:RadiometricCalibration' ] ]
+        self.a1, self.a2, self.a3 = _metadata_floats(self.metadata, 'XMP:RadiometricCalibration', image_path, count=3)
+        if self.a1 <= 0:
+            raise MetadataError(f"{image_path}: first 'XMP:RadiometricCalibration' coefficient must be positive")
 
         # Dark current pixel values
-        self.black_levels = np.array( [float(val) for val in self.metadata[ 'EXIF:BlackLevel' ].split(' ')] )
+        self.black_levels = np.array( _metadata_floats(self.metadata, 'EXIF:BlackLevel', image_path) )
 
         # Exposure time & gain (gain = ISO/100)
-        self.exposure_time = float( self.metadata[ 'EXIF:ExposureTime' ])
-        self.gain          = float( self.metadata[ 'EXIF:ISOSpeed' ] ) / 100.0
+        self.exposure_time = float( _metadata_positive(self.metadata, 'EXIF:ExposureTime', image_path) )
+        self.gain          = float( _metadata_positive(self.metadata, 'EXIF:ISOSpeed', image_path) ) / 100.0
 
 
     # Undistort the image

@@ -8,7 +8,9 @@ The tests that read the example images need ExifTool; set the environment variab
 
 import os
 import unittest
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import radiometric_correction_tools as rct
 
@@ -53,6 +55,73 @@ class MapBandFilesTests(unittest.TestCase):
     def test_missing_band_name_names_the_file(self):
         with self.assertRaisesRegex(rct.MetadataError, "a_1.tif: missing metadata field 'XMP:BandName'"):
             rct.map_band_files(['a_1.tif'], [{}])
+
+
+class IrradianceChangesTests(unittest.TestCase):
+
+    def test_stable_irradiance_has_no_events(self):
+        self.assertEqual(rct.classify_irradiance_changes([100, 101, 99, 100, 102]), [])
+
+    def test_single_capture_jump_is_a_spike(self):
+        events = rct.classify_irradiance_changes([100, 101, 140, 100, 99])
+        self.assertEqual([(e['index'], e['kind']) for e in events], [(2, 'spike')])
+        self.assertAlmostEqual(events[0]['change'], 140 / 101 - 1)
+
+    def test_persistent_change_is_a_step(self):
+        events = rct.classify_irradiance_changes([100, 101, 60, 59, 58])
+        self.assertEqual([(e['index'], e['kind']) for e in events], [(2, 'step')])
+
+    def test_spike_and_step_together_and_custom_threshold(self):
+        events = rct.classify_irradiance_changes([100, 101, 100, 140, 100, 99, 60, 59, 58])
+        self.assertEqual([(e['index'], e['kind']) for e in events], [(3, 'spike'), (6, 'step')])
+        self.assertEqual(rct.classify_irradiance_changes([100, 105, 100], threshold=0.03)[0]['kind'], 'spike')
+
+    def test_change_at_the_last_capture_is_a_step(self):
+        self.assertEqual([e['kind'] for e in rct.classify_irradiance_changes([100, 100, 50])], ['step'])
+
+    def test_invalid_irradiance_is_rejected(self):
+        for bad in ([100, 0, 100], [100, -1], [100, float('nan')]):
+            with self.assertRaises(ValueError):
+                rct.classify_irradiance_changes(bad)
+
+
+class ComparePanelCapturesTests(unittest.TestCase):
+
+    @staticmethod
+    def fake_panel(factor, irradiance, estimate):
+        return SimpleNamespace(panel_audit={'radiance_to_reflectance_factor': factor, 'panel_irradiance_estimate': estimate},
+                               dls_irradiance=lambda: irradiance)
+
+    def test_identical_captures_have_no_flags(self):
+        before = {'Blue': self.fake_panel(2.0, 100.0, 1.0)}
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            result = rct.compare_panel_captures(before, before)
+        self.assertEqual(result['flags'], [])
+        self.assertEqual(result['bands']['Blue']['factor_ratio'], 1.0)
+
+    def test_drift_of_the_factor_is_flagged(self):
+        before = {'Blue': self.fake_panel(2.0, 100.0, 1.0)}
+        after = {'Blue': self.fake_panel(2.2, 90.0, 1 / 1.1)}   # 10 % less light: the factor rises, the camera estimate and the DLS fall
+        with self.assertWarns(RuntimeWarning):
+            result = rct.compare_panel_captures(before, after)
+        self.assertEqual(len(result['flags']), 1)
+        self.assertIn('factor changed 10.0 %', result['flags'][0])
+        self.assertAlmostEqual(result['bands']['Blue']['dls_over_panel_estimate_ratio'], 0.9 * 1.1)
+
+    def test_dls_not_following_the_camera_is_flagged(self):
+        before = {'Blue': self.fake_panel(2.0, 100.0, 1.0)}
+        after = {'Blue': self.fake_panel(2.0, 130.0, 1.0)}  # camera saw the same light, the DLS did not
+        with self.assertWarns(RuntimeWarning):
+            result = rct.compare_panel_captures(before, after)
+        self.assertEqual(len(result['flags']), 1)
+        self.assertIn('DLS irradiance / panel irradiance estimate changed 30.0 %', result['flags'][0])
+
+    def test_missing_band_is_flagged(self):
+        before = {'Blue': self.fake_panel(2.0, 100.0, 1.0)}
+        with self.assertWarns(RuntimeWarning):
+            result = rct.compare_panel_captures(before, {})
+        self.assertIn("'Blue' is missing", result['flags'][0])
 
 
 class ExampleImageTests(unittest.TestCase):
@@ -161,7 +230,9 @@ class ExampleImageTests(unittest.TestCase):
         panel, target, factor = self.panel_and_target('Blue')
         _, doubled, _ = self.panel_and_target('Blue', **{'XMP:HorizontalIrradiance': 2 * target.horizontal_irradiance})
         stable = target.digital_numbers_to_reflectance(factor, panel_image=panel)
-        brighter = doubled.digital_numbers_to_reflectance(factor, panel_image=panel)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)   # ratio 0.44 is outside the plausible range
+            brighter = doubled.digital_numbers_to_reflectance(factor, panel_image=panel)
         self.assertTrue(abs(brighter - stable / 2).max() < 1e-12)
 
     def test_common_irradiance_scale_cancels_in_the_ratio(self):
@@ -197,10 +268,110 @@ class ExampleImageTests(unittest.TestCase):
         with self.assertRaisesRegex(rct.MetadataError, 'needs the same band'):
             rct.dls_irradiance_ratio(panel, green)
 
-    def test_panchro_is_not_dls_corrected(self):
-        panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, self.exiftool_path)
-        with self.assertRaisesRegex(ValueError, "not defined for the 'Panchro' band"):
-            rct.dls_irradiance_ratio(rct.Image(*panel_files['Panchro']), rct.Image(*self.band_files['Panchro']))
+    # --- Panchro, checks of the DLS data ----------------------------------------------------------------------
+
+    @classmethod
+    def capture_dicts(cls):
+        """ Images of both captures for all the bands, with the panel detected (done once) """
+        if not hasattr(cls, '_P'):
+            panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, cls.exiftool_path)
+            cls._P = {band: rct.Image(*panel_files[band]) for band in BANDS}
+            for panel in cls._P.values():
+                panel.detect_reference_panel(REFLECTANCE_LEVELS, 0.7)
+            cls._T = {band: rct.Image(*cls.band_files[band]) for band in BANDS}
+        return cls._P, cls._T
+
+    @staticmethod
+    def changed(image, **changes):
+        return rct.Image(image.image_path, dict(image.metadata, **changes))
+
+    def test_panchro_uses_its_own_irradiance_like_the_other_bands(self):
+        panel, target = self.capture_dicts()
+        expected = 99.211212701455025 / 112.20932502581493
+        self.assertAlmostEqual(rct.dls_irradiance_ratio(panel['Panchro'], target['Panchro']), expected)
+        target['Panchro'].digital_numbers_to_reflectance(
+            panel['Panchro'].panel_audit['radiance_to_reflectance_factor'], panel_image=panel['Panchro'])
+        self.assertAlmostEqual(target['Panchro'].dls_ratio, expected)
+        self.assertEqual(target['Panchro'].dls_ratio_source, 'metadata')
+
+    def test_capture_ratios_use_the_metadata_of_every_band(self):
+        panel, target = self.capture_dicts()
+        ratios = rct.capture_dls_ratios(panel, target)
+        self.assertEqual(set(ratios), set(BANDS))
+        self.assertTrue(all(source == 'metadata' for _, source in ratios.values()))
+
+    def test_missing_panchro_irradiance_is_estimated_from_the_other_bands_only_if_allowed(self):
+        import numpy as np
+        panel, target = self.capture_dicts()
+        broken = dict(target, Panchro=self.changed(target['Panchro'], **{'XMP:HorizontalIrradiance': None}))
+        ratios = rct.capture_dls_ratios(panel, broken)
+        others = [ratio for band, (ratio, _) in ratios.items() if band != 'Panchro']
+        self.assertEqual(ratios['Panchro'][1], 'estimated_from_other_bands')
+        self.assertAlmostEqual(ratios['Panchro'][0], float(np.median(others)))
+        with self.assertRaises(rct.MetadataError):
+            rct.capture_dls_ratios(panel, broken, panchro_fallback=False)
+
+    def test_other_missing_irradiance_is_never_estimated(self):
+        panel, target = self.capture_dicts()
+        broken = dict(target, Blue=self.changed(target['Blue'], **{'XMP:HorizontalIrradiance': None}))
+        with self.assertRaises(rct.MetadataError):
+            rct.capture_dls_ratios(panel, broken)
+
+    def test_ratio_outside_the_plausible_range_gives_a_warning(self):
+        panel, target = self.capture_dicts()
+        bright = self.changed(target['Blue'], **{'XMP:HorizontalIrradiance': 10 * target['Blue'].horizontal_irradiance})
+        with self.assertWarnsRegex(RuntimeWarning, 'outside the plausible range'):
+            rct.dls_irradiance_ratio(panel['Blue'], bright)
+
+    def test_example_capture_bands_agree_and_the_image_dls_is_flagged_for_its_sun_angle(self):
+        panel, target = self.capture_dicts()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            checks = rct.check_dls_capture(panel, target)
+        self.assertEqual(checks['unavailable'], [])
+        self.assertTrue(all(abs(dep) < 0.01 for dep in checks['band_ratio_departures'].values()))
+        self.assertLess(checks['sun_angle_discrepancy_deg']['panel'], 1)
+        self.assertGreater(checks['sun_angle_discrepancy_deg']['image'], 10)
+        self.assertEqual(len(checks['flags']), 1)
+        self.assertIn('sun angle', checks['flags'][0])
+        self.assertEqual(len(caught), 1)
+        # the irradiance estimated from the panel is reported, not judged
+        self.assertEqual(set(checks['dls_over_panel_estimate']), set(BANDS))
+
+    def test_a_band_that_departs_from_the_others_is_flagged(self):
+        panel, target = self.capture_dicts()
+        odd = self.changed(target['Green'], **{'XMP:HorizontalIrradiance': 1.1 * target['Green'].horizontal_irradiance})
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter('always')
+            checks = rct.check_dls_capture(panel, dict(target, Green=odd))
+        self.assertTrue(any("Band 'Green'" in flag and 'median' in flag for flag in checks['flags']))
+
+    def test_estimated_ratio_is_flagged(self):
+        panel, target = self.capture_dicts()
+        broken = dict(target, Panchro=self.changed(target['Panchro'], **{'XMP:HorizontalIrradiance': None}))
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter('always')
+            checks = rct.check_dls_capture(panel, broken, rct.capture_dls_ratios(panel, broken))
+        self.assertTrue(any("'Panchro' DLS ratio was estimated from other bands" in flag for flag in checks['flags']))
+
+    def test_sun_angle_discrepancy_is_none_without_the_fields(self):
+        _, target = self.capture_dicts()
+        metadata = {key: val for key, val in target['Blue'].metadata.items() if key != 'XMP:SolarElevation'}
+        self.assertIsNone(rct.Image(target['Blue'].image_path, metadata).dls_sun_angle_discrepancy_deg())
+
+    def test_checks_are_recorded_in_the_provenance(self):
+        import json, tempfile
+        panel, target = self.capture_dicts()
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter('always')
+            checks = rct.check_dls_capture(panel, target)
+        record = rct.band_record('out/x.tif', panel['Blue'], target['Blue'], target['Blue'].digital_numbers_to_radiance())
+        self.assertIn('sun_angle_discrepancy_deg', record['dls'])
+        self.assertEqual(set(record['dls']['attitude_as_written']), {'Roll', 'Pitch', 'Yaw'})
+        with tempfile.TemporaryDirectory() as folder:
+            saved = json.loads(rct.write_provenance(Path(folder) / 'p.json', [record], checks=checks).read_text(encoding='utf-8'))
+        self.assertEqual(saved['checks']['flags'], checks['flags'])
+        self.assertEqual(saved['dls_checks_limits']['ratio_range'], [0.5, 2.0])
 
     # --- Provenance record ------------------------------------------------------------------------------------
 

@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import platform
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -115,17 +116,195 @@ def dls_irradiance_ratio(panel_image, image):
     """
     Inputs: panel and target rct.Image objects of the SAME band
     Outputs: E_panel / E_image, to be multiplied by the panel-calibrated reflectance. It is 1 for the panel capture
-    The panchromatic band is not corrected: no DLS channel is assumed to match it
+    The Panchro band is treated like the others, using the irradiance written in its own file (see capture_dls_ratios
+    for what to do when it is missing). A ratio outside DLS_CHECKS['ratio_range'] gives a warning
     """
     if panel_image.band_name != image.band_name:
         raise MetadataError(f"DLS correction needs the same band: panel is '{panel_image.band_name}' "
                             f"({panel_image.image_path}), image is '{image.band_name}' ({image.image_path})")
-    if image.band_name == 'Panchro':
-        raise ValueError("DLS correction is not defined for the 'Panchro' band; use the panel-only conversion for it")
     if (panel_image.irradiance_scale_to_si is None) != (image.irradiance_scale_to_si is None):
         raise MetadataError(f"'XMP:IrradianceScaleToSIUnits' exists in only one of {panel_image.image_path} "
                             f"and {image.image_path}")
-    return panel_image.dls_irradiance() / image.dls_irradiance()
+    ratio = panel_image.dls_irradiance() / image.dls_irradiance()
+    low, high = DLS_CHECKS['ratio_range']
+    if not low <= ratio <= high:
+        warnings.warn(f"{image.image_path}: DLS ratio {ratio:.3f} is outside the plausible range {low}-{high}",
+                      RuntimeWarning)
+    return ratio
+
+
+def capture_dls_ratios(panel_images, images, panchro_fallback=True):
+    """
+    DLS ratios (E_panel / E_image) of all the bands of a capture
+    Inputs: dictionaries {band name: rct.Image} for the panel capture and for the image capture
+    Outputs: dictionary {band name: (ratio, source)}, source being 'metadata' or, for the Panchro band only and when
+             panchro_fallback is True and its own irradiance is missing or invalid, 'estimated_from_other_bands'
+             (the median ratio of the other bands). Any other missing or invalid value raises MetadataError
+    """
+    ratios = {}
+    for band, image in images.items():
+        try:
+            ratios[band] = (dls_irradiance_ratio(panel_images[band], image), 'metadata')
+        except MetadataError:
+            if not (panchro_fallback and band == 'Panchro'):
+                raise
+    if 'Panchro' in images and 'Panchro' not in ratios:
+        others = [ratio for ratio, _ in ratios.values()]
+        if not others:
+            raise MetadataError("No DLS ratio of any band to estimate the 'Panchro' band from")
+        ratios['Panchro'] = (float(np.median(others)), 'estimated_from_other_bands')
+    return ratios
+
+
+# Checks of the DLS data - thresholds (adjust them if needed). They are guesses, not validated limits
+DLS_CHECKS = { 'ratio_range': (0.5, 2.0),            # plausible E_panel / E_image
+                'band_ratio_tolerance': 0.03,         # largest relative departure of a band from the median ratio
+                'max_sun_angle_discrepancy_deg': 10.0,  # see Image.dls_sun_angle_discrepancy_deg
+                'jump_threshold': 0.10,               # relative change between consecutive captures
+                'panel_drift_tolerance': 0.05 }       # relative change of the panel factor (and of E_DLS / E_panel_estimate)
+                                                      # between two panel captures
+
+
+def check_dls_capture(panel_images, images, ratios=None):
+    """
+    Check the DLS data of one capture against the panel (see DLS_CHECKS for the limits)
+    Inputs: dictionaries {band name: rct.Image} for the panel capture (after detect_reference_panel) and the image
+            capture, and optionally the output of capture_dls_ratios
+    Outputs: dictionary with the values checked and 'flags', a list of messages (also issued as RuntimeWarning).
+             Data that are not available are reported in 'unavailable' instead of raising errors
+    """
+    flags, unavailable = [], []
+    if ratios is None:
+        ratios = {}
+        for band, image in images.items():
+            try:
+                ratios[band] = (dls_irradiance_ratio(panel_images[band], image), 'metadata')
+            except MetadataError as error:
+                unavailable.append(str(error))
+    values = { band: ratio for band, (ratio, _) in ratios.items() }
+    result = { 'band_ratios': values, 'ratio_sources': { band: source for band, (_, source) in ratios.items() } }
+
+    # 1. Same illumination change in all bands
+    if values:
+        median = float(np.median(list(values.values())))
+        departures = { band: value / median - 1 for band, value in values.items() }
+        result['median_ratio'] = median
+        result['band_ratio_departures'] = departures
+        for band, departure in departures.items():
+            if abs(departure) > DLS_CHECKS['band_ratio_tolerance']:
+                flags.append(f"Band '{band}' DLS ratio departs {100 * departure:.1f} % from the median of the bands")
+
+    # 2. Irradiance of the DLS compared with the irradiance estimated from the panel. It differs between bands
+    #    (14 % in the example, a calibration difference between camera and DLS), so it is only reported here; compare it
+    #    between two panel captures with compare_panel_captures()
+    estimates = {}
+    for band, panel in panel_images.items():
+        audit = getattr(panel, 'panel_audit', None)
+        try:
+            if audit is not None:
+                estimates[band] = panel.dls_irradiance() / audit['panel_irradiance_estimate']
+        except MetadataError as error:
+            unavailable.append(str(error))
+    if len(estimates) > 1:
+        cv = float(np.std(list(estimates.values())) / np.mean(list(estimates.values())))
+        result['dls_over_panel_estimate'] = estimates
+        result['dls_over_panel_estimate_variation_across_bands'] = cv
+
+    # 3. DLS pointing: sun angle seen by the DLS against the solar zenith
+    result['sun_angle_discrepancy_deg'] = {}
+    for name, group in (('panel', panel_images), ('image', images)):
+        angles = [ image.dls_sun_angle_discrepancy_deg() for image in group.values() ]
+        angles = [ angle for angle in angles if angle is not None ]
+        if not angles:
+            unavailable.append(f"sun angle discrepancy of the {name} capture (solar elevation or light vector missing)")
+            continue
+        result['sun_angle_discrepancy_deg'][name] = float(np.median(angles))
+        if np.median(angles) > DLS_CHECKS['max_sun_angle_discrepancy_deg']:
+            flags.append(f"DLS of the {name} capture: sun angle differs {np.median(angles):.1f} deg from the solar zenith "
+                         f"(DLS tilted at least that much, or the angles are inconsistent)")
+
+    # 5. Plausible range (also warned by dls_irradiance_ratio)
+    low, high = DLS_CHECKS['ratio_range']
+    for band, value in values.items():
+        if not low <= value <= high:
+            flags.append(f"Band '{band}' DLS ratio {value:.3f} is outside the plausible range {low}-{high}")
+
+    for band, source in result['ratio_sources'].items():
+        if source != 'metadata':
+            flags.append(f"Band '{band}' DLS ratio was {source.replace('_', ' ')}")
+    result['flags'], result['unavailable'] = flags, unavailable
+    for flag in flags:
+        warnings.warn(flag, RuntimeWarning)
+    return result
+
+
+# 4. Changes of the irradiance along a flight
+def classify_irradiance_changes(irradiances, threshold=None):
+    """
+    Find the changes between consecutive captures of the irradiance of one band, in acquisition order
+    Inputs: positive irradiances; threshold is the relative change to report (default DLS_CHECKS['jump_threshold'])
+    Outputs: list of dictionaries {'index', 'kind', 'change'}: 'spike' is a value that jumps and comes back to the level
+             of its neighbours (a single capture, e.g. a shaded or tilted DLS); 'step' is a change that persists
+             (e.g. the sun going behind a cloud). 'index' is the first capture after the change; 'change' is the
+             relative change from the previous capture
+    """
+    if threshold is None:
+        threshold = DLS_CHECKS['jump_threshold']
+    values = [float(value) for value in irradiances]
+    if any(not np.isfinite(value) or value <= 0 for value in values):
+        raise ValueError("irradiances must be positive and finite")
+    events, skip = [], set()
+    for i in range(1, len(values)):
+        if i in skip:
+            continue
+        change = values[i] / values[i - 1] - 1
+        if abs(change) <= threshold:
+            continue
+        if i + 1 < len(values):
+            back = values[i + 1] / values[i] - 1
+            if abs(back) > threshold and back * change < 0 and abs(values[i + 1] / values[i - 1] - 1) <= threshold:
+                events.append({'index': i, 'kind': 'spike', 'change': change})
+                skip.add(i + 1)
+                continue
+        events.append({'index': i, 'kind': 'step', 'change': change})
+    return events
+
+
+# 6. Panel captured before and after the flight
+def compare_panel_captures(before, after, tolerance=None):
+    """
+    Compare two panel captures (e.g. before and after the flight)
+    Inputs: dictionaries {band name: rct.Image} after detect_reference_panel for each capture
+    Outputs: dictionary {'bands': {band: {'factor_ratio', 'irradiance_ratio' and 'dls_over_panel_estimate_ratio' (if
+             the DLS is available)}}, 'flags'}. A factor ratio far from 1 shows a change of the light or a problem with
+             the panel (shadow, dirt, handling); the DLS ratio of ratios far from 1 shows that the DLS did not follow
+             the light seen by the camera
+    """
+    if tolerance is None:
+        tolerance = DLS_CHECKS['panel_drift_tolerance']
+    result, flags = {}, []
+    for band in before:
+        if band not in after:
+            flags.append(f"Band '{band}' is missing in the second panel capture")
+            continue
+        entry = { 'factor_ratio': after[band].panel_audit['radiance_to_reflectance_factor'] /
+                                  before[band].panel_audit['radiance_to_reflectance_factor'] }
+        try:
+            entry['irradiance_ratio'] = after[band].dls_irradiance() / before[band].dls_irradiance()
+            # DLS and camera should change together: this ratio of ratios is 1 if the DLS followed the light
+            estimate_ratio = after[band].panel_audit['panel_irradiance_estimate'] /                              before[band].panel_audit['panel_irradiance_estimate']
+            entry['dls_over_panel_estimate_ratio'] = entry['irradiance_ratio'] / estimate_ratio
+        except MetadataError:
+            pass
+        result[band] = entry
+        if abs(entry['factor_ratio'] - 1) > tolerance:
+            flags.append(f"Band '{band}': panel factor changed {100 * (entry['factor_ratio'] - 1):.1f} % between captures")
+        if abs(entry.get('dls_over_panel_estimate_ratio', 1) - 1) > tolerance:
+            flags.append(f"Band '{band}': DLS irradiance / panel irradiance estimate changed "
+                         f"{100 * (entry['dls_over_panel_estimate_ratio'] - 1):.1f} % between captures")
+    for flag in flags:
+        warnings.warn(flag, RuntimeWarning)
+    return { 'bands': result, 'flags': flags }
 
 
 # Provenance record - what was used to produce the outputs, saved next to them
@@ -160,13 +339,17 @@ def band_record(output_path, panel_image, image, reflectance):
                        'panel': getattr(panel_image, 'panel_audit', None),
                        'dls': { 'used': image.dls_ratio is not None,
                                 'ratio_panel_over_image': image.dls_ratio,
+                                'ratio_source': image.dls_ratio_source,
+                                'attitude_as_written': { key: image.metadata.get('XMP:' + key)
+                                                                    for key in ('Roll', 'Pitch', 'Yaw') },
+                                'sun_angle_discrepancy_deg': image.dls_sun_angle_discrepancy_deg(),
                                 'panel_horizontal_irradiance': panel_image.horizontal_irradiance,
                                 'image_horizontal_irradiance': image.horizontal_irradiance,
                                 'panel_irradiance_scale_to_si': panel_image.irradiance_scale_to_si,
                                 'image_irradiance_scale_to_si': image.irradiance_scale_to_si } })
 
 
-def write_provenance(path, band_records, parameters=None):
+def write_provenance(path, band_records, parameters=None, checks=None):
     """
     Save a json file with the records of the bands (see band_record), the parameters of the run and the software used
     The module is identified by the hash of its text (line endings normalized), so changes in the code are noticed
@@ -181,6 +364,8 @@ def write_provenance(path, band_records, parameters=None):
                              'numpy': np.__version__,
                              'opencv': cv2.__version__ },
                'parameters': _jsonable(parameters or {}),
+               'dls_checks_limits': _jsonable(DLS_CHECKS),
+               'checks': _jsonable(checks or {}),
                'bands': band_records }
     path = Path(path)
     path.write_text(json.dumps(record, indent=2), encoding='utf-8')
@@ -252,6 +437,7 @@ class Image(object):
         self.horizontal_irradiance = self.metadata.get('XMP:HorizontalIrradiance')
         self.irradiance_scale_to_si = self.metadata.get('XMP:IrradianceScaleToSIUnits')
         self.dls_ratio = None   # set by digital_numbers_to_reflectance() when the DLS correction is used
+        self.dls_ratio_source = None
 
 
     # Undistort the image
@@ -366,18 +552,47 @@ class Image(object):
         return float(irradiance) * scale
 
 
+    # Angle between the sun direction seen by the DLS and the solar zenith
+    def dls_sun_angle_discrepancy_deg(self):
+        """
+        The DLS estimates the direction of the direct light in its own frame (XMP:EstimatedDirectLightVector) and the
+        solar elevation is written in radians (XMP:SolarElevation). With a level DLS the angle between the light vector
+        and the DLS axis equals the solar zenith, so their difference is a lower bound of the DLS tilt towards or away
+        from the sun. Returns degrees, or None if the fields are missing. The conventions were checked only against the
+        example panel capture (level DLS: 0.3 deg); keep the limit in DLS_CHECKS generous
+        """
+        try:
+            vector = np.array( _metadata_floats(self.metadata, 'XMP:EstimatedDirectLightVector', self.image_path, count=3) )
+            elevation = _metadata_floats(self.metadata, 'XMP:SolarElevation', self.image_path, count=1)[0]
+        except MetadataError:
+            return None
+        norm = np.linalg.norm(vector)
+        if norm == 0:
+            return None
+        incidence = np.degrees(np.arccos(np.clip(-vector[2] / norm, -1, 1)))
+        return float(abs(incidence - (90 - np.degrees(elevation))))
+
+
     # Convert radiance to reflectance, optionally correcting the illumination change with the DLS
-    def digital_numbers_to_reflectance(self, radiance_to_reflectance_factor, panel_image=None):
+    def digital_numbers_to_reflectance(self, radiance_to_reflectance_factor, panel_image=None,
+                                       dls_ratio=None, dls_ratio_source=None):
         """
         Inputs: radiance to reflectance factor from detect_reference_panel() of the same band and, optionally,
                 the panel image (rct.Image) of that band. When given, the DLS is used (see dls_irradiance_ratio)
                 and the result is panel-anchored: reflectance = radiance * factor * (E_panel / E_image)
+                Alternatively, give a ready DLS ratio (e.g. from capture_dls_ratios) and where it came from
         Outputs: reflectance image (float)
         """
         reflectance = self.digital_numbers_to_radiance() * radiance_to_reflectance_factor
         self.dls_ratio = None
-        if panel_image is not None:
+        self.dls_ratio_source = None
+        if dls_ratio is not None:
+            self.dls_ratio = float(dls_ratio)
+            self.dls_ratio_source = dls_ratio_source or 'given'
+        elif panel_image is not None:
             self.dls_ratio = dls_irradiance_ratio(panel_image, self)
+            self.dls_ratio_source = 'metadata'
+        if self.dls_ratio is not None:
             reflectance = reflectance * self.dls_ratio
         return reflectance
 
@@ -522,6 +737,8 @@ class Image(object):
                              'radiance_mean': float(masked_values_average),
                              'radiance_std': float(panel_radiance.std()),
                              'reflectance_level': float(panel_reflectance_level),
+                             # irradiance that the panel receives, from its radiance: E = pi * L / reflectance
+                             'panel_irradiance_estimate': float(np.pi * masked_values_average / panel_reflectance_level),
                              'radiance_to_reflectance_factor': float(radiance_to_reflectance_factor) }
 
         return panel_bounds, radiance_to_reflectance_factor, barcode_data, barcode_source

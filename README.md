@@ -45,7 +45,7 @@ reflectance_level_reference_panel = { "Blue": 0.477, "Green": 0.478, "Panchro": 
                                       "Red": 0.478, "Red edge": 0.478, "NIR": 0.477 }
 
 # Use the Downwelling Light Sensor (DLS) to correct changes in illumination between the panel
-# capture and each image? (False = panel only). The Panchro band is always converted with the panel only.
+# capture and each image? (False = panel only). All bands, Panchro included, use the irradiance written in their files.
 use_dls = False
 
 # Find the files of each capture and match them to the bands using the metadata (not the file order)
@@ -59,11 +59,19 @@ image_files = rct.read_band_files( rct.find_capture_paths(root_path / images_fol
 Finally, lets iterate over the different bands saving images after transforming them from DNs to radiance and at the end to reflectance.
 
 ```
+# Images of both captures (the panel is detected inside the loop; the DLS ratios only need the metadata)
+reference_panel_objs = { band: rct.Image( *reference_panel_files[band] ) for band in bands }
+image_objs = { band: rct.Image( *image_files[band] ) for band in bands }
+
+# DLS ratios (E_panel / E_image) of all the bands. If the irradiance of the Panchro band is missing, it is estimated
+# from the other bands (panchro_fallback=False raises an error instead)
+dls_ratios = rct.capture_dls_ratios( reference_panel_objs, image_objs ) if use_dls else {}
+
 band_records = []
 for band in bands: # Iterate over bands
 
     # Reference panel image (path and metadata of the file of this band)
-    reference_panel_obj = rct.Image( *reference_panel_files[band] )
+    reference_panel_obj = reference_panel_objs[band]
 
     # Identify automatically the coordinates for the reference panel in the unidistorted image and
     # calculate the factor used to convert radiance to reflectance
@@ -73,12 +81,13 @@ for band in bands: # Iterate over bands
     print( reference_panel_obj.panel_audit )  # what was used to calibrate this band
 
     # Image to be processed
-    image_obj = rct.Image( *image_files[band] )
+    image_obj = image_objs[band]
 
     # Reflectance image
-    dls_panel = reference_panel_obj if (use_dls and band != 'Panchro') else None
+    dls_ratio, dls_ratio_source = dls_ratios.get( band, (None, None) )
     image_reflectance = image_obj.digital_numbers_to_reflectance( radiance_to_reflectance_factor,
-                                                                  panel_image=dls_panel )
+                                                                  dls_ratio=dls_ratio,
+                                                                  dls_ratio_source=dls_ratio_source )
 
     ##
     # Save reflectance image
@@ -86,10 +95,15 @@ for band in bands: # Iterate over bands
     tifffile.imwrite( output_path, image_reflectance )  # keeps the float values (no rescaling to integers)
     band_records.append( rct.band_record(output_path, reference_panel_obj, image_obj, image_reflectance) )
 
+# Checks of the DLS data of the capture (the messages are also issued as warnings)
+checks = rct.check_dls_capture( reference_panel_objs, image_objs, dls_ratios or None )
+print( checks['flags'] )
+
 # Record of what was used to produce the results, saved with them
 rct.write_provenance( root_path / results_folder / (image_to_process_name + '_provenance.json'), band_records,
                       parameters={ 'reflectance_level_reference_panel': reflectance_level_reference_panel,
-                                   'percent_inner_area': 0.7, 'sat_threshold': 65000, 'use_dls': use_dls } )
+                                   'percent_inner_area': 0.7, 'sat_threshold': 65000, 'use_dls': use_dls },
+                      checks=checks )
 ```
 
 In summary, with the function ```rct.Image(image, metadata)``` an object with the image and associated information is created, while the function ```self.detect_reference_panel(reflectance_level_reference_panel, percent_inner_area, sat_threshold)``` detects the reference panel automatically on undistorted radiance images and calculate the conversion factor necessay to transform radiance to reflectance. The final step includes transforming the target image to radiance using the function ```self.digital_numbers_to_radiance()``` and multiplying the output by the conversion factor calculated using the reference panel, which is what ```self.digital_numbers_to_reflectance(factor)``` does. The functions ```rct.find_capture_paths()``` and ```rct.read_band_files()``` list the files of a capture and match them to the bands.
@@ -111,8 +125,20 @@ reflectance(image) = radiance(image) * panel_reflectance / panel_radiance * E_pa
 
 - At the panel capture the ratio is 1, so the result reproduces the panel-only conversion. Panel-only is the default and never reads the DLS fields.
 - It is a relative correction: it assumes that the panel and the DLS saw the same illumination when the panel was imaged. ```XMP:IrradianceScaleToSIUnits``` is applied when it exists; it cancels in the ratio, so nothing is assumed when it is absent (it must be in both captures or in none).
-- The Panchro band is not corrected, because no DLS channel is assumed to match it (```rct.dls_irradiance_ratio()``` raises an error for it).
-- This correction does not account for the DLS orientation or shading, so inspect the irradiance values of your flight before relying on it.
+- The Panchro band is corrected like the others, with the irradiance written in its own file. In the example images its ratio (0.8842) agrees with those of the multispectral bands (0.883 to 0.888). How the camera derives that value is not documented here. If it is missing, ```rct.capture_dls_ratios()``` uses the median ratio of the other bands and says so in the record (```panchro_fallback=False``` raises an error instead). The ratio of any other band is never estimated.
+- This correction does not account for the DLS orientation or shading, so check the data as described below before relying on it.
+
+### Checks of the DLS data
+
+The limits are in ```rct.DLS_CHECKS```; they are first guesses, not validated values, so adjust them to your data. Each check issues a ```RuntimeWarning```, and the messages are saved in the provenance record.
+
+- ```rct.check_dls_capture(panel_images, images)```, for one capture:
+  - the DLS ratio of every band must be close to the median of the bands (3 %);
+  - the ratio must be inside 0.5 to 2 (also warned by ```rct.dls_irradiance_ratio()```);
+  - the angle between the sun direction seen by the DLS (```XMP:EstimatedDirectLightVector```) and the solar zenith (from ```XMP:SolarElevation```) is compared. With a level DLS they are equal, so a difference above 10 degrees means that the DLS was tilted by at least that much, or that the angles are inconsistent. The conventions were checked only against the example panel capture (0.2 degrees); in the example, the image capture shows about 15 degrees and is flagged;
+  - the DLS irradiance divided by the irradiance estimated from the panel (pi x radiance / reflectance) is reported per band. It differs between bands (about 14 % in the example, probably a calibration difference between camera and DLS), so it is not judged on one capture.
+- ```rct.compare_panel_captures(before, after)```, for a panel photographed twice (for example before and after the flight): the panel factor of each band, and the DLS irradiance divided by the panel estimate, must not change more than 5 %. The first change shows that the light or the panel changed, the second that the DLS did not follow the light seen by the camera.
+- ```rct.classify_irradiance_changes(irradiances)```, for the irradiance of one band along the flight in acquisition order: a *spike* is a single capture that jumps and comes back (a shaded or tilted DLS), a *step* is a change that persists (the sun going behind a cloud).
 
 ## Tests
 

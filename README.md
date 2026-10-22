@@ -157,6 +157,23 @@ python radiometric_workflow.py --request-json request.json                      
 - A request is ```{"version": 1, "root": "<folder>", "config": {...}}```, so that another program can start the workflow as a separate process (the libraries needed here are usually not available in the Python of a photogrammetry program) and read the result file.
 - From Python: ```radiometric_workflow.run(config, root, progress)```, where ```progress``` receives ```{'stage', 'message', 'current', 'total'}```.
 
+## Panel reflectance from its spectral response file
+
+Instead of typing the reflectance of each band, it can be computed from the spectral response of the panel, a .csv file with the reflectance by wavelength (```PANEL.reflectance_source``` = ```spectral_file```, ```PANEL.spectral_file```). The reflectance of a band is the mean of the curve over its spectral window, ```PANEL.band_center_wavelengths``` +/- ```PANEL.band_bandwidths``` / 2 (the defaults are those of the RedEdge-P bands). The weighting is uniform, an approximation of the real spectral response of the filters: with the example panel it gives Blue 0.4766, Green 0.4783, Red 0.4785, Red edge 0.4777, NIR 0.4769 and Panchro 0.4775, against the 0.477, 0.478, 0.478, 0.478, 0.477 and 0.479 printed on the panel.
+
+- **Format.** The file is read with the format in the ```PANEL.spectral_*``` keys: delimiter (```auto```, ```comma```, ```semicolon```, ```tab``` or ```space```), header rows to skip (```auto``` skips the rows at the start that are not numbers), wavelength and reflectance columns, wavelength unit (```nm``` or ```um```), reflectance unit (```fraction``` or ```percent```) and decimal mark (point or comma).
+- **Samples that are not used.** A reflectance outside (0, 1] (the example file has zeros below 400 nm) is not used. A window that reaches beyond the end of the file (the NIR window of the example, up to 870 nm, against a file that ends at 848 nm) is averaged over the part that exists. ```PANEL.spectral_min_coverage``` (0.5 by default) is the smallest part of a window that must have samples; every band below it is listed in the error.
+- **In the window.** "Import / preview..." on the Reference panel page opens a dialog to choose the file and the format: it shows what was read from each line (header rows, rows with errors and unused samples are marked), the curve with the window of each band, and the reflectance, samples and covered part of each band, updated while the options are changed. "Detect format" guesses the delimiter, decimal mark, units and header rows. The windows and the minimum coverage can be edited there. Then "Use the file as the panel reflectance" fills the keys and makes the file the source, or "Copy the values to the typed list" only copies the computed numbers to the typed values. Only the controls of the chosen source can be edited on the page.
+- **Record.** The result file and the provenance record keep the reflectance used for each band, the file, its SHA-256, the format, and the window, samples and covered part of each band.
+- From Python: ```panel_spectrum.load_spectrum(path, format)``` and ```panel_spectrum.band_reflectances(spectrum, windows, min_coverage)```; ```radiometric_workflow.panel_reflectance_levels(config, root)``` gives the levels that the workflow uses.
+
+## Where things are saved
+
+- **Configuration** (```radiometric_inputs.json```): the values that differ from the defaults, in the project folder (or the file given with ```--config```). "Save configuration" in the window, and "Run", write it.
+- **Profiles** (```profiles/*.json```): "Save profile..." writes every value of the window to a file in the ```profiles``` folder of the project (it can be saved anywhere); "Load profile..." replaces all the values with those of a file. A profile is complete, so it does not depend on the defaults. This follows the profiles of the photogrammetric workflow window, which uses a ```profiles``` folder next to its code and keeps the working values in ```config_user_inputs.json```.
+- **Panel regions drawn by hand**: ```panel_regions.json``` in the results folder, or the file in ```PANEL.manual_regions_file```.
+- **Results**: the reflectance images, ```<capture>_provenance.json``` and ```radiometric_result.json``` in the results folder.
+
 ## Drawing the panel region by hand
 
 When the QR code is not found, or the automatic region is not on the panel, the region can be drawn for each band with ```panel_selector.py```:
@@ -165,7 +182,9 @@ When the QR code is not found, or the automatic region is not on the panel, the 
 python panel_selector.py --config radiometric_inputs.json --root <folder>
 ```
 
-The bands of the panel capture are shown one after another. The polygon starts from the region found from the QR code (also drawn as a yellow dashed line) or from a region saved before, and it can be edited: a click adds a vertex (on an edge it inserts one), dragging moves a vertex, a right click removes it, the wheel zooms and the middle button drags the image. The pixels, the saturated pixels and the variation (std / mean) inside the region are shown while editing; a lower variation means a more uniform panel. Keys: Enter confirms, S uses the automatic detection for the band, R goes back to the automatic region, C clears, Backspace removes the last vertex, Left/Right change the band, Escape cancels.
+The bands of the panel capture are shown one after another, and every band has to end as either a region drawn by you or "use the automatic detection". The polygon starts from the region found from the QR code (also drawn as a yellow dashed line) or from a region saved before, and it can be edited: a click adds a vertex (on an edge it inserts one), dragging moves a vertex, a right click removes it, the wheel zooms and the middle button drags the image. The pixels, the saturated pixels and the variation (std / mean) inside the region are shown while editing; a lower variation means a more uniform panel. Keys: Enter confirms, S uses the automatic detection for the band, R goes back to the automatic region, C clears, Backspace removes the last vertex, Left/Right change the band, Escape cancels.
+
+Buttons: **Previous** / **Next** move between the bands without deciding anything; **Reset to automatic** puts the polygon back on the region found from the QR code; **Clear** removes all its vertices; **Confirm** accepts the polygon for this band and goes to the next one; **Use automatic detection** keeps no region for this band, so the QR code is used when the workflow runs; **Save and close** writes the file (available when all the bands were decided); **Cancel** closes without saving.
 
 - "Save and close" is available when every band was confirmed or set to the automatic detection. The regions are saved (vertices in pixels of the undistorted image) in ```PANEL.manual_regions_file``` or, if it is empty, in ```panel_regions.json``` in the results folder; set the key to that file to use it. Nothing is saved if the dialog is cancelled.
 - A band with a region in the file uses it, the others are detected from the QR code, and a manual region does not need a QR code. The panel audit and the provenance record say, for each band, whether the region was ```automatic``` or ```manual```.
@@ -189,13 +208,13 @@ The pages (Inputs, Reference panel, DLS correction, DLS checks) are built from `
 
 The last page runs the workflow in a separate thread, so the window stays responsive: "Check inputs" lists every problem, "Draw panel regions..." opens the dialog above (and sets ```PANEL.manual_regions_file``` if it was empty), "Run" saves the configuration and shows the progress, the flags of the checks, the errors and the result file, and "Open results folder" opens the folder in the file explorer.
 
-- ```radiometric_window.RadiometricFrame``` builds its widgets in a ```ttk.Frame``` (```.widget```), so it can be placed in any window, for example as a page of another program's window. ```ui_theme.py``` holds the colors and styles, which follow the dark window of the photogrammetric workflow.
+- Load and Save profile (see above) are in the bottom bar. ```radiometric_window.RadiometricFrame``` builds its widgets in a ```ttk.Frame``` (```.widget```), so it can be placed in any window, for example as a page of another program's window. ```ui_theme.py``` holds the colors and styles, which follow the dark window of the photogrammetric workflow.
 - ```ConfigModel``` (the text typed in each field, its conversion and the file) has no window and is tested without a display.
 
 ## Tests
 
 ```
-python -m unittest test_radiometric_correction_tools test_radiometric_workflow test_panel_selector test_radiometric_window -v
+python -m unittest test_radiometric_correction_tools test_radiometric_workflow test_panel_selector test_panel_spectrum test_panel_spectrum_dialog test_radiometric_window -v
 ```
 
 The tests use the example images and need ExifTool (set the environment variable ```exiftoolpath``` if it is not in the PATH).

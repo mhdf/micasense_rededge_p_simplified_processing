@@ -80,7 +80,7 @@ class ConfigModel:
         try:
             if kind == 'bool':
                 return bool(raw), None
-            if kind in ('folder', 'file', 'text'):
+            if kind in ('folder', 'file', 'text', 'choice'):
                 return str(raw).strip(), None
             if kind == 'float':
                 return float(raw), None
@@ -154,6 +154,9 @@ class RadiometricFrame:
         self.variables = {}
         self.entries = {}
         self.pages = {}
+        self.groups = {}                  # last heading written in each page
+        self.source_widgets = {'values': [], 'spectral_file': []}
+        self.summary_after = None
         self.events = queue.Queue()
         self.running = False
         self.last_result = None
@@ -162,12 +165,20 @@ class RadiometricFrame:
         self.widget.bind('<Destroy>', lambda event: self.close() if event.widget is self.widget else None)
         self._build()
         self._show_page(SECTIONS[0][0])
+        self._apply_source_state()
+        self._update_spectral_summary()
         if self.load_message:
             self.log(self.load_message, 'error')
         self._after_id = self.parent.after(100, self._poll)
 
     def close(self):
         """ Stop looking for events of the worker threads (done when the frame is destroyed) """
+        if self.summary_after is not None:
+            try:
+                self.parent.after_cancel(self.summary_after)
+            except self.tk.TclError:
+                pass
+            self.summary_after = None
         if self._after_id is not None:
             try:
                 self.parent.after_cancel(self._after_id)
@@ -184,6 +195,8 @@ class RadiometricFrame:
         self.status = ttk.Label(bottom, style='Muted.TLabel', text=f"Configuration file: {self.config_path}")
         self.status.pack(side='left')
         ttk.Button(bottom, text='Save configuration', command=self.save).pack(side='right')
+        ttk.Button(bottom, text='Save profile...', command=self.save_profile_as).pack(side='right', padx=(0, 6))
+        ttk.Button(bottom, text='Load profile...', command=self.load_profile_from).pack(side='right', padx=(0, 6))
 
         body = ttk.Frame(self.widget)
         body.pack(fill='both', expand=True)
@@ -209,9 +222,33 @@ class RadiometricFrame:
                     if field['key'].split('.')[0] == prefix:
                         self._build_field(page, field)
 
+    def _build_hidden(self, field):
+        """ A key that is edited in a dialog: its value lives in variables, without widgets on the page """
+        tk = self.tk
+        key = field['key']
+        if field['kind'] == 'band_values':
+            self.variables[key] = {}
+            for band, text in self.model.get(key).items():
+                variable = tk.StringVar(value=text)
+                variable.trace_add('write', lambda *_, key=key, band=band, variable=variable:
+                                   self._band_changed(key, band, variable.get()))
+                self.variables[key][band] = variable
+        else:
+            variable = tk.StringVar(value=self.model.get(key))
+            variable.trace_add('write', lambda *_, key=key, variable=variable: self._changed(key, variable.get()))
+            self.variables[key] = variable
+
     def _build_field(self, page, field):
         tk, ttk = self.tk, self.ttk
         key, kind = field['key'], field['kind']
+        group = field.get('group')
+        if group and group != self.groups.get(page):
+            self.groups[page] = group
+            ttk.Label(page, text=group, style='Heading.TLabel').pack(anchor='w', pady=(10, 2))
+            ttk.Separator(page).pack(fill='x', pady=(0, 8))
+        if field.get('dialog'):
+            self._build_hidden(field)
+            return
         row = ttk.Frame(page)
         row.pack(fill='x', pady=(0, 9))
         if kind == 'bool':
@@ -233,18 +270,31 @@ class RadiometricFrame:
                     variable.trace_add('write', lambda *_, key=key, band=band, variable=variable:
                                        self._band_changed(key, band, variable.get()))
                     self.variables[key][band], self.entries[key][band] = variable, entry
+                    if key == 'PANEL.reflectance_by_band':
+                        self.source_widgets['values'].append(entry)
             else:
                 line = ttk.Frame(row)
                 line.pack(fill='x', pady=(3, 0))
                 variable = tk.StringVar(value=self.model.get(key))
-                entry = ttk.Entry(line, textvariable=variable, width=12 if kind in ('float', 'int') else 70)
+                if kind == 'choice':
+                    entry = ttk.Combobox(line, textvariable=variable, values=field['choices'], state='readonly',
+                                         width=18)
+                else:
+                    entry = ttk.Entry(line, textvariable=variable, width=12 if kind in ('float', 'int') else 56)
                 entry.pack(side='left', fill='x', expand=kind in ('folder', 'file', 'text'))
                 if kind in ('folder', 'file'):
-                    ttk.Button(line, text='Browse...', command=lambda key=key, kind=kind: self._browse(key, kind)
-                               ).pack(side='left', padx=(6, 0))
+                    browse = ttk.Button(line, text='Browse...', command=lambda key=key, kind=kind: self._browse(key, kind))
+                    browse.pack(side='left', padx=(6, 0))
+                    if key == 'PANEL.spectral_file':
+                        importer = ttk.Button(line, text='Import / preview...', command=self.import_spectrum)
+                        importer.pack(side='left', padx=(6, 0))
+                        self.source_widgets['spectral_file'].extend([entry, browse, importer])
                 variable.trace_add('write', lambda *_, key=key, variable=variable: self._changed(key, variable.get()))
                 self.variables[key], self.entries[key] = variable, entry
         ttk.Label(row, text=field['help'], style='Muted.TLabel', wraplength=760, justify='left').pack(anchor='w')
+        if key == 'PANEL.spectral_file':
+            self.spectral_summary = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
+            self.spectral_summary.pack(anchor='w', pady=(3, 0))
 
     def _build_run_page(self, page):
         tk, ttk = self.tk, self.ttk
@@ -292,6 +342,8 @@ class RadiometricFrame:
         self._show_page(prefix)
 
     def _mark(self, key):
+        if key not in self.entries:
+            return
         field = self.model.fields[key]
         _, message = self.model.parse(field, self.model.get(key))
         if field['kind'] == 'band_values':
@@ -304,10 +356,100 @@ class RadiometricFrame:
     def _changed(self, key, raw):
         self.model.set(key, raw)
         self._mark(key)
+        self._after_change(key)
 
     def _band_changed(self, key, band, text):
         self.model.set_band(key, band, text)
         self._mark(key)
+        self._after_change(key)
+
+    def _after_change(self, key):
+        if key == 'PANEL.reflectance_source':
+            self._apply_source_state()
+        if key.startswith('PANEL.spectral_') or key in ('PANEL.band_center_wavelengths', 'PANEL.band_bandwidths',
+                                                       'PANEL.reflectance_source'):
+            if self.summary_after is not None:
+                self.parent.after_cancel(self.summary_after)
+            self.summary_after = self.parent.after(400, self._update_spectral_summary)
+
+    def _apply_source_state(self):
+        """ Only the controls of the chosen source of the panel reflectance can be edited """
+        source = self.model.get('PANEL.reflectance_source')
+        for name, widgets in self.source_widgets.items():
+            for widget in widgets:
+                widget.state(['!disabled'] if name == source else ['disabled'])
+
+    def _update_spectral_summary(self):
+        self.summary_after = None
+        if not hasattr(self, 'spectral_summary'):
+            return
+        config, errors = self.model.config()
+        if not config['PANEL.spectral_file'].strip():
+            self.spectral_summary.configure(text='', style='Muted.TLabel')
+            return
+        if errors:
+            self.spectral_summary.configure(text='Fix the values marked in red to read the file.', style='Error.TLabel')
+            return
+        try:
+            config['PANEL.reflectance_source'] = 'spectral_file'
+            levels, info = wf.panel_reflectance_levels(config, self.root_folder)
+        except (ValueError, OSError) as error:
+            self.spectral_summary.configure(text=str(error), style='Error.TLabel')
+            return
+        partial = [f"{band} {100 * values['coverage']:.0f} %" for band, values in info['bands'].items()
+                   if values['coverage'] < 1]
+        text = 'From the file: ' + ', '.join(f"{band} {level:.4f}" for band, level in levels.items())
+        if partial:
+            text += '. Part of the window covered: ' + ', '.join(partial)
+        self.spectral_summary.configure(text=text, style='Muted.TLabel')
+
+    def import_spectrum(self):
+        """ Open the dialog to choose and preview the spectral response file, and apply what the user accepts """
+        from panel_spectrum_dialog import import_spectrum
+        config, errors = self.model.config()
+        try:
+            fmt = wf.spectral_format(config)
+        except wf.ConfigError:
+            fmt = None
+        windows = {band: (center, config['PANEL.band_bandwidths'].get(band, 1.0))
+                   for band, center in config['PANEL.band_center_wavelengths'].items()}
+        path = config['PANEL.spectral_file']
+        result = import_spectrum(self.parent.winfo_toplevel(), str(wf.resolve_path(self.root_folder, path)) if path else '',
+                                 fmt, windows, config['PANEL.spectral_min_coverage'])
+        if result is not None:
+            self.apply_import(result)
+
+    def stored_path(self, path):
+        """ A path inside the project folder is kept relative to it """
+        path = Path(path)
+        try:
+            return path.resolve().relative_to(self.root_folder).as_posix()
+        except ValueError:
+            return str(path)
+
+    def apply_import(self, result):
+        """ Put what the import dialog returned in the fields (see panel_spectrum_dialog) """
+        if result['action'] == 'copy_values':
+            for band, level in result['levels'].items():
+                if band in self.variables['PANEL.reflectance_by_band']:
+                    self.variables['PANEL.reflectance_by_band'][band].set(f"{level:.4f}")
+            self.set_value('PANEL.reflectance_source', 'values')
+            self.log('The values of the spectral file were copied to the typed list of reflectances.')
+            return
+        fmt = result['format']
+        self.set_value('PANEL.spectral_file', self.stored_path(result['file']))
+        for key, name in (('PANEL.spectral_delimiter', 'delimiter'), ('PANEL.spectral_skip_rows', 'skip_rows'),
+                          ('PANEL.spectral_wavelength_column', 'wavelength_column'),
+                          ('PANEL.spectral_reflectance_column', 'reflectance_column'),
+                          ('PANEL.spectral_wavelength_unit', 'wavelength_unit'),
+                          ('PANEL.spectral_reflectance_unit', 'reflectance_unit'),
+                          ('PANEL.spectral_decimal', 'decimal')):
+            self.set_value(key, str(fmt[name]))
+        self.set_value('PANEL.band_center_wavelengths', {band: f"{value:g}" for band, value in result['centers'].items()})
+        self.set_value('PANEL.band_bandwidths', {band: f"{value:g}" for band, value in result['bandwidths'].items()})
+        self.set_value('PANEL.spectral_min_coverage', f"{result['min_coverage']:g}")
+        self.set_value('PANEL.reflectance_source', 'spectral_file')
+        self.log(f"The panel reflectance will be computed from {result['file']}.")
 
     def _browse(self, key, kind):
         from tkinter import filedialog
@@ -338,6 +480,55 @@ class RadiometricFrame:
         note = f" ({len(errors)} invalid value(s) were not saved)" if errors else ''
         self.status.configure(text=f"Saved to {self.config_path}{note}", style='Muted.TLabel')
         return True
+
+    # --- profiles ---------------------------------------------------------------------------------------------------
+
+    @property
+    def profiles_folder(self):
+        return self.root_folder / 'profiles'
+
+    def save_profile(self, path):
+        """ Save every value (not only the changes) in a json file, so that the profile does not depend on the defaults """
+        config, errors = self.model.config()
+        if errors:
+            self.log('The profile was not saved: ' + '; '.join(f"{key} {message}" for key, message in errors.items()), 'error')
+            return False
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + '.tmp')
+        temporary.write_text(json.dumps(config, indent=2), encoding='utf-8')
+        os.replace(temporary, path)
+        self.status.configure(text=f"Profile saved to {path}", style='Muted.TLabel')
+        return True
+
+    def load_profile(self, path):
+        """ Replace the values of all the fields with those of a profile (a json file with any of the keys) """
+        try:
+            values = wf.merge_config(json.loads(Path(path).read_text(encoding='utf-8')))
+        except (ValueError, OSError) as error:
+            self.log(f"The profile {path} was not loaded: {error}", 'error')
+            self.status.configure(text=f"The profile was not loaded: {error}", style='Error.TLabel')
+            return False
+        for key, field in self.model.fields.items():
+            self.set_value(key, ConfigModel.to_raw(field, values[key]))
+        self.status.configure(text=f"Profile loaded from {path}", style='Muted.TLabel')
+        return True
+
+    def save_profile_as(self):
+        from tkinter import filedialog
+        self.profiles_folder.mkdir(exist_ok=True)
+        path = filedialog.asksaveasfilename(initialdir=self.profiles_folder, defaultextension='.json',
+                                            initialfile='radiometric_profile.json',
+                                            filetypes=(('JSON files', '*.json'),))
+        if path:
+            self.save_profile(path)
+
+    def load_profile_from(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(initialdir=self.profiles_folder if self.profiles_folder.is_dir()
+                                          else self.root_folder, filetypes=(('JSON files', '*.json'),))
+        if path:
+            self.load_profile(path)
 
     # --- log ------------------------------------------------------------------------------------------------
 

@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import panel_spectrum as ps
 import radiometric_window as rw
 import radiometric_workflow as wf
 
@@ -81,6 +82,12 @@ class ConfigModelTests(unittest.TestCase):
     def test_a_key_that_does_not_exist_cannot_be_set(self):
         with self.assertRaises(KeyError):
             rw.ConfigModel().set('INPUTS.typo', 'x')
+
+    def test_choice_fields_hold_one_of_their_values(self):
+        model = rw.ConfigModel()
+        self.assertEqual(model.config()[0]['PANEL.reflectance_source'], 'values')
+        model.set('PANEL.reflectance_source', 'spectral_file')
+        self.assertEqual(model.overrides(), {'PANEL.reflectance_source': 'spectral_file'})
 
     def test_every_field_belongs_to_a_page(self):
         prefixes = {prefix for prefix, _ in rw.SECTIONS}
@@ -228,6 +235,153 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(set(images), set(wf.default_config()['PANEL.reflectance_by_band']))
         self.assertEqual(saved, {'Red': [[10, 10], [50, 10], [50, 50]]})
         self.assertEqual((percent, saturation), (0.6, 65000))
+
+    # --- spectral response of the panel and profiles ---------------------------------------------------------
+
+    def write_spectrum(self, name='panel.csv', level=0.5, start=400, stop=900):
+        path = Path(self.folder.name) / name
+        path.write_text(''.join(f"{w},{level}\n" for w in range(start, stop + 1)), encoding='utf-8')
+        return path
+
+    def enabled(self, widgets):
+        return [not widget.instate(['disabled']) for widget in widgets]
+
+    def test_only_the_controls_of_the_chosen_source_can_be_edited(self):
+        values = self.frame.source_widgets['values']
+        spectral = self.frame.source_widgets['spectral_file']
+        self.assertEqual(len(values), 6)
+        self.assertEqual(len(spectral), 3)                      # entry, Browse and Import
+        self.assertTrue(all(self.enabled(values)))
+        self.assertFalse(any(self.enabled(spectral)))
+        self.frame.set_value('PANEL.reflectance_source', 'spectral_file')
+        self.assertFalse(any(self.enabled(values)))
+        self.assertTrue(all(self.enabled(spectral)))
+
+    def test_choices_are_drop_downs_and_dialog_keys_have_no_widgets_on_the_page(self):
+        self.assertEqual(self.frame.entries['PANEL.reflectance_source'].winfo_class(), 'TCombobox')
+        for key in ('PANEL.spectral_delimiter', 'PANEL.spectral_skip_rows', 'PANEL.band_center_wavelengths'):
+            self.assertIn(key, self.frame.variables)
+            self.assertNotIn(key, self.frame.entries)
+        self.frame.set_value('PANEL.spectral_delimiter', 'semicolon')
+        self.frame.set_value('PANEL.band_bandwidths', {'Blue': '40'})
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['PANEL.spectral_delimiter'], 'semicolon')
+        self.assertEqual(config['PANEL.band_bandwidths']['Blue'], 40.0)
+
+    def test_the_summary_shows_the_values_read_from_the_file_or_the_problem(self):
+        path = self.write_spectrum(level=0.5, stop=848)
+        self.frame.set_value('PANEL.spectral_file', str(path))
+        self.pump(lambda: 'From the file' in self.frame.spectral_summary.cget('text'), 5)
+        text = self.frame.spectral_summary.cget('text')
+        self.assertIn('Blue 0.5000', text)
+        self.assertIn('NIR 61 %', text)                         # the window of NIR is partly covered
+        self.frame.set_value('PANEL.spectral_wavelength_column', '9')
+        self.pump(lambda: 'data row' in self.frame.spectral_summary.cget('text'), 5)
+        self.frame.set_value('PANEL.spectral_wavelength_column', '1')
+        self.frame.set_value('PANEL.spectral_min_coverage', '0.9')
+        self.pump(lambda: "Band 'NIR'" in self.frame.spectral_summary.cget('text'), 5)
+        self.frame.set_value('PANEL.spectral_file', '')
+        self.pump(lambda: self.frame.spectral_summary.cget('text') == '', 5)
+
+    def result_of_the_dialog(self, action, **kwargs):
+        import panel_spectrum_dialog as psd
+        path = kwargs.pop('path', None) or self.write_spectrum(level=0.48)
+        return psd.ImportSession(path, **kwargs).result(action)
+
+    def test_using_the_file_fills_the_fields_and_switches_the_source(self):
+        frame = rw.RadiometricFrame(self.root, Path(self.folder.name) / 'inside.json', self.folder.name)
+        path = self.write_spectrum(level=0.48)
+        result = self.result_of_the_dialog('use_file', path=path, fmt={'skip_rows': 0},
+                                           windows=dict(ps.REDEDGE_P_BANDS, Blue=(480.0, 40.0)))
+        frame.apply_import(result)
+        config = frame.model.config()[0]
+        self.assertEqual(config['PANEL.reflectance_source'], 'spectral_file')
+        self.assertEqual(config['PANEL.spectral_file'], 'panel.csv')       # inside the project folder: relative
+        self.assertEqual(config['PANEL.spectral_skip_rows'], '0')
+        self.assertEqual(config['PANEL.band_center_wavelengths']['Blue'], 480.0)
+        self.assertEqual(config['PANEL.band_bandwidths']['Blue'], 40.0)
+        self.assertEqual(wf.validate_config(dict(config, **{'INPUTS.images_folder': str(ROOT / 'images' / 'raw')}),
+                                            self.folder.name), [])
+        levels, info = wf.panel_reflectance_levels(config, self.folder.name)
+        self.assertAlmostEqual(levels['Blue'], 0.48)
+        self.assertFalse(any(self.enabled(frame.source_widgets['values'])))
+
+    def test_a_file_outside_the_project_folder_keeps_its_full_path(self):
+        other = tempfile.TemporaryDirectory()
+        try:
+            path = Path(other.name) / 'panel.csv'
+            path.write_text(''.join(f"{w},0.5\n" for w in range(400, 901)), encoding='utf-8')
+            self.frame.apply_import(self.result_of_the_dialog('use_file', path=path))
+            self.assertEqual(self.frame.model.config()[0]['PANEL.spectral_file'], str(path))
+        finally:
+            other.cleanup()
+
+    def test_copying_the_values_fills_the_typed_list_and_returns_to_the_typed_source(self):
+        self.frame.set_value('PANEL.reflectance_source', 'spectral_file')
+        self.frame.apply_import(self.result_of_the_dialog('copy_values'))
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['PANEL.reflectance_source'], 'values')
+        self.assertTrue(all(value == 0.48 for value in config['PANEL.reflectance_by_band'].values()))
+        self.assertEqual(config['PANEL.spectral_file'], '')                # the file is not made the source
+        self.assertTrue(any('copied' in line for line in self.frame.log_lines()))
+
+    def test_the_import_button_opens_the_dialog_with_the_current_values_and_applies_the_answer(self):
+        self.frame.set_value('PANEL.spectral_delimiter', 'comma')
+        self.frame.set_value('PANEL.band_bandwidths', {'Red': '20'})
+        answer = self.result_of_the_dialog('use_file')
+        with mock.patch('panel_spectrum_dialog.import_spectrum', return_value=answer) as dialog:
+            self.frame.import_spectrum()
+        _, path, fmt, windows, coverage = dialog.call_args[0]
+        self.assertEqual(path, '')
+        self.assertEqual(fmt['delimiter'], 'comma')
+        self.assertEqual(windows['Red'], (668.0, 20.0))
+        self.assertEqual(coverage, 0.5)
+        self.assertEqual(self.frame.model.config()[0]['PANEL.reflectance_source'], 'spectral_file')
+        with mock.patch('panel_spectrum_dialog.import_spectrum', return_value=None):
+            self.frame.import_spectrum()                                   # cancelled: nothing changes
+        self.assertEqual(self.frame.model.config()[0]['PANEL.reflectance_source'], 'spectral_file')
+
+    def test_a_profile_saves_every_value_and_restores_them(self):
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0007')
+        self.frame.set_value('CORRECTION.use_dls', True)
+        self.frame.set_value('PANEL.reflectance_by_band', {'Blue': '0.5'})
+        path = Path(self.folder.name) / 'profiles' / 'mine.json'
+        self.assertTrue(self.frame.save_profile(path))
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(list(saved), wf.FIELD_KEYS)                         # all the keys, not only the changes
+        self.assertEqual(saved['PANEL.reflectance_by_band']['Blue'], 0.5)
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0001')
+        self.frame.set_value('CORRECTION.use_dls', False)
+        self.assertTrue(self.frame.load_profile(path))
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['INPUTS.reference_panel_capture'], 'IMG_0007')
+        self.assertIs(config['CORRECTION.use_dls'], True)
+        self.assertEqual(config['PANEL.reflectance_by_band']['Blue'], 0.5)
+        self.assertIs(self.frame.variables['CORRECTION.use_dls'].get(), True)     # the check box follows
+
+    def test_a_profile_with_only_some_keys_changes_the_others_to_the_defaults(self):
+        path = Path(self.folder.name) / 'small.json'
+        path.write_text(json.dumps({'PANEL.percent_inner_area': 0.4}), encoding='utf-8')
+        self.frame.set_value('CORRECTION.use_dls', True)
+        self.assertTrue(self.frame.load_profile(path))
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['PANEL.percent_inner_area'], 0.4)
+        self.assertIs(config['CORRECTION.use_dls'], False)
+
+    def test_bad_profiles_are_refused_and_nothing_changes(self):
+        path = Path(self.folder.name) / 'bad.json'
+        path.write_text(json.dumps({'INPUTS.typo': 1}), encoding='utf-8')
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0007')
+        self.assertFalse(self.frame.load_profile(path))
+        self.assertFalse(self.frame.load_profile(Path(self.folder.name) / 'missing.json'))
+        self.assertEqual(self.frame.model.config()[0]['INPUTS.reference_panel_capture'], 'IMG_0007')
+        self.assertTrue(any('INPUTS.typo' in line for line in self.frame.log_lines()))
+
+    def test_a_profile_is_not_saved_while_a_value_cannot_be_read(self):
+        self.frame.set_value('PANEL.saturation_threshold', 'high')
+        path = Path(self.folder.name) / 'profiles' / 'refused.json'
+        self.assertFalse(self.frame.save_profile(path))
+        self.assertFalse(path.exists())
 
     def test_the_frame_can_be_placed_inside_another_window(self):
         import tkinter as tk

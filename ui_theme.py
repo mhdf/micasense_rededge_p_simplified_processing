@@ -48,4 +48,16 @@ def apply_dark_theme(root):
                     lightcolor=c['accent'], darkcolor=c['accent'])
     style.configure('TScrollbar', background=c['input'], troughcolor=c['panel'], bordercolor=c['border'],
                     arrowcolor=c['foreground'])
+    style.configure('TCombobox', fieldbackground=c['input'], background=c['input'], foreground=c['foreground'],
+                    arrowcolor=c['foreground'], bordercolor=c['border'], lightcolor=c['input'], darkcolor=c['input'],
+                    selectbackground=c['input'], selectforeground=c['foreground'], padding=3)
+    style.map('TCombobox', fieldbackground=[('readonly', c['input']), ('disabled', c['panel'])],
+              foreground=[('disabled', c['disabled'])], selectbackground=[('readonly', c['input'])],
+              selectforeground=[('readonly', c['foreground'])])
+    style.configure('Treeview', background=c['panel'], fieldbackground=c['panel'], foreground=c['foreground'],
+                    bordercolor=c['border'], lightcolor=c['panel'], darkcolor=c['panel'], rowheight=22, font=FONT)
+    style.map('Treeview', background=[('selected', c['accent'])], foreground=[('selected', c['foreground'])])
+    style.configure('Treeview.Heading', background=c['input'], foreground=c['foreground'], bordercolor=c['border'],
+                    lightcolor=c['input'], darkcolor=c['input'], font=FONT)
+    style.map('Treeview.Heading', background=[('active', c['accent'])])
     return c

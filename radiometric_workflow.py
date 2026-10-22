@@ -26,6 +26,7 @@ from pathlib import Path
 import tifffile
 
 # Local Imports
+import panel_spectrum
 import radiometric_correction_tools as rct
 
 REQUEST_VERSION = 1
@@ -36,7 +37,9 @@ STAGES = ('LOAD_CAPTURES', 'PANEL_CALIBRATION', 'REFLECTANCE', 'DLS_CHECKS', 'PR
 BAND_NAMES = ('Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR')
 
 # Description of every configuration key: default value, kind of value (for validation and for the editor), label
-# and description. Kinds: folder, file, text, bool, float, int, band_values (dictionary {band name: number})
+# and description. Kinds: folder, file, text, bool, float, int, choice (one of 'choices'), band_values (dictionary
+# {band name: number}, with an optional 'range' (low exclusive, high inclusive)). Optional 'group' is a heading for the
+# window and 'dialog' marks the keys that the window edits in a dialog instead of on the page
 FIELDS = [
     {'key': 'INPUTS.images_folder', 'kind': 'folder', 'default': 'images/raw',
      'label': 'Images folder', 'help': 'Folder with the raw .tif images (one file per band, e.g. IMG_0010_1.tif).'},
@@ -52,15 +55,53 @@ FIELDS = [
              'for the correction.'},
     {'key': 'INPUTS.image_captures', 'kind': 'text', 'default': '',
      'label': 'Captures to correct', 'help': 'Names separated by commas. Empty: all the other captures in the folder.'},
-    {'key': 'PANEL.reflectance_by_band', 'kind': 'band_values',
+    {'key': 'PANEL.reflectance_source', 'kind': 'choice', 'choices': ['values', 'spectral_file'],
+     'default': 'values', 'group': 'Reflectance of the panel',
+     'label': 'Source of the panel reflectance',
+     'help': "values: the reflectance of each band typed below (printed on the panel). spectral_file: computed from "
+             "the spectral response file (.csv) of the panel, below."},
+    {'key': 'PANEL.reflectance_by_band', 'kind': 'band_values', 'group': 'Reflectance of the panel', 'range': (0, 1),
      'default': {'Blue': 0.477, 'Green': 0.478, 'Panchro': 0.479, 'Red': 0.478, 'Red edge': 0.478, 'NIR': 0.477},
      'label': 'Panel reflectance by band', 'help': 'Values provided by Micasense with the reference panel. The band '
                                                     'names must be those written by the camera (XMP:BandName).'},
-    {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7,
+    {'key': 'PANEL.spectral_file', 'kind': 'file', 'default': '', 'group': 'Spectral response file (.csv)',
+     'label': 'Spectral response file',
+     'help': 'Reflectance of the panel by wavelength (.csv). Use Import / preview to choose how to read it.'},
+    {'key': 'PANEL.spectral_delimiter', 'kind': 'choice', 'choices': list(panel_spectrum.DELIMITERS), 'dialog': True,
+     'default': 'auto', 'group': 'Spectral response file (.csv)', 'label': 'Delimiter',
+     'help': 'Character that separates the columns; auto detects it.'},
+    {'key': 'PANEL.spectral_skip_rows', 'kind': 'text', 'default': 'auto', 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Header rows to skip',
+     'help': "auto: the rows at the start that are not numbers; or the number of rows."},
+    {'key': 'PANEL.spectral_wavelength_column', 'kind': 'int', 'default': 1, 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Wavelength column', 'help': 'Column number, from 1.'},
+    {'key': 'PANEL.spectral_reflectance_column', 'kind': 'int', 'default': 2, 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Reflectance column', 'help': 'Column number, from 1.'},
+    {'key': 'PANEL.spectral_wavelength_unit', 'kind': 'choice', 'choices': list(panel_spectrum.WAVELENGTH_UNITS),
+     'default': 'nm', 'dialog': True, 'group': 'Spectral response file (.csv)', 'label': 'Wavelength unit',
+     'help': 'nm or um (micrometers).'},
+    {'key': 'PANEL.spectral_reflectance_unit', 'kind': 'choice', 'choices': list(panel_spectrum.REFLECTANCE_UNITS),
+     'default': 'fraction', 'dialog': True, 'group': 'Spectral response file (.csv)', 'label': 'Reflectance unit',
+     'help': 'fraction (0 to 1) or percent.'},
+    {'key': 'PANEL.spectral_decimal', 'kind': 'choice', 'choices': list(panel_spectrum.DECIMAL_MARKS), 'default': '.',
+     'dialog': True, 'group': 'Spectral response file (.csv)', 'label': 'Decimal mark', 'help': 'Point or comma.'},
+    {'key': 'PANEL.band_center_wavelengths', 'kind': 'band_values', 'range': (0, 5000), 'dialog': True,
+     'default': {band: window[0] for band, window in panel_spectrum.REDEDGE_P_BANDS.items()},
+     'group': 'Spectral response file (.csv)', 'label': 'Center wavelength of each band (nm)',
+     'help': 'Spectral window of each band: the reflectance of a band is the mean of the curve over '
+             'center +/- bandwidth / 2.'},
+    {'key': 'PANEL.band_bandwidths', 'kind': 'band_values', 'range': (0, 5000), 'dialog': True,
+     'default': {band: window[1] for band, window in panel_spectrum.REDEDGE_P_BANDS.items()},
+     'group': 'Spectral response file (.csv)', 'label': 'Bandwidth of each band (nm)',
+     'help': 'Width of the spectral window of each band.'},
+    {'key': 'PANEL.spectral_min_coverage', 'kind': 'float', 'default': 0.5, 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Smallest covered part of a band window',
+     'help': 'Fraction (0 to 1] of the window of a band that must have valid samples in the file.'},
+    {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
      'label': 'Inner area of the panel', 'help': 'Fraction (0 to 1] of the panel used to measure its radiance.'},
-    {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000,
+    {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000, 'group': 'Panel measurement',
      'label': 'Saturation threshold', 'help': 'Pixels above this value are left out of the panel radiance.'},
-    {'key': 'PANEL.manual_regions_file', 'kind': 'file', 'default': '',
+    {'key': 'PANEL.manual_regions_file', 'kind': 'file', 'default': '', 'group': 'Panel measurement',
      'label': 'Panel regions drawn by hand (optional)',
      'help': 'json file written by panel_selector.py. A band with a region there uses it instead of the QR code; '
              'the other bands are detected automatically.'},
@@ -131,6 +172,51 @@ def capture_names(text):
     return [name.strip() for name in str(text).split(',') if name.strip()]
 
 
+def spectral_format(config):
+    """ Format of the spectral response file from the configuration; ConfigError if it is not valid """
+    skip = config['PANEL.spectral_skip_rows'].strip().lower()
+    try:
+        skip = 'auto' if skip == 'auto' else int(skip)
+    except ValueError:
+        raise ConfigError("PANEL.spectral_skip_rows must be 'auto' or a whole number")
+    fmt = {'delimiter': config['PANEL.spectral_delimiter'], 'skip_rows': skip,
+           'wavelength_column': int(config['PANEL.spectral_wavelength_column']),
+           'reflectance_column': int(config['PANEL.spectral_reflectance_column']),
+           'wavelength_unit': config['PANEL.spectral_wavelength_unit'],
+           'reflectance_unit': config['PANEL.spectral_reflectance_unit'], 'decimal': config['PANEL.spectral_decimal']}
+    problems = panel_spectrum.validate_format(fmt)
+    if problems:
+        raise ConfigError('Spectral response format: ' + '; '.join(problems))
+    return fmt
+
+
+def panel_bands(config):
+    """ Names of the bands that are processed: those of the typed reflectances, or those that have a spectral window """
+    if config['PANEL.reflectance_source'] == 'spectral_file':
+        return list(config['PANEL.band_center_wavelengths'])
+    return list(config['PANEL.reflectance_by_band'])
+
+
+def panel_reflectance_levels(config, root='.'):
+    """
+    Reflectance of the panel by band
+    Outputs: ({band: reflectance}, information). The values are the typed ones, or the mean of the spectral response
+             file over the window of each band (the information then has the file, its hash, the format and, for each
+             band, the window, the samples and the covered part of the window)
+    """
+    if config['PANEL.reflectance_source'] == 'values':
+        return dict(config['PANEL.reflectance_by_band']), {'source': 'values'}
+    fmt = spectral_format(config)
+    path = resolve_path(root, config['PANEL.spectral_file'])
+    spectrum = panel_spectrum.load_spectrum(path, fmt)
+    windows = {band: (center, config['PANEL.band_bandwidths'][band])
+               for band, center in config['PANEL.band_center_wavelengths'].items()}
+    stats = panel_spectrum.band_reflectances(spectrum, windows, config['PANEL.spectral_min_coverage'])
+    info = {'source': 'spectral_file', 'file': spectrum['file'], 'sha256': spectrum['sha256'], 'format': fmt,
+            'min_coverage': config['PANEL.spectral_min_coverage'], 'warnings': spectrum['warnings'], 'bands': stats}
+    return {band: values['reflectance'] for band, values in stats.items()}, info
+
+
 def load_panel_regions(path):
     """
     Read the regions of the reference panel drawn by hand
@@ -182,18 +268,36 @@ def validate_config(config, root='.'):
             problems.append(f"{key} must be a number")
         elif kind == 'int' and (not _is_number(value) or int(value) != value):
             problems.append(f"{key} must be an integer")
+        elif kind == 'choice' and value not in field['choices']:
+            problems.append(f"{key} must be one of {field['choices']}, got {value!r}")
         elif kind == 'band_values':
+            low, high = field.get('range', (0, 1))
             if not isinstance(value, dict) or not value:
                 problems.append(f"{key} must be a dictionary {{band name: number}}")
             else:
                 for band, number in value.items():
-                    if not _is_number(number) or not 0 < number <= 1:
-                        problems.append(f"{key}['{band}'] must be a reflectance in (0, 1], got {number!r}")
+                    if not _is_number(number) or not low < number <= high:
+                        problems.append(f"{key}['{band}'] must be a number in ({low}, {high}], got {number!r}")
     if problems:
         return problems
 
     if not 0 < config['PANEL.percent_inner_area'] <= 1:
         problems.append("PANEL.percent_inner_area must be in (0, 1]")
+    if not 0 < config['PANEL.spectral_min_coverage'] <= 1:
+        problems.append("PANEL.spectral_min_coverage must be in (0, 1]")
+    if set(config['PANEL.band_center_wavelengths']) != set(config['PANEL.band_bandwidths']):
+        problems.append("PANEL.band_center_wavelengths and PANEL.band_bandwidths must have the same bands")
+    elif config['PANEL.reflectance_source'] == 'spectral_file':
+        spectral_file = config['PANEL.spectral_file'].strip()
+        if not spectral_file:
+            problems.append("PANEL.spectral_file is empty (PANEL.reflectance_source is spectral_file)")
+        elif not resolve_path(root, spectral_file).is_file():
+            problems.append(f"Spectral response file not found: {resolve_path(root, spectral_file)}")
+        else:
+            try:
+                panel_reflectance_levels(config, root)
+            except (ValueError, OSError) as error:
+                problems.append(str(error))
     if config['PANEL.saturation_threshold'] <= 0:
         problems.append("PANEL.saturation_threshold must be positive")
     for key in ('CHECKS.band_ratio_tolerance', 'CHECKS.max_sun_angle_discrepancy_deg', 'CHECKS.jump_threshold',
@@ -219,8 +323,9 @@ def validate_config(config, root='.'):
                 regions = load_panel_regions(regions_file)
                 for capture, bands in regions.items():
                     for band in bands:
-                        if band not in config['PANEL.reflectance_by_band']:
-                            problems.append(f"{regions_file}: band '{band}' of {capture} is not in PANEL.reflectance_by_band")
+                        if band not in panel_bands(config):
+                            problems.append(f"{regions_file}: band '{band}' of {capture} is not one of the panel bands "
+                                            f"{panel_bands(config)}")
             except (ValueError, OSError) as error:
                 problems.append(str(error))
     panel = config['INPUTS.reference_panel_capture'].strip()
@@ -310,7 +415,8 @@ def _read_capture(images_folder, name, bands, exiftool_path):
 def _run_stages(config, root, results_folder, result, progress):
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
     exiftool_path = exiftool_executable(config, root)
-    levels = config['PANEL.reflectance_by_band']
+    levels, reflectance_info = panel_reflectance_levels(config, root)
+    result['panel']['reflectance'] = rct._jsonable({'levels': levels, **reflectance_info})
     bands = list(levels)
     use_dls = config['CORRECTION.use_dls']
 
@@ -351,7 +457,7 @@ def _run_stages(config, root, results_folder, result, progress):
 
     # REFLECTANCE and DLS_CHECKS of each capture
     series = {band: [] for band in bands}
-    parameters = {'config': config}
+    parameters = {'config': config, 'panel_reflectance_levels': levels, 'panel_reflectance_source': reflectance_info}
     for number, name in enumerate(names, start=1):
         _progress(progress, 'REFLECTANCE', f"Correcting {name}", number - 1, len(names))
         entry = {'outputs': [], 'flags': [], 'errors': []}

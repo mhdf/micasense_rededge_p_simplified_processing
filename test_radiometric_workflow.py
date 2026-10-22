@@ -103,8 +103,80 @@ class ConfigurationTests(unittest.TestCase):
             path = Path(folder) / 'regions.json'
             wf.save_panel_regions(path, 'IMG_0005', {'Infrared': [[1, 2], [30, 2], [30, 40]]})
             config = wf.merge_config({'PANEL.manual_regions_file': str(path)})
-            self.assertIn("band 'Infrared' of IMG_0005 is not in PANEL.reflectance_by_band",
+            self.assertIn("band 'Infrared' of IMG_0005 is not one of the panel bands",
                           '\n'.join(wf.validate_config(config, ROOT)))
+
+    def write_spectrum(self, folder, level=0.5, start=400, stop=900, name='panel.csv', header=False):
+        path = Path(folder) / name
+        text = ('Wavelength (nm),Reflectance\n' if header else '') + \
+               ''.join(f"{w},{level}\n" for w in range(start, stop + 1))
+        path.write_text(text, encoding='utf-8')
+        return path
+
+    def spectral_config(self, path, **changes):
+        values = {'PANEL.reflectance_source': 'spectral_file', 'PANEL.spectral_file': str(path)}
+        values.update(changes)
+        return wf.merge_config(values)
+
+    def test_levels_come_from_the_typed_values_or_from_the_spectral_file(self):
+        config = wf.default_config()
+        levels, info = wf.panel_reflectance_levels(config)
+        self.assertEqual(levels, config['PANEL.reflectance_by_band'])
+        self.assertEqual(info, {'source': 'values'})
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.spectral_config(self.write_spectrum(folder, 0.5, header=True))
+            levels, info = wf.panel_reflectance_levels(config)
+        self.assertEqual(list(levels), list(wf.BAND_NAMES))
+        self.assertTrue(all(abs(value - 0.5) < 1e-12 for value in levels.values()))
+        self.assertEqual(info['source'], 'spectral_file')
+        self.assertEqual(len(info['sha256']), 64)
+        self.assertEqual(info['bands']['Blue']['window_nm'], [459.0, 491.0])
+        self.assertEqual(wf.panel_bands(config), list(wf.BAND_NAMES))
+
+    def test_the_format_options_are_used(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'panel.csv'
+            path.write_text(''.join(f"{w / 1000:.3f};{'50,0'}\n" for w in range(400, 901)), encoding='utf-8')
+            config = self.spectral_config(path, **{'PANEL.spectral_delimiter': 'semicolon', 'PANEL.spectral_decimal': ',',
+                                                  'PANEL.spectral_wavelength_unit': 'um',
+                                                  'PANEL.spectral_reflectance_unit': 'percent'})
+            levels, _ = wf.panel_reflectance_levels(config)
+        self.assertAlmostEqual(levels['Red'], 0.5)
+
+    def test_spectral_file_problems_are_reported(self):
+        def problems(config):
+            return '\n'.join(wf.validate_config(config, ROOT))
+        self.assertIn('PANEL.spectral_file is empty',
+                      problems(wf.merge_config({'PANEL.reflectance_source': 'spectral_file'})))
+        self.assertIn('Spectral response file not found', problems(self.spectral_config('missing.csv')))
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.write_spectrum(folder, 0.5, 400, 700)           # ends at 700 nm: the NIR window is not covered
+            self.assertIn("Band 'Red edge'", problems(self.spectral_config(path)))
+            self.assertIn("Band 'NIR'", problems(self.spectral_config(path)))      # all the bands are listed
+            self.assertIn('Spectral response format', problems(self.spectral_config(
+                path, **{'PANEL.spectral_reflectance_column': 1})))
+            self.assertIn("PANEL.spectral_skip_rows must be 'auto'", problems(self.spectral_config(
+                path, **{'PANEL.spectral_skip_rows': 'two'})))
+            self.assertIn('same bands', problems(self.spectral_config(
+                path, **{'PANEL.band_bandwidths': {'Blue': 32.0}})))
+            self.assertIn('PANEL.spectral_min_coverage', problems(self.spectral_config(
+                path, **{'PANEL.spectral_min_coverage': 0})))
+            self.assertIn('PANEL.reflectance_source must be one of', problems(
+                wf.merge_config({'PANEL.reflectance_source': 'both'})))
+            self.assertIn("PANEL.band_bandwidths['Blue'] must be a number in (0, 5000]", problems(
+                wf.merge_config({'PANEL.band_bandwidths': dict(wf.default_config()['PANEL.band_bandwidths'], Blue=-1)})))
+
+    def test_a_low_coverage_limit_accepts_a_file_that_ends_early(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.write_spectrum(folder, 0.5, 400, 848)           # like the example: NIR window 61 % covered
+            self.assertEqual(wf.validate_config(self.spectral_config(path), ROOT), [])
+            strict = self.spectral_config(path, **{'PANEL.spectral_min_coverage': 0.9})
+            self.assertIn("Band 'NIR'", '\n'.join(wf.validate_config(strict, ROOT)))
+
+    def test_irrelevant_values_are_not_checked_for_the_unused_source(self):
+        # the typed values are not used when the spectral file is the source, and the file is not read for 'values'
+        config = wf.merge_config({'PANEL.spectral_file': 'missing.csv'})
+        self.assertEqual(wf.validate_config(config, ROOT), [])
 
     def test_irradiance_series_changes_names_the_capture(self):
         series = {'Blue': [('c1', 100.0), ('c2', 101.0), ('c3', 150.0), ('c4', 100.0), ('c5', 100.0)],
@@ -218,6 +290,39 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertIn("Panel of band 'Green' in IMG_0005", result['errors'][0])
         self.assertIn('not inside', result['errors'][0])
+
+    def test_a_run_with_the_spectral_file_uses_its_reflectance_and_records_it(self):
+        folder = self.folder / 'spectral_inputs'
+        folder.mkdir()
+        path = folder / 'panel.csv'
+        path.write_text(''.join(f"{w},0.5\n" for w in range(400, 901)), encoding='utf-8')
+        result = wf.run(config_for(self.folder / 'spectral', **{'PANEL.reflectance_source': 'spectral_file',
+                                                                'PANEL.spectral_file': str(path)}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        reflectance = result['panel']['reflectance']
+        self.assertEqual(reflectance['source'], 'spectral_file')
+        self.assertTrue(all(abs(level - 0.5) < 1e-12 for level in reflectance['levels'].values()))
+        values_run = self.panel_only['panel']['before']['bands']
+        spectral_run = result['panel']['before']['bands']
+        for band in wf.BAND_NAMES:
+            self.assertAlmostEqual(spectral_run[band]['radiance_to_reflectance_factor'] /
+                                   values_run[band]['radiance_to_reflectance_factor'],
+                                   0.5 / wf.default_config()['PANEL.reflectance_by_band'][band])
+        provenance = json.loads((self.folder / 'spectral' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(provenance['parameters']['panel_reflectance_source']['sha256'], reflectance['sha256'])
+        self.assertEqual(provenance['parameters']['panel_reflectance_levels']['Blue'], 0.5)
+
+    def test_a_spectral_file_that_does_not_cover_a_band_stops_the_run_before_processing(self):
+        folder = self.folder / 'short_inputs'
+        folder.mkdir()
+        path = folder / 'panel.csv'
+        path.write_text(''.join(f"{w},0.5\n" for w in range(400, 700)), encoding='utf-8')
+        result = wf.run(config_for(self.folder / 'short', **{'PANEL.reflectance_source': 'spectral_file',
+                                                             'PANEL.spectral_file': str(path)}), ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn("Band 'Red edge'", result['errors'][0])
+        self.assertIn("Band 'NIR'", result['errors'][0])
+        self.assertEqual(result['outputs'], [])
 
     def test_progress_reports_the_stages_in_order(self):
         events = []

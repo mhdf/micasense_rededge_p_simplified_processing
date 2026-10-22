@@ -99,6 +99,8 @@ class ImportSession:
             status = row['status']
             if status == 'ok' and not 0 < row['reflectance'] <= 1:
                 status = 'not used (outside 0-1)'
+            elif status == 'outside range':
+                status = 'not used (wavelength range)'
             shown.append((row['line'], row['raw'],
                           '' if row['wavelength'] is None else f"{row['wavelength']:g}",
                           '' if row['reflectance'] is None else f"{row['reflectance']:.6g}", status))
@@ -128,10 +130,17 @@ class ImportSession:
             found.append((self.band_error, 'error'))
         if self.spectrum is not None:
             found.extend((warning, 'warning') for warning in self.spectrum['warnings'])
-            header = sum(1 for row in self.rows if row['status'] == 'header' and row['raw'].strip())
+            counts = {status: sum(1 for row in self.rows if row['status'] == status and row['raw'].strip())
+                      for status in ('header', 'footer', 'comment', 'excluded', 'outside range')}
+            skipped = ', '.join(f"{count} {name}" for name, count in (('header row(s)', counts['header']),
+                                                                   ('footer row(s)', counts['footer']),
+                                                                   ('comment line(s)', counts['comment']),
+                                                                   ('excluded line(s)', counts['excluded']),
+                                                                   ('outside the wavelength range', counts['outside range']))
+                                if count)
             found.append((f"{len(self.spectrum['wavelength'])} samples, "
                           f"{self.spectrum['wavelength'][0]:g} - {self.spectrum['wavelength'][-1]:g} nm; "
-                          f"{header} header row(s) skipped; delimiter {self.spectrum['delimiter']!r}", 'info'))
+                          f"{'left out: ' + skipped + '; ' if skipped else ''}delimiter {self.spectrum['delimiter']!r}", 'info'))
         if self.band_table:
             partial = [band for band, values in self.band_table.items() if values['coverage'] < 1]
             if partial:
@@ -191,32 +200,43 @@ class ImportDialog:
         options = ttk.Frame(outer)
         options.pack(fill='x', pady=(10, 0))
         self.format_vars = {}
-        specs = (('delimiter', 'Delimiter', list(ps.DELIMITERS), 10), ('skip_rows', 'Header rows', None, 6),
-                 ('wavelength_column', 'Wavelength column', None, 4), ('reflectance_column', 'Reflectance column', None, 4),
-                 ('wavelength_unit', 'Wavelength unit', list(ps.WAVELENGTH_UNITS), 6),
-                 ('reflectance_unit', 'Reflectance unit', list(ps.REFLECTANCE_UNITS), 9),
-                 ('decimal', 'Decimal mark', list(ps.DECIMAL_MARKS), 3))
-        for column, (key, label, choices, width) in enumerate(specs):
-            ttk.Label(options, text=label, style='Muted.TLabel').grid(row=0, column=column, sticky='w', padx=(0, 10))
-            variable = tk.StringVar()
-            if choices:
-                widget = ttk.Combobox(options, textvariable=variable, values=choices, state='readonly', width=width)
-            else:
-                widget = ttk.Entry(options, textvariable=variable, width=width)
-            widget.grid(row=1, column=column, sticky='w', padx=(0, 10))
-            variable.trace_add('write', lambda *_: self._on_format())
-            self.format_vars[key] = variable
+        specs = ((('delimiter', 'Delimiter', 'choice', list(ps.DELIMITERS)), ('delimiter_char', 'Custom delimiter', 'entry', 6),
+                  ('skip_rows', 'Header rows', 'combo', ['auto', '0', '1', '2', '3', '4', '5']),
+                  ('skip_footer', 'Footer rows', 'entry', 5), ('comment_prefix', 'Comment prefix', 'entry', 6),
+                  ('decimal', 'Decimal mark', 'choice', list(ps.DECIMAL_MARKS))),
+                 (('wavelength_column', 'Wavelength column', 'entry', 5), ('reflectance_column', 'Reflectance column', 'entry', 5),
+                  ('wavelength_unit', 'Wavelength unit', 'choice', list(ps.WAVELENGTH_UNITS)),
+                  ('reflectance_unit', 'Reflectance unit', 'choice', list(ps.REFLECTANCE_UNITS)),
+                  ('reflectance_scale', 'Reflectance x', 'entry', 7), ('wavelength_min', 'Min. wavelength', 'entry', 7),
+                  ('wavelength_max', 'Max. wavelength', 'entry', 7), ('exclude_rows', 'Exclude lines', 'entry', 16)))
+        for line, row_specs in enumerate(specs):
+            for column, (key, label, kind, extra) in enumerate(row_specs):
+                ttk.Label(options, text=label, style='Muted.TLabel').grid(row=2 * line, column=column, sticky='w',
+                                                                         padx=(0, 10), pady=(6 if line else 0, 0))
+                variable = tk.StringVar()
+                if kind == 'choice':
+                    widget = ttk.Combobox(options, textvariable=variable, values=extra, state='readonly', width=10)
+                elif kind == 'combo':
+                    widget = ttk.Combobox(options, textvariable=variable, values=extra, width=7)
+                else:
+                    widget = ttk.Entry(options, textvariable=variable, width=extra)
+                widget.grid(row=2 * line + 1, column=column, sticky='w', padx=(0, 10))
+                variable.trace_add('write', lambda *_: self._on_format())
+                self.format_vars[key] = variable
 
         windows = ttk.Frame(outer)
         windows.pack(fill='x', pady=(10, 0))
-        ttk.Label(windows, text='Spectral window of each band (nm)', style='Heading.TLabel').grid(
-            row=0, column=0, columnspan=8, sticky='w')
+        ttk.Label(windows, text='Spectral window of each band (nm): center ± bandwidth/2 (the bands are those of the band table of the window)', style='Heading.TLabel').grid(row=0, column=0, columnspan=8, sticky='w')
         self.center_vars, self.width_vars = {}, {}
-        for column, band in enumerate(self.session.windows):
-            ttk.Label(windows, text=band, style='Muted.TLabel').grid(row=1, column=column, sticky='w', padx=(0, 10))
+        per_row = 7
+        for number, band in enumerate(self.session.windows):
+            line, column = divmod(number, per_row)
+            holder = ttk.Frame(windows)
+            holder.grid(row=1 + line, column=column, sticky='w', padx=(0, 10), pady=(2, 0))
+            ttk.Label(holder, text=band, style='Muted.TLabel').pack(anchor='w')
             center, width = tk.StringVar(), tk.StringVar()
-            frame = ttk.Frame(windows)
-            frame.grid(row=2, column=column, sticky='w', padx=(0, 10))
+            frame = ttk.Frame(holder)
+            frame.pack(anchor='w')
             ttk.Entry(frame, textvariable=center, width=5).pack(side='left')
             ttk.Label(frame, text='±').pack(side='left', padx=2)
             ttk.Entry(frame, textvariable=width, width=4).pack(side='left')
@@ -224,10 +244,13 @@ class ImportDialog:
             for variable in (center, width):
                 variable.trace_add('write', lambda *_: self._on_windows())
             self.center_vars[band], self.width_vars[band] = center, width
-        last = len(self.session.windows)
-        ttk.Label(windows, text='Min. covered', style='Muted.TLabel').grid(row=1, column=last, sticky='w')
+        count = len(self.session.windows)
+        line, column = divmod(count, per_row)
+        holder = ttk.Frame(windows)
+        holder.grid(row=1 + line, column=column, sticky='w', padx=(0, 10), pady=(2, 0))
+        ttk.Label(holder, text='Min. covered', style='Muted.TLabel').pack(anchor='w')
         self.coverage_var = tk.StringVar()
-        ttk.Entry(windows, textvariable=self.coverage_var, width=5).grid(row=2, column=last, sticky='w')
+        ttk.Entry(holder, textvariable=self.coverage_var, width=5).pack(anchor='w')
         self.coverage_var.trace_add('write', lambda *_: self._on_windows())
 
         buttons = ttk.Frame(outer)
@@ -248,15 +271,17 @@ class ImportDialog:
 
         body = ttk.Frame(outer)
         body.pack(fill='both', expand=True, pady=(12, 0))
+        right = ttk.Frame(body)
+        right.pack(side='right', fill='y', padx=(12, 0))
         left = ttk.Frame(body)
         left.pack(side='left', fill='both', expand=True)
         ttk.Label(left, text='What was read from each line', style='Heading.TLabel').pack(anchor='w')
         table = ttk.Frame(left)
         table.pack(fill='both', expand=True, pady=(4, 0))
         columns = ('line', 'text', 'wavelength', 'reflectance', 'status')
-        self.rows_tree = ttk.Treeview(table, columns=columns, show='headings', selectmode='browse')
-        for column, (title, width) in zip(columns, (('Line', 50), ('Text', 200), ('Wavelength nm', 135),
-                                                    ('Reflectance', 100), ('Status', 180))):
+        self.rows_tree = ttk.Treeview(table, columns=columns, show='headings', selectmode='extended')
+        for column, (title, width) in zip(columns, (('Line', 40), ('Text', 120), ('Wavelength', 95),
+                                                    ('Reflectance', 90), ('Status', 200))):
             self.rows_tree.heading(column, text=title)
             self.rows_tree.column(column, width=width, anchor='w', stretch=column == 'text')
         scroll = ttk.Scrollbar(table, command=self.rows_tree.yview)
@@ -267,11 +292,17 @@ class ImportDialog:
         self.rows_tree.tag_configure('error', foreground=COLORS['error'])
         self.rows_tree.tag_configure('blank', foreground=COLORS['disabled'])
         self.rows_tree.tag_configure('unused', foreground=COLORS['automatic'])
+        self.rows_tree.tag_configure('excluded', foreground=COLORS['disabled'])
 
-        right = ttk.Frame(body)
-        right.pack(side='left', fill='both', expand=True, padx=(12, 0))
+        row_buttons = ttk.Frame(left)
+        row_buttons.pack(fill='x', pady=(6, 0))
+        ttk.Button(row_buttons, text='Exclude the selected lines', command=self.exclude_selected).pack(side='left')
+        ttk.Button(row_buttons, text='Include all the lines', command=self.include_all).pack(side='left', padx=(6, 0))
+        ttk.Label(row_buttons, text='Ctrl or Shift selects several lines',
+                  style='Muted.TLabel').pack(side='left', padx=(10, 0))
+
         ttk.Label(right, text='Reflectance by wavelength (nm) and band windows', style='Heading.TLabel').pack(anchor='w')
-        self.plot = tk.Canvas(right, height=200, background=COLORS['panel'], highlightthickness=0)
+        self.plot = tk.Canvas(right, width=470, height=200, background=COLORS['panel'], highlightthickness=0)
         self.plot.pack(fill='x', pady=(4, 8))
         self.plot.bind('<Configure>', lambda event: self._draw_plot())
         ttk.Label(right, text='Reflectance of each band', style='Heading.TLabel').pack(anchor='w')
@@ -294,7 +325,8 @@ class ImportDialog:
         self.updating = True
         self.path_var.set(self.session.path)
         for key, variable in self.format_vars.items():
-            variable.set(str(self.session.fmt[key]))
+            value = self.session.fmt[key]
+            variable.set('' if value is None else str(value))
         for band, (center, width) in self.session.windows.items():
             self.center_vars[band].set(f"{center:g}")
             self.width_vars[band].set(f"{width:g}")
@@ -324,14 +356,24 @@ class ImportDialog:
     def _on_windows(self):
         self._schedule(self.apply_all)
 
+    INTEGER_KEYS = ('wavelength_column', 'reflectance_column', 'skip_footer')
+    OPTIONAL_NUMBER_KEYS = ('wavelength_min', 'wavelength_max')
+
     def _read_format(self):
+        """ The format from the fields; ValueError if a number cannot be read """
         changes = {}
         for key, variable in self.format_vars.items():
             text = variable.get().strip()
             if key == 'skip_rows':
                 changes[key] = 'auto' if text.lower() == 'auto' else int(text)
-            elif key.endswith('_column'):
+            elif key in self.INTEGER_KEYS:
                 changes[key] = int(text)
+            elif key == 'reflectance_scale':
+                changes[key] = float(text)
+            elif key in self.OPTIONAL_NUMBER_KEYS:
+                changes[key] = float(text) if text else None
+            elif key in ('delimiter_char', 'comment_prefix'):
+                changes[key] = variable.get()                # spaces can be part of these
             else:
                 changes[key] = text
         return changes
@@ -356,7 +398,8 @@ class ImportDialog:
         try:
             changes = self._read_format()
         except ValueError:
-            session.error = "The header rows and the columns must be whole numbers (the header rows can be 'auto')."
+            session.error = ("The header rows, the footer rows and the columns must be whole numbers (the header rows "
+                             "can be 'auto'); the scale and the wavelength limits must be numbers.")
             session.rows, session.spectrum, session.band_table = [], None, None
             problems = True
         try:
@@ -389,6 +432,19 @@ class ImportDialog:
         if notes:
             self.show_messages(self.messages_with([('Detected: ' + '; '.join(notes), 'info')]))
 
+    def exclude_selected(self):
+        numbers = {int(self.rows_tree.item(item)['values'][0]) for item in self.rows_tree.selection()}
+        if not numbers:
+            return
+        try:
+            current = ps.parse_row_selection(self.format_vars['exclude_rows'].get())
+        except ps.SpectrumError:
+            current = set()
+        self.format_vars['exclude_rows'].set(ps.format_row_selection(current | numbers))
+
+    def include_all(self):
+        self.format_vars['exclude_rows'].set('')
+
     def messages_with(self, extra):
         return extra + self.session.messages()
 
@@ -413,7 +469,8 @@ class ImportDialog:
         self.rows_tree.delete(*self.rows_tree.get_children())
         for line, text, wavelength, reflectance, status in session.preview_rows():
             tag = ('error' if status.startswith('error') else 'unused' if status.startswith('not used')
-                   else status if status in ('header', 'blank') else '')
+                   else 'excluded' if status == 'excluded'
+                   else 'header' if status in ('header', 'blank', 'comment', 'footer') else '')
             self.rows_tree.insert('', 'end', values=(line, text, wavelength, reflectance, status), tags=(tag,))
         self.bands_tree.delete(*self.bands_tree.get_children())
         for row in session.band_rows():

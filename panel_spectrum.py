@@ -17,13 +17,20 @@ from pathlib import Path
 # Third-Party Imports
 import numpy as np
 
-DELIMITERS = {'auto': None, 'comma': ',', 'semicolon': ';', 'tab': '\t', 'space': ' '}
+DELIMITERS = {'auto': None, 'comma': ',', 'semicolon': ';', 'tab': '\t', 'space': ' ', 'custom': None}
 WAVELENGTH_UNITS = {'nm': 1.0, 'um': 1000.0}
 REFLECTANCE_UNITS = {'fraction': 1.0, 'percent': 0.01}
 DECIMAL_MARKS = ('.', ',')
 
-DEFAULT_FORMAT = {'delimiter': 'auto', 'skip_rows': 'auto', 'wavelength_column': 1, 'reflectance_column': 2,
-                  'wavelength_unit': 'nm', 'reflectance_unit': 'fraction', 'decimal': '.'}
+# What is read from the file. delimiter_char is the separator when the delimiter is 'custom'; skip_rows are the header
+# rows ('auto': the rows at the start that are not numbers); skip_footer the last rows; lines that start with
+# comment_prefix are ignored; exclude_rows is a selection of lines such as '5, 10-12'; rows with a wavelength
+# outside wavelength_min/wavelength_max (nm, None for no limit) are not used; reflectance_scale multiplies the
+# reflectance after the unit (for example 0.001 for per mille)
+DEFAULT_FORMAT = {'delimiter': 'auto', 'delimiter_char': '', 'skip_rows': 'auto', 'skip_footer': 0,
+                  'comment_prefix': '', 'exclude_rows': '', 'wavelength_column': 1, 'reflectance_column': 2,
+                  'wavelength_unit': 'nm', 'reflectance_unit': 'fraction', 'reflectance_scale': 1.0,
+                  'wavelength_min': None, 'wavelength_max': None, 'decimal': '.'}
 
 # Spectral windows of the bands of the RedEdge-P: (center wavelength, bandwidth) in nm
 REDEDGE_P_BANDS = {'Blue': (475.0, 32.0), 'Green': (560.0, 27.0), 'Panchro': (634.5, 463.0),
@@ -37,8 +44,45 @@ class SpectrumError(ValueError):
     """ Raised when the file cannot be read with the chosen format, or does not cover a band """
 
 
+def parse_row_selection(text):
+    """ Line numbers of a selection such as '5, 10-12' (empty text: none); SpectrumError if it cannot be read """
+    selected = set()
+    for part in str(text or '').replace(';', ',').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            first, _, last = part.partition('-')
+            low = int(first)
+            high = int(last) if last.strip() else low
+        except ValueError:
+            raise SpectrumError(f"'{part}' is not a line number or a range such as 10-12")
+        if low < 1 or high < low:
+            raise SpectrumError(f"'{part}' is not a valid range of lines (from 1, in increasing order)")
+        selected.update(range(low, high + 1))
+    return selected
+
+
+def format_row_selection(numbers):
+    """ The text of a set of line numbers, with ranges: {5, 10, 11, 12} -> '5, 10-12' """
+    ordered, parts = sorted(set(numbers)), []
+    start = previous = None
+    for number in ordered:
+        if start is None:
+            start = previous = number
+        elif number == previous + 1:
+            previous = number
+        else:
+            parts.append(str(start) if start == previous else f"{start}-{previous}")
+            start = previous = number
+    if start is not None:
+        parts.append(str(start) if start == previous else f"{start}-{previous}")
+    return ', '.join(parts)
+
+
 def validate_format(fmt):
     """ Return the list of problems of a format dictionary (empty if valid) """
+    fmt = dict(DEFAULT_FORMAT, **fmt)
     problems = []
     if fmt['delimiter'] not in DELIMITERS:
         problems.append(f"delimiter must be one of {list(DELIMITERS)}")
@@ -59,6 +103,30 @@ def validate_format(fmt):
         problems.append(f"decimal must be one of {list(DECIMAL_MARKS)}")
     if fmt['decimal'] == ',' and fmt['delimiter'] == 'comma':
         problems.append("the decimal mark and the delimiter cannot both be a comma")
+    if fmt['delimiter'] == 'custom':
+        if not isinstance(fmt['delimiter_char'], str) or not fmt['delimiter_char']:
+            problems.append("a custom delimiter needs at least one character")
+        elif fmt['delimiter_char'] == fmt['decimal']:
+            problems.append("the decimal mark and the delimiter cannot be the same character")
+    footer = fmt['skip_footer']
+    if not isinstance(footer, int) or isinstance(footer, bool) or footer < 0:
+        problems.append("skip_footer must be a whole number from 0")
+    if not isinstance(fmt['comment_prefix'], str):
+        problems.append("comment_prefix must be text")
+    try:
+        parse_row_selection(fmt['exclude_rows'])
+    except SpectrumError as error:
+        problems.append(f"exclude_rows: {error}")
+    for key in ('wavelength_min', 'wavelength_max'):
+        value = fmt[key]
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value)):
+            problems.append(f"{key} must be a number or empty")
+    if not problems and None not in (fmt['wavelength_min'], fmt['wavelength_max']) \
+            and fmt['wavelength_min'] >= fmt['wavelength_max']:
+        problems.append("wavelength_min must be smaller than wavelength_max")
+    scale = fmt['reflectance_scale']
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not np.isfinite(scale) or scale <= 0:
+        problems.append("reflectance_scale must be a number above 0")
     return problems
 
 
@@ -67,8 +135,13 @@ def read_text_lines(path):
     return Path(path).read_text(encoding='utf-8-sig', errors='replace').splitlines()
 
 
-def resolve_delimiter(lines, delimiter='auto'):
-    """ The character that separates the columns ('auto': the one that gives the same number of columns in most lines) """
+def resolve_delimiter(lines, delimiter='auto', custom=''):
+    """
+    The characters that separate the columns ('auto': the one that gives the same number of columns in most lines;
+    'custom': the given text)
+    """
+    if delimiter == 'custom':
+        return custom
     if delimiter != 'auto':
         return DELIMITERS[delimiter]
     sample = [line for line in lines if line.strip()][:50]
@@ -81,6 +154,14 @@ def resolve_delimiter(lines, delimiter='auto'):
             if common >= 2 and counts.count(common) >= 0.6 * len(counts):
                 return DELIMITERS[name]
     return ' '
+
+
+def delimiter_of(lines, fmt):
+    """ The delimiter that the format gives for these lines (comment lines do not take part in the detection) """
+    fmt = dict(DEFAULT_FORMAT, **fmt)
+    comment = fmt['comment_prefix']
+    kept = [line for line in lines if not (comment and line.lstrip().startswith(comment))]
+    return resolve_delimiter(kept, fmt['delimiter'], fmt['delimiter_char'])
 
 
 def split_line(line, delimiter):
@@ -98,14 +179,18 @@ def parse_rows(lines, fmt):
     """
     Read every line with the format
     Outputs: list of dictionaries {'line', 'raw', 'fields', 'wavelength' (nm), 'reflectance' (fraction), 'status'},
-             status being 'ok', 'header', 'blank' or 'error: reason'
+             status being 'ok' (a sample), 'header', 'footer', 'comment', 'excluded', 'blank',
+             'outside range' (a sample outside wavelength_min/wavelength_max) or 'error: reason'
     """
+    fmt = dict(DEFAULT_FORMAT, **fmt)
     problems = validate_format(fmt)
     if problems:
         raise SpectrumError('; '.join(problems))
-    delimiter = resolve_delimiter(lines, fmt['delimiter'])
+    delimiter = delimiter_of(lines, fmt)
     wavelength_index, reflectance_index = fmt['wavelength_column'] - 1, fmt['reflectance_column'] - 1
-    skip = fmt['skip_rows']
+    skip, excluded = fmt['skip_rows'], parse_row_selection(fmt['exclude_rows'])
+    comment = fmt['comment_prefix']
+    scale = REFLECTANCE_UNITS[fmt['reflectance_unit']] * fmt['reflectance_scale']
     rows, data_started = [], False
     for number, raw in enumerate(lines, start=1):
         row = {'line': number, 'raw': raw, 'fields': [], 'wavelength': None, 'reflectance': None, 'status': 'ok'}
@@ -113,7 +198,13 @@ def parse_rows(lines, fmt):
         if not raw.strip():
             row['status'] = 'blank'
             continue
+        if comment and raw.lstrip().startswith(comment):
+            row['status'] = 'comment'
+            continue
         row['fields'] = split_line(raw, delimiter)
+        if number in excluded:
+            row['status'] = 'excluded'
+            continue
         if skip != 'auto' and number <= skip:
             row['status'] = 'header'
             continue
@@ -122,16 +213,24 @@ def parse_rows(lines, fmt):
             if len(fields) <= max(wavelength_index, reflectance_index):
                 raise ValueError(f"only {len(fields)} column(s)")
             wavelength = _number(fields[wavelength_index], fmt['decimal']) * WAVELENGTH_UNITS[fmt['wavelength_unit']]
-            reflectance = _number(fields[reflectance_index], fmt['decimal']) * REFLECTANCE_UNITS[fmt['reflectance_unit']]
+            reflectance = _number(fields[reflectance_index], fmt['decimal']) * scale
             if not (np.isfinite(wavelength) and np.isfinite(reflectance)):
                 raise ValueError("not a finite number")
             row['wavelength'], row['reflectance'] = wavelength, reflectance
             data_started = True
+            if (fmt['wavelength_min'] is not None and wavelength < fmt['wavelength_min']) or \
+                    (fmt['wavelength_max'] is not None and wavelength > fmt['wavelength_max']):
+                row['status'] = 'outside range'
         except ValueError as error:
             if skip == 'auto' and not data_started:
                 row['status'] = 'header'
             else:
                 row['status'] = f"error: {error}"
+    # the last rows of the file that are not blank
+    footer = fmt['skip_footer']
+    if footer:
+        for row in [row for row in rows if row['raw'].strip()][-footer:]:
+            row['status'] = 'footer'
     return rows
 
 
@@ -163,7 +262,8 @@ def load_spectrum(path, fmt, min_samples=2):
     if invalid:
         warnings_found.append(f"{invalid} sample(s) with a reflectance outside (0, 1] are not used")
     return {'wavelength': wavelength, 'reflectance': reflectance, 'rows': rows,
-            'delimiter': resolve_delimiter(lines, fmt['delimiter']), 'warnings': warnings_found, 'file': str(path),
+            'delimiter': delimiter_of(lines, fmt),
+            'warnings': warnings_found, 'file': str(path),
             'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
@@ -208,6 +308,10 @@ def detect_format(path):
     lines = read_text_lines(path)
     fmt = dict(DEFAULT_FORMAT)
     notes = []
+    if any(line.startswith('#') for line in lines[:20]):
+        fmt['comment_prefix'] = '#'
+        notes.append("lines that start with # are ignored")
+        lines = [line for line in lines if not line.startswith('#')]
     delimiter = resolve_delimiter(lines)
     fmt['delimiter'] = {value: name for name, value in DELIMITERS.items() if name != 'auto'}[delimiter]
     notes.append(f"delimiter: {fmt['delimiter']}")

@@ -166,6 +166,42 @@ class ConfigurationTests(unittest.TestCase):
             self.assertIn("PANEL.band_bandwidths['Blue'] must be a number in (0, 5000]", problems(
                 wf.merge_config({'PANEL.band_bandwidths': dict(wf.default_config()['PANEL.band_bandwidths'], Blue=-1)})))
 
+    def test_the_reading_options_of_the_configuration_reach_the_format(self):
+        config = wf.merge_config({'PANEL.spectral_delimiter': 'custom', 'PANEL.spectral_delimiter_char': '|',
+                                  'PANEL.spectral_skip_footer': 2, 'PANEL.spectral_comment_prefix': '#',
+                                  'PANEL.spectral_exclude_rows': '5-6', 'PANEL.spectral_wavelength_min': '400',
+                                  'PANEL.spectral_wavelength_max': ' ', 'PANEL.spectral_reflectance_scale': 0.01})
+        fmt = wf.spectral_format(config)
+        self.assertEqual((fmt['delimiter'], fmt['delimiter_char'], fmt['skip_footer']), ('custom', '|', 2))
+        self.assertEqual((fmt['comment_prefix'], fmt['exclude_rows']), ('#', '5-6'))
+        self.assertEqual((fmt['wavelength_min'], fmt['wavelength_max'], fmt['reflectance_scale']), (400.0, None, 0.01))
+        self.assertEqual(wf.spectral_format(wf.default_config())['wavelength_min'], None)
+
+    def test_bad_reading_options_are_reported(self):
+        for key, value, message in (('PANEL.spectral_wavelength_min', 'low', 'must be a number or empty'),
+                                    ('PANEL.spectral_delimiter', 'custom', 'custom delimiter needs'),
+                                    ('PANEL.spectral_exclude_rows', 'x', 'exclude_rows'),
+                                    ('PANEL.spectral_skip_footer', -1, 'skip_footer'),
+                                    ('PANEL.spectral_reflectance_scale', 0.0, 'reflectance_scale')):
+            with tempfile.TemporaryDirectory() as folder:
+                path = self.write_spectrum(folder)
+                config = self.spectral_config(path, **{key: value})
+                self.assertIn(message, '\n'.join(wf.validate_config(config, ROOT)), key)
+
+    def test_levels_from_a_file_that_needs_the_options(self):
+        with tempfile.TemporaryDirectory() as folder:
+            lines = ['# panel', 'wavelength|reflectance'] + [f"{w}|{500 if w < 700 else 700}" for w in range(400, 901)] + ['end|x']
+            path = Path(folder) / 'panel.txt'
+            path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+            config = self.spectral_config(path, **{
+                'PANEL.spectral_delimiter': 'custom', 'PANEL.spectral_delimiter_char': '|',
+                'PANEL.spectral_comment_prefix': '#', 'PANEL.spectral_skip_footer': 1,
+                'PANEL.spectral_reflectance_scale': 0.001, 'PANEL.spectral_wavelength_max': '880'})
+            self.assertEqual(wf.validate_config(config, ROOT), [])
+            levels, info = wf.panel_reflectance_levels(config)
+        self.assertAlmostEqual(levels['Blue'], 0.5)
+        self.assertAlmostEqual(levels['Red edge'], 0.7)
+
     def test_a_low_coverage_limit_accepts_a_file_that_ends_early(self):
         with tempfile.TemporaryDirectory() as folder:
             path = self.write_spectrum(folder, 0.5, 400, 848)           # like the example: NIR window 61 % covered

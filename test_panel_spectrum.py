@@ -206,6 +206,101 @@ class DetectFormatTests(unittest.TestCase):
         self.assertTrue(any('no numeric rows' in note for note in notes))
 
 
+class ReadingOptionsTests(unittest.TestCase):
+
+    def parse(self, text, **changes):
+        return ps.parse_rows(text.splitlines(), dict(ps.DEFAULT_FORMAT, **changes))
+
+    def statuses(self, text, **changes):
+        return [row['status'] for row in self.parse(text, **changes)]
+
+    def test_row_selections_are_read_and_written_with_ranges(self):
+        self.assertEqual(ps.parse_row_selection('5, 10-12;20'), {5, 10, 11, 12, 20})
+        self.assertEqual(ps.parse_row_selection(''), set())
+        self.assertEqual(ps.format_row_selection({5, 10, 11, 12, 20}), '5, 10-12, 20')
+        self.assertEqual(ps.format_row_selection(set()), '')
+        for bad in ('a', '3-1', '0', '1-x', '-4'):
+            with self.assertRaises(ps.SpectrumError, msg=bad):
+                ps.parse_row_selection(bad)
+
+    def test_header_rows_can_be_a_number(self):
+        text = 'x,y\n400,0.4\n401,0.41\n'
+        self.assertEqual(self.statuses(text, skip_rows=1), ['header', 'ok', 'ok'])
+        self.assertEqual(self.statuses(text, skip_rows=2), ['header', 'header', 'ok'])
+
+    def test_footer_rows_are_the_last_rows_that_are_not_blank(self):
+        text = '400,0.4\n401,0.41\n402,0.42\ntotal,3\n\n'
+        self.assertEqual(self.statuses(text, skip_footer=1), ['ok', 'ok', 'ok', 'footer', 'blank'])
+        self.assertEqual(self.statuses(text, skip_footer=2), ['ok', 'ok', 'footer', 'footer', 'blank'])
+        self.assertTrue(self.statuses(text)[3].startswith('error'))             # without the option it is an error
+
+    def test_comment_lines_are_ignored(self):
+        text = '# measured 2022\n400,0.4\n  # and more\n401,0.41\n'
+        self.assertEqual(self.statuses(text, comment_prefix='#'), ['comment', 'ok', 'comment', 'ok'])
+        after_data = '400,0.4\n  # and more\n401,0.41\n'                         # once the data started, it is an error
+        self.assertTrue(self.statuses(after_data)[1].startswith('error'))
+        self.assertEqual(self.statuses(after_data, comment_prefix='#'), ['ok', 'comment', 'ok'])
+
+    def test_excluded_lines_are_not_read(self):
+        text = '400,0.4\n401,9\n402,0.42\n403,9\n'
+        self.assertEqual(self.statuses(text, exclude_rows='2, 4'), ['ok', 'excluded', 'ok', 'excluded'])
+
+    def test_wavelengths_outside_the_limits_are_not_used(self):
+        text = ''.join(f"{w},0.5\n" for w in range(398, 403))
+        self.assertEqual(self.statuses(text, wavelength_min=400, wavelength_max=401),
+                         ['outside range', 'outside range', 'ok', 'ok', 'outside range'])
+        self.assertEqual(self.statuses(text, wavelength_min=400), ['outside range', 'outside range', 'ok', 'ok', 'ok'])
+        rows = self.parse(text, wavelength_min=400)
+        self.assertEqual(rows[0]['wavelength'], 398.0)                          # still shown in the preview
+
+    def test_the_reflectance_scale_multiplies_after_the_unit(self):
+        self.assertAlmostEqual(self.parse('400,477\n', reflectance_scale=0.001)[0]['reflectance'], 0.477)
+        rows = self.parse('400,47.7\n', reflectance_unit='percent', reflectance_scale=2)
+        self.assertAlmostEqual(rows[0]['reflectance'], 0.954)
+
+    def test_a_custom_delimiter_can_have_several_characters(self):
+        self.assertEqual(self.parse('400|0.4\n', delimiter='custom', delimiter_char='|')[0]['reflectance'], 0.4)
+        self.assertEqual(self.parse('400::0.4\n', delimiter='custom', delimiter_char='::')[0]['wavelength'], 400.0)
+
+    def test_the_options_are_validated(self):
+        def problems(**changes):
+            return '; '.join(ps.validate_format(dict(ps.DEFAULT_FORMAT, **changes)))
+        self.assertIn('custom delimiter needs', problems(delimiter='custom'))
+        self.assertIn('same character', problems(delimiter='custom', delimiter_char='.'))
+        self.assertIn('skip_footer', problems(skip_footer=-1))
+        self.assertIn('exclude_rows', problems(exclude_rows='x'))
+        self.assertIn('wavelength_min must be smaller', problems(wavelength_min=900, wavelength_max=400))
+        self.assertIn('wavelength_min must be a number', problems(wavelength_min='low'))
+        self.assertIn('reflectance_scale', problems(reflectance_scale=0))
+        self.assertIn('comment_prefix', problems(comment_prefix=3))
+        self.assertEqual(problems(wavelength_min=400, wavelength_max=900, skip_footer=2, exclude_rows='3-4'), '')
+
+    def test_a_format_written_before_the_new_options_still_works(self):
+        old = {'delimiter': 'auto', 'skip_rows': 'auto', 'wavelength_column': 1, 'reflectance_column': 2,
+               'wavelength_unit': 'nm', 'reflectance_unit': 'fraction', 'decimal': '.'}
+        self.assertEqual(ps.validate_format(old), [])
+        self.assertEqual(ps.parse_rows(['400,0.4'], old)[0]['reflectance'], 0.4)
+
+    def test_loading_uses_only_the_samples_that_are_read(self):
+        with tempfile.TemporaryDirectory() as folder:
+            lines = ['# comment', 'wavelength,reflectance'] + [f"{w},0.5" for w in range(400, 410)] + ['400,0.9', 'end,x']
+            path = write(folder, 'curve.csv', '\n'.join(lines) + '\n')
+            fmt = dict(ps.DEFAULT_FORMAT, comment_prefix='#', skip_footer=2, wavelength_min=402, wavelength_max=407)
+            spectrum = ps.load_spectrum(path, fmt)
+            self.assertEqual(list(spectrum['wavelength']), [402.0, 403.0, 404.0, 405.0, 406.0, 407.0])
+            self.assertEqual(spectrum['delimiter'], ',')
+            with self.assertRaises(ps.SpectrumError):                         # the last two rows are not numbers
+                ps.load_spectrum(path, dict(fmt, skip_footer=0))
+
+    def test_detect_finds_comment_lines(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = write(folder, 'c.csv', '# panel RP06\n# date\n' + flat_curve(400, 420))
+            fmt, notes = ps.detect_format(path)
+            self.assertEqual(fmt['comment_prefix'], '#')
+            self.assertTrue(any('#' in note for note in notes))
+            self.assertEqual(fmt['delimiter'], 'comma')
+
+
 @unittest.skipUnless(REAL_FILE.is_file(), 'the file of the example panel is not available')
 class ExamplePanelTests(unittest.TestCase):
 

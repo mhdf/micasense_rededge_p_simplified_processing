@@ -79,9 +79,30 @@ FIELDS = [
     {'key': 'PANEL.spectral_delimiter', 'kind': 'choice', 'choices': list(panel_spectrum.DELIMITERS), 'dialog': True,
      'default': 'auto', 'group': 'Spectral response file (.csv)', 'label': 'Delimiter',
      'help': 'Character that separates the columns; auto detects it.'},
+    {'key': 'PANEL.spectral_delimiter_char', 'kind': 'text', 'default': '', 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Custom delimiter',
+     'help': "The separator when the delimiter is custom (one or more characters)."},
     {'key': 'PANEL.spectral_skip_rows', 'kind': 'text', 'default': 'auto', 'dialog': True,
      'group': 'Spectral response file (.csv)', 'label': 'Header rows to skip',
      'help': "auto: the rows at the start that are not numbers; or the number of rows."},
+    {'key': 'PANEL.spectral_skip_footer', 'kind': 'int', 'default': 0, 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Footer rows to skip',
+     'help': "Number of rows at the end of the file that are not data."},
+    {'key': 'PANEL.spectral_comment_prefix', 'kind': 'text', 'default': '', 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Comment prefix',
+     'help': "Lines that start with this text are ignored, for example #."},
+    {'key': 'PANEL.spectral_exclude_rows', 'kind': 'text', 'default': '', 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Lines to exclude',
+     'help': "Line numbers of the file that are not used, for example 5, 10-12."},
+    {'key': 'PANEL.spectral_wavelength_min', 'kind': 'text', 'default': '', 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Smallest wavelength used (nm)',
+     'help': "Empty: no limit."},
+    {'key': 'PANEL.spectral_wavelength_max', 'kind': 'text', 'default': '', 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Largest wavelength used (nm)',
+     'help': "Empty: no limit."},
+    {'key': 'PANEL.spectral_reflectance_scale', 'kind': 'float', 'default': 1.0, 'dialog': True,
+     'group': 'Spectral response file (.csv)', 'label': 'Reflectance multiplier',
+     'help': "Applied after the reflectance unit, for example 0.001 for per mille."},
     {'key': 'PANEL.spectral_wavelength_column', 'kind': 'int', 'default': 1, 'dialog': True,
      'group': 'Spectral response file (.csv)', 'label': 'Wavelength column', 'help': 'Column number, from 1.'},
     {'key': 'PANEL.spectral_reflectance_column', 'kind': 'int', 'default': 2, 'dialog': True,
@@ -208,7 +229,18 @@ def spectral_format(config):
         skip = 'auto' if skip == 'auto' else int(skip)
     except ValueError:
         raise ConfigError("PANEL.spectral_skip_rows must be 'auto' or a whole number")
-    fmt = {'delimiter': config['PANEL.spectral_delimiter'], 'skip_rows': skip,
+    limits = []
+    for key in ('PANEL.spectral_wavelength_min', 'PANEL.spectral_wavelength_max'):
+        text = config[key].strip()
+        try:
+            limits.append(float(text) if text else None)
+        except ValueError:
+            raise ConfigError(f"{key} must be a number or empty")
+    fmt = {'delimiter': config['PANEL.spectral_delimiter'], 'delimiter_char': config['PANEL.spectral_delimiter_char'],
+           'skip_rows': skip, 'skip_footer': int(config['PANEL.spectral_skip_footer']),
+           'comment_prefix': config['PANEL.spectral_comment_prefix'], 'exclude_rows': config['PANEL.spectral_exclude_rows'],
+           'wavelength_min': limits[0], 'wavelength_max': limits[1],
+           'reflectance_scale': float(config['PANEL.spectral_reflectance_scale']),
            'wavelength_column': int(config['PANEL.spectral_wavelength_column']),
            'reflectance_column': int(config['PANEL.spectral_reflectance_column']),
            'wavelength_unit': config['PANEL.spectral_wavelength_unit'],

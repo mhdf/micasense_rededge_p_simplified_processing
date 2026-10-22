@@ -298,6 +298,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(config['PANEL.reflectance_source'], 'spectral_file')
         self.assertEqual(config['PANEL.spectral_file'], 'panel.csv')       # inside the project folder: relative
         self.assertEqual(config['PANEL.spectral_skip_rows'], '0')
+        self.assertEqual((config['PANEL.spectral_skip_footer'], config['PANEL.spectral_comment_prefix']), (0, ''))
+        self.assertEqual((config['PANEL.spectral_wavelength_min'], config['PANEL.spectral_reflectance_scale']), ('', 1.0))
         self.assertEqual(config['PANEL.band_center_wavelengths']['Blue'], 480.0)
         self.assertEqual(config['PANEL.band_bandwidths']['Blue'], 40.0)
         self.assertEqual(wf.validate_config(dict(config, **{'INPUTS.images_folder': str(ROOT / 'images' / 'raw')}),
@@ -305,6 +307,18 @@ class WindowTests(unittest.TestCase):
         levels, info = wf.panel_reflectance_levels(config, self.folder.name)
         self.assertAlmostEqual(levels['Blue'], 0.48)
         self.assertFalse(any(self.enabled(frame.source_widgets['values'])))
+
+    def test_the_reading_options_of_the_dialog_reach_the_fields(self):
+        result = self.result_of_the_dialog('use_file', fmt={'comment_prefix': '#', 'skip_footer': 0, 'exclude_rows': '3',
+                                                            'wavelength_min': 420.0, 'reflectance_scale': 1.0,
+                                                            'delimiter': 'custom', 'delimiter_char': ','})
+        self.frame.apply_import(result)
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['PANEL.spectral_comment_prefix'], '#')
+        self.assertEqual(config['PANEL.spectral_exclude_rows'], '3')
+        self.assertEqual(config['PANEL.spectral_wavelength_min'], '420.0')
+        self.assertEqual((config['PANEL.spectral_delimiter'], config['PANEL.spectral_delimiter_char']), ('custom', ','))
+        self.assertEqual(wf.spectral_format(config)['wavelength_min'], 420.0)
 
     def test_a_file_outside_the_project_folder_keeps_its_full_path(self):
         other = tempfile.TemporaryDirectory()

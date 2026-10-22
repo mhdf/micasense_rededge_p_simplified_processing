@@ -438,13 +438,19 @@ class RadiometricFrame:
             return
         fmt = result['format']
         self.set_value('PANEL.spectral_file', self.stored_path(result['file']))
-        for key, name in (('PANEL.spectral_delimiter', 'delimiter'), ('PANEL.spectral_skip_rows', 'skip_rows'),
+        for key, name in (('PANEL.spectral_delimiter', 'delimiter'), ('PANEL.spectral_delimiter_char', 'delimiter_char'),
+                          ('PANEL.spectral_skip_rows', 'skip_rows'), ('PANEL.spectral_skip_footer', 'skip_footer'),
+                          ('PANEL.spectral_comment_prefix', 'comment_prefix'),
+                          ('PANEL.spectral_exclude_rows', 'exclude_rows'),
+                          ('PANEL.spectral_wavelength_min', 'wavelength_min'),
+                          ('PANEL.spectral_wavelength_max', 'wavelength_max'),
+                          ('PANEL.spectral_reflectance_scale', 'reflectance_scale'),
                           ('PANEL.spectral_wavelength_column', 'wavelength_column'),
                           ('PANEL.spectral_reflectance_column', 'reflectance_column'),
                           ('PANEL.spectral_wavelength_unit', 'wavelength_unit'),
                           ('PANEL.spectral_reflectance_unit', 'reflectance_unit'),
                           ('PANEL.spectral_decimal', 'decimal')):
-            self.set_value(key, str(fmt[name]))
+            self.set_value(key, '' if fmt[name] is None else str(fmt[name]))
         self.set_value('PANEL.band_center_wavelengths', {band: f"{value:g}" for band, value in result['centers'].items()})
         self.set_value('PANEL.band_bandwidths', {band: f"{value:g}" for band, value in result['bandwidths'].items()})
         self.set_value('PANEL.spectral_min_coverage', f"{result['min_coverage']:g}")

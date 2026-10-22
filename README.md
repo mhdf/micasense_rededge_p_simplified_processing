@@ -157,10 +157,24 @@ python radiometric_workflow.py --request-json request.json                      
 - A request is ```{"version": 1, "root": "<folder>", "config": {...}}```, so that another program can start the workflow as a separate process (the libraries needed here are usually not available in the Python of a photogrammetry program) and read the result file.
 - From Python: ```radiometric_workflow.run(config, root, progress)```, where ```progress``` receives ```{'stage', 'message', 'current', 'total'}```.
 
+## Drawing the panel region by hand
+
+When the QR code is not found, or the automatic region is not on the panel, the region can be drawn for each band with ```panel_selector.py```:
+
+```
+python panel_selector.py --config radiometric_inputs.json --root <folder>
+```
+
+The bands of the panel capture are shown one after another. The polygon starts from the region found from the QR code (also drawn as a yellow dashed line) or from a region saved before, and it can be edited: a click adds a vertex (on an edge it inserts one), dragging moves a vertex, a right click removes it, the wheel zooms and the middle button drags the image. The pixels, the saturated pixels and the variation (std / mean) inside the region are shown while editing; a lower variation means a more uniform panel. Keys: Enter confirms, S uses the automatic detection for the band, R goes back to the automatic region, C clears, Backspace removes the last vertex, Left/Right change the band, Escape cancels.
+
+- "Save and close" is available when every band was confirmed or set to the automatic detection. The regions are saved (vertices in pixels of the undistorted image) in ```PANEL.manual_regions_file``` or, if it is empty, in ```panel_regions.json``` in the results folder; set the key to that file to use it. Nothing is saved if the dialog is cancelled.
+- A band with a region in the file uses it, the others are detected from the QR code, and a manual region does not need a QR code. The panel audit and the provenance record say, for each band, whether the region was ```automatic``` or ```manual```.
+- From Python: ```rct.Image.detect_reference_panel(levels, percent_inner_area, manual_bounds=polygon)``` and ```panel_selector.select_panel_regions(images)```. The logic of the dialog (```PolygonModel```, ```ViewTransform```, ```SelectionSession```) has no window and is tested without a display.
+
 ## Tests
 
 ```
-python -m unittest test_radiometric_correction_tools test_radiometric_workflow -v
+python -m unittest test_radiometric_correction_tools test_radiometric_workflow test_panel_selector -v
 ```
 
 The tests use the example images and need ExifTool (set the environment variable ```exiftoolpath``` if it is not in the PATH).

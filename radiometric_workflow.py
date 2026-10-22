@@ -119,6 +119,13 @@ def resolve_path(root, value):
     return path if path.is_absolute() else Path(root) / path
 
 
+def exiftool_executable(config, root='.'):
+    """ ExifTool to use: the configured file, else the environment variable exiftoolpath, else None (system PATH) """
+    if config['INPUTS.exiftool_path']:
+        return str(resolve_path(root, config['INPUTS.exiftool_path']))
+    return os.environ.get('exiftoolpath')
+
+
 def capture_names(text):
     """ Names separated by commas -> list """
     return [name.strip() for name in str(text).split(',') if name.strip()]
@@ -145,7 +152,8 @@ def save_panel_regions(path, capture, regions):
     """
     path = Path(path)
     captures = load_panel_regions(path) if path.is_file() else {}
-    kept = {band: [[int(x), int(y)] for x, y in polygon] for band, polygon in regions.items() if polygon is not None}
+    kept = {band: [[int(round(x)), int(round(y))] for x, y in polygon]
+            for band, polygon in regions.items() if polygon is not None}
     if kept:
         captures[capture] = kept
     else:
@@ -301,9 +309,7 @@ def _read_capture(images_folder, name, bands, exiftool_path):
 
 def _run_stages(config, root, results_folder, result, progress):
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
-    exiftool_path = config['INPUTS.exiftool_path'] or os.environ.get('exiftoolpath')
-    if config['INPUTS.exiftool_path']:
-        exiftool_path = str(resolve_path(root, config['INPUTS.exiftool_path']))
+    exiftool_path = exiftool_executable(config, root)
     levels = config['PANEL.reflectance_by_band']
     bands = list(levels)
     use_dls = config['CORRECTION.use_dls']

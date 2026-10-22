@@ -525,6 +525,19 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(self.run_main(['--request-json', str(request)])[0], 2)
             self.assertEqual(self.run_main(['--config', str(Path(folder) / 'missing.json')])[0], 2)
 
+    def test_the_bands_of_a_capture_can_be_printed(self):
+        code, out, err = self.run_main(['--detect-bands', 'IMG_0010', '--root', str(ROOT)])
+        self.assertEqual(code, 0, err)
+        detected = json.loads(out)
+        self.assertEqual(detected['camera'], 'MicaSense RedEdge-P')
+        self.assertEqual([band['name'] for band in detected['bands']], ['Blue', 'Green', 'Red', 'NIR', 'Red edge', 'Panchro'])
+        code, out, err = self.run_main(['--detect-bands', '--root', str(ROOT)])          # the panel capture by default
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(json.loads(out)['bands']), 6)
+        code, out, err = self.run_main(['--detect-bands', 'IMG_9999', '--root', str(ROOT)])
+        self.assertEqual(code, 1)
+        self.assertIn('FileNotFoundError', err)
+
     def test_invalid_configuration_returns_1_and_prints_the_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'inputs.json'

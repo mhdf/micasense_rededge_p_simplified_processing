@@ -24,11 +24,18 @@ import traceback
 from pathlib import Path
 
 # Local Imports
+import camera_presets
 import radiometric_correction_tools as rct
 import radiometric_workflow as wf
 from ui_theme import COLORS, FONT, apply_dark_theme
+from ui_widgets import BandTable, ScrollablePage, model_from_rows, rows_from_model
 
 DEFAULT_CONFIG_NAME = 'radiometric_inputs.json'
+
+# The keys that the band table edits: the reflectance, center wavelength and bandwidth of each band that is used, and the
+# bands that are in the files but are left out
+BAND_KEYS = ('PANEL.reflectance_by_band', 'PANEL.band_center_wavelengths', 'PANEL.band_bandwidths',
+             'INPUTS.ignored_bands')
 
 # Pages of the window: key prefix, title. The last page ('RUN') is not made of fields
 SECTIONS = [('INPUTS', 'Inputs'), ('PANEL', 'Reference panel'), ('CORRECTION', 'DLS correction'),
@@ -112,7 +119,21 @@ class ConfigModel:
                 errors[key] = message
             else:
                 config[key] = value
+        # The typed reflectances are not used when the spectral file is the source: what cannot be read there is not an
+        # error, and a placeholder (0.5) takes its place in the configuration
+        if config['PANEL.reflectance_source'] == 'spectral_file' and 'PANEL.reflectance_by_band' in errors:
+            del errors['PANEL.reflectance_by_band']
+            config['PANEL.reflectance_by_band'] = {band: self._usable(text)
+                                                    for band, text in self.raw['PANEL.reflectance_by_band'].items()}
         return config, errors
+
+    @staticmethod
+    def _usable(text):
+        try:
+            value = float(text)
+        except ValueError:
+            return 0.5
+        return value if 0 < value <= 1 else 0.5
 
     def overrides(self):
         """ Only the valid values that differ from the defaults """
@@ -156,6 +177,10 @@ class RadiometricFrame:
         self.pages = {}
         self.groups = {}                  # last heading written in each page
         self.source_widgets = {'values': [], 'spectral_file': []}
+        self.band_table = None
+        self.syncing = False
+        self.detecting = False
+        self.presets, self.preset_problems = camera_presets.load_presets(camera_presets.preset_folders(self.root_folder))
         self.summary_after = None
         self.events = queue.Queue()
         self.running = False
@@ -164,6 +189,7 @@ class RadiometricFrame:
         self._after_id = None
         self.widget.bind('<Destroy>', lambda event: self.close() if event.widget is self.widget else None)
         self._build()
+        self._table_from_model()
         self._show_page(SECTIONS[0][0])
         self._apply_source_state()
         self._update_spectral_summary()
@@ -211,16 +237,59 @@ class RadiometricFrame:
         self.content = ttk.Frame(body, padding=(16, 10, 12, 0))
         self.content.pack(side='left', fill='both', expand=True)
 
+        self.scroll_pages = {}
         for prefix, title in SECTIONS:
-            page = ttk.Frame(self.content)
-            self.pages[prefix] = page
+            if prefix == 'RUN':
+                page = ttk.Frame(self.content)
+                self.pages[prefix] = page
+            else:
+                scrolling = ScrollablePage(self.content)           # the pages of fields scroll when they are long
+                self.scroll_pages[prefix] = scrolling
+                self.pages[prefix] = scrolling.widget
+                page = scrolling.body
             ttk.Label(page, text=title, style='Title.TLabel').pack(anchor='w', pady=(0, 10))
             if prefix == 'RUN':
                 self._build_run_page(page)
             else:
+                if prefix == 'PANEL':
+                    self._build_band_section(page)
                 for field in wf.FIELDS:
                     if field['key'].split('.')[0] == prefix:
                         self._build_field(page, field)
+        for key in BAND_KEYS:                                     # these keys live in the band table
+            self.variables[key] = self.band_table
+
+    def _build_band_section(self, page):
+        tk, ttk = self.tk, self.ttk
+        ttk.Label(page, text='Bands of the camera', style='Heading.TLabel').pack(anchor='w', pady=(6, 2))
+        ttk.Separator(page).pack(fill='x', pady=(0, 8))
+        ttk.Label(page, style='Muted.TLabel', wraplength=760, justify='left',
+                  text="One row per band. The names must be those written by the camera (XMP:BandName). A band that is "
+                       "not used is in the files but is left out of the processing, for example a thermal band. "
+                       "The panel reflectance is the value printed on the panel; it is typed only when the source of the "
+                       "reflectance (below) is 'values'.").pack(anchor='w', pady=(0, 6))
+        self.band_table = BandTable(page, self._table_changed)
+        self.band_table.widget.pack(anchor='w')
+        tools = ttk.Frame(page)
+        tools.pack(fill='x', pady=(8, 0))
+        self.band_buttons = {}
+        self.band_buttons['add'] = ttk.Button(tools, text='Add band', command=lambda: self.band_table.add_row())
+        self.band_buttons['detect'] = ttk.Button(tools, text='Detect from capture', command=self.detect_bands)
+        self.band_buttons['add'].pack(side='left')
+        self.band_buttons['detect'].pack(side='left', padx=(6, 0))
+        ttk.Label(tools, text='Camera preset', style='Muted.TLabel').pack(side='left', padx=(18, 6))
+        self.preset_labels = {preset['label']: key for key, preset in sorted(self.presets.items(),
+                                                                              key=lambda item: item[1]['label'])}
+        self.preset_var = tk.StringVar()
+        self.preset_box = ttk.Combobox(tools, textvariable=self.preset_var, values=list(self.preset_labels),
+                                       state='readonly', width=52)
+        self.preset_box.pack(side='left')
+        self.band_buttons['preset'] = ttk.Button(tools, text='Apply preset', command=self.apply_selected_preset)
+        self.band_buttons['preset'].pack(side='left', padx=(6, 0))
+        self.band_info = ttk.Label(page, text='', style='Muted.TLabel', wraplength=900, justify='left')
+        self.band_info.pack(anchor='w', pady=(6, 0))
+        if self.preset_problems:
+            self.band_info.configure(text='Camera presets not used: ' + '; '.join(self.preset_problems), style='Error.TLabel')
 
     def _build_hidden(self, field):
         """ A key that is edited in a dialog: its value lives in variables, without widgets on the page """
@@ -241,6 +310,8 @@ class RadiometricFrame:
     def _build_field(self, page, field):
         tk, ttk = self.tk, self.ttk
         key, kind = field['key'], field['kind']
+        if key in BAND_KEYS:
+            return                                           # edited in the band table
         group = field.get('group')
         if group and group != self.groups.get(page):
             self.groups[page] = group
@@ -363,6 +434,32 @@ class RadiometricFrame:
         self._mark(key)
         self._after_change(key)
 
+    def _table_changed(self):
+        """ The user edited the band table: write its rows in the model """
+        if self.syncing:
+            return
+        reflectance, centers, widths, ignored = model_from_rows(self.band_table.get_rows())
+        self.model.raw['PANEL.reflectance_by_band'] = reflectance
+        self.model.raw['PANEL.band_center_wavelengths'] = centers
+        self.model.raw['PANEL.band_bandwidths'] = widths
+        self.model.raw['INPUTS.ignored_bands'] = ignored
+        problems = [message for _, _, message in self.band_table.problems()]
+        if problems:
+            self.band_info.configure(text='; '.join(problems), style='Error.TLabel')
+        elif self.band_info.cget('style') == 'Error.TLabel':
+            self.band_info.configure(text='', style='Muted.TLabel')
+        self._after_change('PANEL.band_center_wavelengths')
+
+    def _table_from_model(self):
+        """ Show in the band table what the model has (after loading a profile, for example) """
+        self.syncing = True
+        try:
+            self.band_table.set_rows(rows_from_model(
+                self.model.get('PANEL.reflectance_by_band'), self.model.get('PANEL.band_center_wavelengths'),
+                self.model.get('PANEL.band_bandwidths'), self.model.get('INPUTS.ignored_bands')))
+        finally:
+            self.syncing = False
+
     def _after_change(self, key):
         if key == 'PANEL.reflectance_source':
             self._apply_source_state()
@@ -378,6 +475,8 @@ class RadiometricFrame:
         for name, widgets in self.source_widgets.items():
             for widget in widgets:
                 widget.state(['!disabled'] if name == source else ['disabled'])
+        if self.band_table is not None:
+            self.band_table.set_reflectance_state(source == 'values')
 
     def _update_spectral_summary(self):
         self.summary_after = None
@@ -430,10 +529,10 @@ class RadiometricFrame:
     def apply_import(self, result):
         """ Put what the import dialog returned in the fields (see panel_spectrum_dialog) """
         if result['action'] == 'copy_values':
-            for band, level in result['levels'].items():
-                if band in self.variables['PANEL.reflectance_by_band']:
-                    self.variables['PANEL.reflectance_by_band'][band].set(f"{level:.4f}")
             self.set_value('PANEL.reflectance_source', 'values')
+            current = self.model.get('PANEL.reflectance_by_band')
+            self.set_value('PANEL.reflectance_by_band', {band: f"{level:.4f}" for band, level in result['levels'].items()
+                                                         if band in current})
             self.log('The values of the spectral file were copied to the typed list of reflectances.')
             return
         fmt = result['format']
@@ -467,14 +566,89 @@ class RadiometricFrame:
         if chosen:
             self.variables[key].set(chosen)
 
-    def set_value(self, key, value):
-        """ Change a field as if it was typed (used by the program and the tests) """
+    def set_value(self, key, value, replace=False):
+        """
+        Change a field as if it was typed (used by the program and the tests). The keys of the band table take
+        {band: text} dictionaries (the bands of the dictionary are added or changed; with replace=True the dictionary
+        becomes the whole list of bands) and, for INPUTS.ignored_bands, text
+        """
+        if key in BAND_KEYS:
+            if key == 'INPUTS.ignored_bands':
+                self.model.raw[key] = str(value)
+            else:
+                merged = {} if replace else dict(self.model.raw[key])
+                merged.update({str(band): str(text) for band, text in value.items()})
+                self.model.raw[key] = merged
+            self._table_from_model()
+            self._after_change(key)
+            return
         variable = self.variables[key]
-        if isinstance(variable, dict):
-            for band, text in value.items():
-                variable[band].set(str(text))
-        else:
-            variable.set(value if isinstance(value, bool) else str(value))
+        variable.set(value if isinstance(value, bool) else str(value))
+
+    # --- bands: presets and detection ----------------------------------------------------------------------------
+
+    def typed_reflectance(self):
+        """ {band: text} of the reflectance now in the table (kept when the bands are replaced) """
+        return {row['name'].strip(): row['reflectance'] for row in self.band_table.get_rows()
+                if row['name'].strip() and row['reflectance'].strip()}
+
+    def apply_preset(self, key):
+        """ Fill the band table (and the file pattern) with a camera preset; the typed reflectances of bands with the
+        same name are kept """
+        preset = self.presets[key]
+        self.band_table.set_rows(camera_presets.band_rows(preset, self.typed_reflectance()))
+        if preset.get('file_pattern'):
+            self.set_value('INPUTS.file_pattern', preset['file_pattern'])
+        text = f"Preset: {preset['label']}."
+        if preset.get('notes'):
+            text += ' ' + preset['notes']
+        self.band_info.configure(text=text, style='Muted.TLabel')
+        self.log(f"Camera preset applied: {preset['label']}")
+
+    def apply_selected_preset(self):
+        key = self.preset_labels.get(self.preset_var.get())
+        if key:
+            self.apply_preset(key)
+
+    def detect_bands(self):
+        """ Read the bands from the metadata of the files of the panel capture (in a thread) """
+        if self.detecting or self.running:
+            return
+        config, errors = self.model.config()
+        relevant = [key for key in errors if key.startswith('INPUTS.')]
+        if relevant:
+            self.band_info.configure(text='Fix the inputs first: ' + ', '.join(relevant), style='Error.TLabel')
+            return
+        self.detecting = True
+        self.band_buttons['detect'].state(['disabled'])
+        self.band_info.configure(text='Reading the bands from the images...', style='Muted.TLabel')
+        threading.Thread(target=self._detect_worker, args=(config,), daemon=True).start()
+
+    def _detect_worker(self, config):
+        try:
+            self.events.put(('bands', (wf.detect_bands(config, self.root_folder),
+                                       config['INPUTS.reference_panel_capture'].strip())))
+        except Exception as error:
+            self.events.put(('bands_failed', f"{type(error).__name__}: {error}"))
+
+    def apply_detected_bands(self, detected, capture):
+        typed = self.typed_reflectance()
+        rows = [{'name': band['name'], 'center': f"{band['center_nm']:g}", 'width': f"{band['bandwidth_nm']:g}",
+                 'reflectance': '' if band['thermal'] else typed.get(band['name'], ''), 'process': not band['thermal']}
+                for band in detected['bands']]
+        self.band_table.set_rows(rows)
+        left_out = [band['name'] for band in detected['bands'] if band['thermal']]
+        text = f"Read {len(rows)} bands from {capture}: {detected['camera'] or 'camera not named'}"
+        if detected['serial']:
+            text += f" (serial {detected['serial']})"
+        text += '.'
+        if left_out:
+            text += f" Not used because they look thermal: {', '.join(left_out)}."
+        missing = [row['name'] for row in rows if row['process'] and not row['reflectance']]
+        if missing and self.model.get('PANEL.reflectance_source') == 'values':
+            text += f" Type the panel reflectance of: {', '.join(missing)}."
+        self.band_info.configure(text=text, style='Muted.TLabel')
+        self.log(text)
 
     def save(self):
         try:
@@ -516,7 +690,7 @@ class RadiometricFrame:
             self.status.configure(text=f"The profile was not loaded: {error}", style='Error.TLabel')
             return False
         for key, field in self.model.fields.items():
-            self.set_value(key, ConfigModel.to_raw(field, values[key]))
+            self.set_value(key, ConfigModel.to_raw(field, values[key]), replace=True)
         self.status.configure(text=f"Profile loaded from {path}", style='Muted.TLabel')
         return True
 
@@ -557,6 +731,9 @@ class RadiometricFrame:
     def problems(self):
         """ All the problems of the current inputs: unreadable values first, then the checks of the workflow """
         config, errors = self.model.config()
+        table = [message for _, _, message in self.band_table.problems()]
+        if table:
+            return config, ['Bands of the camera: ' + message for message in table]
         if errors:
             return config, [f"{self.model.fields[key]['label']} ({key}): {message}" for key, message in errors.items()]
         return config, wf.validate_config(config, self.root_folder)
@@ -678,6 +855,15 @@ class RadiometricFrame:
             self._set_busy(False)
         elif kind == 'images':
             self._open_selector(payload)
+        elif kind == 'bands':
+            self.detecting = False
+            self.band_buttons['detect'].state(['!disabled'])
+            self.apply_detected_bands(*payload)
+        elif kind == 'bands_failed':
+            self.detecting = False
+            self.band_buttons['detect'].state(['!disabled'])
+            self.band_info.configure(text=payload, style='Error.TLabel')
+            self.log(payload, 'error')
         elif kind == 'regions_failed':
             self.log(payload, 'error')
             self._set_busy(False)

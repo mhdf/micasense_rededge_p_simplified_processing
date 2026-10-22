@@ -1,0 +1,32 @@
+{
+  "label": "MicaSense RedEdge-M / RedEdge-MX (5 bands)",
+  "notes": "Windows of the current RedEdge-MX (serial RX02 or later) from the MicaSense documentation; the bandwidths of the older RX01 units are 20, 20, 10, 10 and 40 nm. Use 'Detect from capture' to read the exact values of your camera.",
+  "file_pattern": "(?P<capture>.+)_(?P<index>\\d+)\\.tif$",
+  "bands": [
+    {
+      "name": "Blue",
+      "center_nm": 475,
+      "bandwidth_nm": 32
+    },
+    {
+      "name": "Green",
+      "center_nm": 560,
+      "bandwidth_nm": 27
+    },
+    {
+      "name": "Red",
+      "center_nm": 668,
+      "bandwidth_nm": 14
+    },
+    {
+      "name": "NIR",
+      "center_nm": 842,
+      "bandwidth_nm": 57
+    },
+    {
+      "name": "Red edge",
+      "center_nm": 717,
+      "bandwidth_nm": 12
+    }
+  ]
+}

@@ -34,7 +34,7 @@ DEFAULT_FORMAT = {'delimiter': 'auto', 'delimiter_char': '', 'skip_rows': 'auto'
 
 # Spectral windows of the bands of the RedEdge-P: (center wavelength, bandwidth) in nm
 REDEDGE_P_BANDS = {'Blue': (475.0, 32.0), 'Green': (560.0, 27.0), 'Panchro': (634.5, 463.0),
-                   'Red': (668.0, 16.0), 'Red edge': (717.0, 12.0), 'NIR': (842.0, 57.0)}
+                   'Red': (668.0, 14.0), 'Red edge': (717.0, 12.0), 'NIR': (842.0, 57.0)}
 
 
 _integrate = getattr(np, 'trapezoid', None) or np.trapz    # trapz was renamed in numpy 2

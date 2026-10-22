@@ -598,6 +598,8 @@ def main(argv=None):
     parser.add_argument('--request-json', help="json request: {'version': 1, 'root': folder, 'config': {...}}")
     parser.add_argument('--root', help="folder from which the relative paths are resolved (default: current folder)")
     parser.add_argument('--write-default-config', metavar='PATH', help="write the default configuration and exit")
+    parser.add_argument('--detect-bands', nargs='?', const='', metavar='CAPTURE',
+                        help="print the bands read from the metadata of a capture (default: the panel capture) and exit")
     arguments = parser.parse_args(argv)
 
     if arguments.write_default_config:
@@ -616,6 +618,15 @@ def main(argv=None):
     except (OSError, ValueError) as error:
         print(f"Invalid input: {error}", file=sys.stderr)
         return 2
+
+    if arguments.detect_bands is not None:
+        try:
+            detected = detect_bands(merge_config(values), root, arguments.detect_bands or None)
+        except Exception as error:
+            print(f"ERROR: {type(error).__name__}: {error}", file=sys.stderr)
+            return 1
+        print(json.dumps(rct._jsonable(detected), indent=2))
+        return 0
 
     def report(event):
         print(f"[{event['stage']}] {event['message']}", flush=True)

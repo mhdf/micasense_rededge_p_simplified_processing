@@ -19,6 +19,11 @@ import radiometric_workflow as wf
 ROOT = Path(__file__).resolve().parent
 
 
+def rct_pattern():
+    import radiometric_correction_tools as rct
+    return rct.CAPTURE_FILE_PATTERN
+
+
 class ConfigModelTests(unittest.TestCase):
 
     def test_defaults_are_valid_and_are_not_saved(self):
@@ -140,8 +145,11 @@ class WindowTests(unittest.TestCase):
         self.frame.set_value('PANEL.percent_inner_area', '0,4x')
         self.assertEqual(str(self.frame.entries['PANEL.percent_inner_area'].cget('style')), 'Invalid.TEntry')
         self.frame.set_value('PANEL.reflectance_by_band', {'Red': 'oops'})
-        self.assertEqual(str(self.frame.entries['PANEL.reflectance_by_band']['Red'].cget('style')), 'Invalid.TEntry')
-        self.assertEqual(str(self.frame.entries['PANEL.reflectance_by_band']['Blue'].cget('style')), 'TEntry')
+        names = [row['name'] for row in self.frame.band_table.get_rows()]
+        styles = {name: str(row['widgets']['reflectance'].cget('style'))
+                  for name, row in zip(names, self.frame.band_table.rows)}
+        self.assertEqual(styles['Red'], 'Invalid.TEntry')
+        self.assertEqual(styles['Blue'], 'TEntry')
 
     def test_the_check_box_is_a_boolean(self):
         self.frame.set_value('CORRECTION.use_dls', True)
@@ -247,7 +255,7 @@ class WindowTests(unittest.TestCase):
         return [not widget.instate(['disabled']) for widget in widgets]
 
     def test_only_the_controls_of_the_chosen_source_can_be_edited(self):
-        values = self.frame.source_widgets['values']
+        values = self.frame.band_table.reflectance_entries()
         spectral = self.frame.source_widgets['spectral_file']
         self.assertEqual(len(values), 6)
         self.assertEqual(len(spectral), 3)                      # entry, Browse and Import
@@ -296,6 +304,7 @@ class WindowTests(unittest.TestCase):
         frame.apply_import(result)
         config = frame.model.config()[0]
         self.assertEqual(config['PANEL.reflectance_source'], 'spectral_file')
+        self.assertEqual(frame.band_table.get_rows()[0]['center'], '480')              # the table shows the windows
         self.assertEqual(config['PANEL.spectral_file'], 'panel.csv')       # inside the project folder: relative
         self.assertEqual(config['PANEL.spectral_skip_rows'], '0')
         self.assertEqual((config['PANEL.spectral_skip_footer'], config['PANEL.spectral_comment_prefix']), (0, ''))
@@ -306,7 +315,7 @@ class WindowTests(unittest.TestCase):
                                             self.folder.name), [])
         levels, info = wf.panel_reflectance_levels(config, self.folder.name)
         self.assertAlmostEqual(levels['Blue'], 0.48)
-        self.assertFalse(any(self.enabled(frame.source_widgets['values'])))
+        self.assertFalse(any(self.enabled(frame.band_table.reflectance_entries())))
 
     def test_the_reading_options_of_the_dialog_reach_the_fields(self):
         result = self.result_of_the_dialog('use_file', fmt={'comment_prefix': '#', 'skip_footer': 0, 'exclude_rows': '3',
@@ -396,6 +405,191 @@ class WindowTests(unittest.TestCase):
         path = Path(self.folder.name) / 'profiles' / 'refused.json'
         self.assertFalse(self.frame.save_profile(path))
         self.assertFalse(path.exists())
+
+    # --- bands of the camera ----------------------------------------------------------------------------------
+
+    def names(self):
+        return [row['name'] for row in self.frame.band_table.get_rows()]
+
+    def row(self, name):
+        return next(row for row in self.frame.band_table.rows if row['vars']['name'].get() == name)
+
+    def test_the_table_shows_the_bands_of_the_configuration(self):
+        rows = self.frame.band_table.get_rows()
+        self.assertEqual([r['name'] for r in rows], ['Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR'])
+        self.assertEqual(rows[0], {'name': 'Blue', 'center': '475.0', 'width': '32.0', 'reflectance': '0.477', 'process': True})
+        self.assertEqual(self.frame.model.get('INPUTS.ignored_bands'), '')
+        for key in rw.BAND_KEYS:
+            self.assertIs(self.frame.variables[key], self.frame.band_table)
+
+    def test_editing_the_table_writes_the_configuration(self):
+        self.row('Blue')['vars']['center'].set('480')
+        self.row('Blue')['vars']['reflectance'].set('0.5')
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['PANEL.band_center_wavelengths']['Blue'], 480.0)
+        self.assertEqual(config['PANEL.reflectance_by_band']['Blue'], 0.5)
+        self.assertEqual(config['PANEL.band_bandwidths']['Blue'], 32.0)
+
+    def test_a_band_that_is_not_used_moves_to_the_ignored_bands(self):
+        self.row('Panchro')['vars']['process'].set(False)
+        self.row('NIR')['vars']['process'].set(False)
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['INPUTS.ignored_bands'], 'Panchro, NIR')
+        for key in ('PANEL.reflectance_by_band', 'PANEL.band_center_wavelengths', 'PANEL.band_bandwidths'):
+            self.assertEqual(list(config[key]), ['Blue', 'Green', 'Red', 'Red edge'])
+        self.assertEqual(wf.validate_config(config, ROOT), [])
+        self.row('NIR')['vars']['process'].set(True)                                 # and back
+        self.assertEqual(self.frame.model.get('INPUTS.ignored_bands'), 'Panchro')
+        self.assertIn('NIR', self.frame.model.get('PANEL.band_center_wavelengths'))
+
+    def test_bands_can_be_added_renamed_and_removed(self):
+        table = self.frame.band_table
+        new = table.add_row({'name': 'Coastal', 'center': '444', 'width': '28', 'reflectance': '0.47'})
+        self.assertEqual(self.frame.model.config()[0]['PANEL.band_center_wavelengths']['Coastal'], 444.0)
+        new['vars']['name'].set('Coastal blue')
+        config = self.frame.model.config()[0]
+        self.assertIn('Coastal blue', config['PANEL.reflectance_by_band'])
+        self.assertNotIn('Coastal', config['PANEL.reflectance_by_band'])
+        table.remove(new)
+        table.remove(self.row('Panchro'))
+        config = self.frame.model.config()[0]
+        self.assertEqual(list(config['PANEL.reflectance_by_band']), ['Blue', 'Green', 'Red', 'Red edge', 'NIR'])
+        self.assertEqual(wf.validate_config(config, ROOT), [])
+
+    def test_problems_in_the_table_stop_the_run_and_are_listed(self):
+        self.frame.band_table.add_row({'name': 'Blue', 'center': '1', 'width': '1', 'reflectance': '0.5'})
+        config, problems = self.frame.check_inputs()
+        self.assertTrue(any("'Blue' is used by more than one band" in problem for problem in problems))
+        self.frame.start_run()
+        self.assertFalse(self.frame.running)
+        self.assertIn('is used by more than one band', self.frame.band_info.cget('text'))
+
+    def test_a_band_without_a_name_is_reported_and_not_written(self):
+        self.frame.band_table.add_row({'center': '500', 'width': '10', 'reflectance': '0.5'})
+        self.assertEqual(len(self.frame.model.get('PANEL.band_center_wavelengths')), 6)
+        _, problems = self.frame.problems()
+        self.assertTrue(any('needs a name' in problem for problem in problems))
+
+    def test_setting_the_band_keys_updates_the_table(self):
+        self.frame.set_value('PANEL.reflectance_by_band', {'Blue': '0.45'})                 # added to the bands
+        self.assertEqual(self.frame.band_table.get_rows()[0]['reflectance'], '0.45')
+        self.assertEqual(len(self.names()), 6)
+        self.frame.set_value('INPUTS.ignored_bands', 'LWIR, Thermal')
+        rows = self.frame.band_table.get_rows()
+        self.assertEqual([(r['name'], r['process']) for r in rows[-2:]], [('LWIR', False), ('Thermal', False)])
+        self.frame.set_value('PANEL.reflectance_by_band', {'Red': '0.4'}, replace=True)    # replaces the reflectances
+        self.assertEqual(self.frame.band_table.get_rows()[0]['reflectance'], '')
+        self.assertEqual(self.frame.model.get('PANEL.reflectance_by_band'), {'Red': '0.4'})
+
+    def test_the_typed_reflectance_is_not_needed_when_the_spectral_file_is_the_source(self):
+        self.row('Blue')['vars']['reflectance'].set('oops')
+        self.assertIn('PANEL.reflectance_by_band', self.frame.model.config()[1])
+        self.frame.set_value('PANEL.reflectance_source', 'spectral_file')
+        config, errors = self.frame.model.config()
+        self.assertNotIn('PANEL.reflectance_by_band', errors)
+        self.assertEqual(config['PANEL.reflectance_by_band']['Blue'], 0.5)                 # placeholder, not used
+        self.assertEqual(config['PANEL.reflectance_by_band']['Green'], 0.478)              # readable values are kept
+        self.assertTrue(all(entry.instate(['disabled']) for entry in self.frame.band_table.reflectance_entries()))
+        self.assertEqual(str(self.row('Blue')['widgets']['reflectance'].cget('style')), 'TEntry')
+
+    def test_a_profile_replaces_the_bands(self):
+        path = Path(self.folder.name) / 'profiles' / 'three.json'
+        path.parent.mkdir()
+        path.write_text(json.dumps({
+            'PANEL.reflectance_by_band': {'Green': 0.5, 'Red': 0.5, 'NIR': 0.5},
+            'PANEL.band_center_wavelengths': {'Green': 550.0, 'Red': 650.0, 'NIR': 800.0},
+            'PANEL.band_bandwidths': {'Green': 40.0, 'Red': 40.0, 'NIR': 40.0},
+            'INPUTS.ignored_bands': 'LWIR'}), encoding='utf-8')
+        self.assertTrue(self.frame.load_profile(path))
+        self.assertEqual(self.names(), ['Green', 'Red', 'NIR', 'LWIR'])
+        self.assertEqual([r['process'] for r in self.frame.band_table.get_rows()], [True, True, True, False])
+        config = self.frame.model.config()[0]
+        self.assertEqual(list(config['PANEL.band_center_wavelengths']), ['Green', 'Red', 'NIR'])
+        saved = Path(self.folder.name) / 'profiles' / 'back.json'
+        self.assertTrue(self.frame.save_profile(saved))
+        self.assertEqual(json.loads(saved.read_text(encoding='utf-8'))['INPUTS.ignored_bands'], 'LWIR')
+
+    def test_a_preset_fills_the_table_and_keeps_the_typed_reflectance_of_the_same_bands(self):
+        self.assertIn('micasense_rededge_mx', self.frame.presets)
+        self.frame.apply_preset('micasense_rededge_mx')
+        self.assertEqual(self.names(), ['Blue', 'Green', 'Red', 'NIR', 'Red edge'])
+        self.assertEqual(self.frame.band_table.get_rows()[0]['reflectance'], '0.477')      # kept: same name
+        self.assertEqual(self.frame.band_table.get_rows()[2]['width'], '14')
+        self.assertNotIn('Panchro', self.frame.model.get('PANEL.reflectance_by_band'))      # the panchromatic band is gone
+        self.assertIn('Preset: MicaSense RedEdge-M', self.frame.band_info.cget('text'))
+        self.assertEqual(self.frame.model.config()[0]['INPUTS.file_pattern'], rct_pattern())
+
+    def test_a_preset_can_leave_a_band_out(self):
+        self.frame.apply_preset('micasense_altum')
+        self.assertEqual(self.names(), ['Blue', 'Green', 'Red', 'NIR', 'Red edge', 'LWIR'])
+        self.assertEqual(self.frame.model.config()[0]['INPUTS.ignored_bands'], 'LWIR')
+        self.assertEqual(self.frame.band_table.get_rows()[-1]['process'], False)
+
+    def test_the_selected_preset_is_applied_by_its_label(self):
+        label = next(label for label, key in self.frame.preset_labels.items() if key == 'micasense_altum')
+        self.frame.preset_var.set(label)
+        self.frame.apply_selected_preset()
+        self.assertEqual(len(self.names()), 6)
+        self.frame.preset_var.set('')
+        self.frame.apply_selected_preset()                                                  # nothing selected: nothing
+        self.assertEqual(len(self.names()), 6)
+
+    def test_the_bands_are_read_from_the_images_of_the_panel_capture(self):
+        self.row('Blue')['vars']['reflectance'].set('0.4')
+        self.frame.detect_bands()
+        self.assertTrue(self.frame.detecting)
+        self.pump(lambda: not self.frame.detecting, 60)
+        rows = self.frame.band_table.get_rows()
+        self.assertEqual([(r['name'], r['center'], r['width']) for r in rows],
+                         [('Blue', '475', '32'), ('Green', '560', '27'), ('Red', '668', '14'),
+                          ('NIR', '842', '57'), ('Red edge', '717', '12'), ('Panchro', '634.5', '463')])
+        self.assertEqual(rows[0]['reflectance'], '0.4')                                     # typed values are kept
+        self.assertEqual(rows[2]['reflectance'], '0.478')
+        self.assertTrue(all(r['process'] for r in rows))
+        text = self.frame.band_info.cget('text')
+        self.assertIn('Read 6 bands from IMG_0005: MicaSense RedEdge-P', text)
+        self.assertEqual(self.frame.band_buttons['detect'].instate(['disabled']), False)
+
+    def test_detection_reports_a_capture_that_does_not_exist(self):
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_9999')
+        self.frame.detect_bands()
+        self.pump(lambda: not self.frame.detecting, 60)
+        self.assertIn('FileNotFoundError', self.frame.band_info.cget('text'))
+        self.assertEqual(len(self.names()), 6)                                              # the table is not changed
+
+    def test_detection_leaves_a_thermal_band_out(self):
+        detected = {'camera': 'MicaSense Altum', 'serial': 'AL06-1', 'bands': [
+            {'name': 'Blue', 'center_nm': 475.0, 'bandwidth_nm': 32.0, 'thermal': False},
+            {'name': 'LWIR', 'center_nm': 11000.0, 'bandwidth_nm': 6000.0, 'thermal': True}]}
+        self.frame.apply_detected_bands(detected, 'IMG_0001')
+        self.assertEqual(self.names(), ['Blue', 'LWIR'])
+        self.assertEqual(self.frame.model.config()[0]['INPUTS.ignored_bands'], 'LWIR')
+        text = self.frame.band_info.cget('text')
+        self.assertIn('serial AL06-1', text)
+        self.assertIn('Not used because they look thermal: LWIR', text)
+
+    def test_fewer_bands_can_be_run_from_the_window(self):
+        for name in ('Panchro', 'Red edge', 'NIR'):
+            self.row(name)['vars']['process'].set(False)
+        self.frame.set_value('INPUTS.results_folder', self.results('three'))
+        self.frame.start_run()
+        self.pump(lambda: not self.frame.running)
+        result = self.frame.last_result
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertEqual(sorted(Path(path).name for path in result['outputs']),
+                         ['IMG_0010_1.tif', 'IMG_0010_2.tif', 'IMG_0010_3.tif'])
+
+    def test_a_long_page_scrolls_and_a_short_one_does_not(self):
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.geometry('1000x420')
+        self.frame.show_page('PANEL')
+        self.root.update()
+        self.assertTrue(self.frame.scroll_pages['PANEL'].scrolls())
+        self.root.geometry('1000x1900')
+        self.root.update()
+        self.assertFalse(self.frame.scroll_pages['PANEL'].scrolls())
+        self.assertNotIn('RUN', self.frame.scroll_pages)                                   # the log scrolls by itself
 
     def test_the_frame_can_be_placed_inside_another_window(self):
         import tkinter as tk

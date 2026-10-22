@@ -55,6 +55,15 @@ FIELDS = [
              'for the correction.'},
     {'key': 'INPUTS.image_captures', 'kind': 'text', 'default': '',
      'label': 'Captures to correct', 'help': 'Names separated by commas. Empty: all the other captures in the folder.'},
+    {'key': 'INPUTS.file_pattern', 'kind': 'text', 'default': rct.CAPTURE_FILE_PATTERN,
+     'label': 'File name pattern',
+     'help': "Regular expression for the names of the image files, with a group named capture (the name of the "
+             "capture, shared by the files of its bands) and, optionally, a group named index (the number of the "
+             "file). The band of each file is read from its metadata, not from its name."},
+    {'key': 'INPUTS.ignored_bands', 'kind': 'text', 'default': '',
+     'label': 'Bands to ignore',
+     'help': "Names (as written by the camera, XMP:BandName) separated by commas, of bands that are in the files but "
+             "must not be processed, for example a thermal band."},
     {'key': 'PANEL.reflectance_source', 'kind': 'choice', 'choices': ['values', 'spectral_file'],
      'default': 'values', 'group': 'Reflectance of the panel',
      'label': 'Source of the panel reflectance',
@@ -165,6 +174,26 @@ def exiftool_executable(config, root='.'):
     if config['INPUTS.exiftool_path']:
         return str(resolve_path(root, config['INPUTS.exiftool_path']))
     return os.environ.get('exiftoolpath')
+
+
+def read_capture_images(config, root, capture, exiftool_path=None):
+    """ {band: rct.Image} of one capture, with the file pattern, the bands and the ignored bands of the configuration """
+    images_folder = resolve_path(root, config['INPUTS.images_folder'])
+    if exiftool_path is None:
+        exiftool_path = exiftool_executable(config, root)
+    return _read_capture(images_folder, capture, panel_bands(config), exiftool_path,
+                         config['INPUTS.file_pattern'], capture_names(config['INPUTS.ignored_bands']))
+
+
+def detect_bands(config, root, capture=None):
+    """
+    Read the bands from the metadata of the files of a capture (default: the panel capture)
+    Outputs: the dictionary of rct.read_band_definitions
+    """
+    images_folder = resolve_path(root, config['INPUTS.images_folder'])
+    capture = capture or config['INPUTS.reference_panel_capture'].strip()
+    paths = rct.find_capture_paths(images_folder, capture, config['INPUTS.file_pattern'])
+    return rct.read_band_definitions(paths, exiftool_executable(config, root))
 
 
 def capture_names(text):
@@ -285,8 +314,21 @@ def validate_config(config, root='.'):
         problems.append("PANEL.percent_inner_area must be in (0, 1]")
     if not 0 < config['PANEL.spectral_min_coverage'] <= 1:
         problems.append("PANEL.spectral_min_coverage must be in (0, 1]")
-    if set(config['PANEL.band_center_wavelengths']) != set(config['PANEL.band_bandwidths']):
-        problems.append("PANEL.band_center_wavelengths and PANEL.band_bandwidths must have the same bands")
+    band_sets = {frozenset(config[key]) for key in ('PANEL.reflectance_by_band', 'PANEL.band_center_wavelengths',
+                                                      'PANEL.band_bandwidths')}
+    ignored = capture_names(config['INPUTS.ignored_bands'])
+    try:
+        rct.compile_file_pattern(config['INPUTS.file_pattern'])
+        pattern_problem = None
+    except ValueError as error:
+        pattern_problem = f"INPUTS.file_pattern: {error}"
+        problems.append(pattern_problem)
+    if len(band_sets) > 1:
+        problems.append("PANEL.reflectance_by_band, PANEL.band_center_wavelengths and PANEL.band_bandwidths must "
+                        "have the same bands")
+    elif set(ignored) & set(config['PANEL.reflectance_by_band']):
+        problems.append(f"INPUTS.ignored_bands has bands that are also processed: "
+                        f"{sorted(set(ignored) & set(config['PANEL.reflectance_by_band']))}")
     elif config['PANEL.reflectance_source'] == 'spectral_file':
         spectral_file = config['PANEL.spectral_file'].strip()
         if not spectral_file:
@@ -331,8 +373,8 @@ def validate_config(config, root='.'):
     panel = config['INPUTS.reference_panel_capture'].strip()
     if not panel:
         problems.append("INPUTS.reference_panel_capture is empty")
-    if images.is_dir():
-        found = rct.list_capture_names(images)
+    if images.is_dir() and pattern_problem is None:
+        found = rct.list_capture_names(images, config['INPUTS.file_pattern'])
         named = [panel, config['INPUTS.reference_panel_capture_after'].strip()] + capture_names(config['INPUTS.image_captures'])
         for name in named:
             if name and name not in found:
@@ -407,14 +449,15 @@ def run(config, root='.', progress=None):
     return result
 
 
-def _read_capture(images_folder, name, bands, exiftool_path):
-    files = rct.read_band_files(rct.find_capture_paths(images_folder, name), bands, exiftool_path)
+def _read_capture(images_folder, name, bands, exiftool_path, pattern=None, ignored=()):
+    files = rct.read_band_files(rct.find_capture_paths(images_folder, name, pattern), bands, exiftool_path, ignored)
     return {band: rct.Image(*files[band]) for band in bands}
 
 
 def _run_stages(config, root, results_folder, result, progress):
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
     exiftool_path = exiftool_executable(config, root)
+    ignored = capture_names(config['INPUTS.ignored_bands'])
     levels, reflectance_info = panel_reflectance_levels(config, root)
     result['panel']['reflectance'] = rct._jsonable({'levels': levels, **reflectance_info})
     bands = list(levels)
@@ -425,7 +468,8 @@ def _run_stages(config, root, results_folder, result, progress):
     panel_after_name = config['INPUTS.reference_panel_capture_after'].strip()
     names = capture_names(config['INPUTS.image_captures'])
     if not names:
-        names = [name for name in rct.list_capture_names(images_folder) if name not in (panel_name, panel_after_name)]
+        names = [name for name in rct.list_capture_names(images_folder, config['INPUTS.file_pattern'])
+                 if name not in (panel_name, panel_after_name)]
     _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct; panel capture {panel_name}", 0, len(names))
 
     # PANEL_CALIBRATION
@@ -437,7 +481,7 @@ def _run_stages(config, root, results_folder, result, progress):
         if not name:
             continue
         _progress(progress, 'PANEL_CALIBRATION', f"Detecting the reference panel in {name}")
-        objects = _read_capture(images_folder, name, bands, exiftool_path)
+        objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
         for band, image in objects.items():
             try:
                 image.detect_reference_panel(levels, config['PANEL.percent_inner_area'],
@@ -465,7 +509,7 @@ def _run_stages(config, root, results_folder, result, progress):
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter('always')
-                objects = _read_capture(images_folder, name, bands, exiftool_path)
+                objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
                 ratios = rct.capture_dls_ratios(panels['before'], objects) if use_dls else {}
                 records = []
                 for band in bands:

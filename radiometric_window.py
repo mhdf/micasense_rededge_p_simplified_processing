@@ -607,11 +607,7 @@ class RadiometricFrame:
     def _regions_worker(self, config):
         try:
             capture = config['INPUTS.reference_panel_capture']
-            bands = list(config['PANEL.reflectance_by_band'])
-            files = rct.read_band_files(
-                rct.find_capture_paths(wf.resolve_path(self.root_folder, config['INPUTS.images_folder']), capture),
-                bands, wf.exiftool_executable(config, self.root_folder))
-            images = {band: rct.Image(*files[band]) for band in bands}
+            images = wf.read_capture_images(config, self.root_folder, capture)
             path = self.regions_path(config)
             saved = wf.load_panel_regions(path).get(capture, {}) if path.is_file() else {}
             self.events.put(('images', (config, capture, images, saved, path)))

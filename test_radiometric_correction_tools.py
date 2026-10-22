@@ -7,12 +7,14 @@ The tests that read the example images need ExifTool; set the environment variab
 """
 
 import os
+import tempfile
 import unittest
 import warnings
 
 import numpy as np
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import radiometric_correction_tools as rct
 
@@ -57,6 +59,102 @@ class MapBandFilesTests(unittest.TestCase):
     def test_missing_band_name_names_the_file(self):
         with self.assertRaisesRegex(rct.MetadataError, "a_1.tif: missing metadata field 'XMP:BandName'"):
             rct.map_band_files(['a_1.tif'], [{}])
+
+
+class FilePatternTests(unittest.TestCase):
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def touch(self, *names):
+        for name in names:
+            (Path(self.folder.name) / name).write_bytes(b'')
+
+    def test_the_default_pattern_groups_the_files_of_a_capture_in_numeric_order(self):
+        self.touch('IMG_0001_1.tif', 'IMG_0001_2.tif', 'IMG_0001_10.tif', 'IMG_0002_1.tif', 'notes.txt', 'IMG_x.tif')
+        self.assertEqual(rct.list_capture_names(self.folder.name), ['IMG_0001', 'IMG_0002'])
+        names = [Path(path).name for path in rct.find_capture_paths(self.folder.name, 'IMG_0001')]
+        self.assertEqual(names, ['IMG_0001_1.tif', 'IMG_0001_2.tif', 'IMG_0001_10.tif'])    # 10 after 2, not after 1
+
+    def test_the_extension_is_not_case_sensitive(self):
+        self.touch('DJI_0001_1.TIF', 'DJI_0001_2.Tif')
+        self.assertEqual(rct.list_capture_names(self.folder.name), ['DJI_0001'])
+
+    def test_another_naming_scheme(self):
+        self.touch('DJI_0001_MS_G.TIF', 'DJI_0001_MS_R.TIF', 'DJI_0002_MS_G.TIF', 'DJI_0001.JPG')
+        pattern = r'(?P<capture>DJI_\d+)_MS_(?P<band>[A-Z]+)\.tif$'
+        self.assertEqual(rct.list_capture_names(self.folder.name, pattern), ['DJI_0001', 'DJI_0002'])
+        names = [Path(path).name for path in rct.find_capture_paths(self.folder.name, 'DJI_0001', pattern)]
+        self.assertEqual(names, ['DJI_0001_MS_G.TIF', 'DJI_0001_MS_R.TIF'])             # no index: by name
+
+    def test_a_missing_capture_names_the_pattern(self):
+        self.touch('IMG_0001_1.tif')
+        with self.assertRaisesRegex(FileNotFoundError, "'IMG_9'.*pattern"):
+            rct.find_capture_paths(self.folder.name, 'IMG_9')
+
+    def test_invalid_patterns_are_reported(self):
+        with self.assertRaisesRegex(ValueError, 'not a valid regular expression'):
+            rct.compile_file_pattern('(unclosed')
+        with self.assertRaisesRegex(ValueError, "group named 'capture'"):
+            rct.compile_file_pattern(r'(.+)_(\d+)\.tif$')
+        self.assertIsNotNone(rct.compile_file_pattern(None))
+
+
+class IgnoredBandsTests(unittest.TestCase):
+
+    def test_ignored_bands_are_left_out_of_the_mapping_and_the_checks(self):
+        metadata = [fake_metadata('Blue'), fake_metadata('LWIR', 'OTHER-CAPTURE-ID'), fake_metadata('Green')]
+        mapping = rct.map_band_files(['a_1.tif', 'a_2.tif', 'a_3.tif'], metadata, ['Blue', 'Green'], ignore_bands=['LWIR'])
+        self.assertEqual(list(mapping), ['Blue', 'Green'])
+
+    def test_an_extra_band_that_is_not_ignored_is_still_an_error(self):
+        metadata = [fake_metadata('Blue'), fake_metadata('LWIR')]
+        with self.assertRaisesRegex(rct.MetadataError, "unexpected: \\['LWIR'\\]"):
+            rct.map_band_files(['a_1.tif', 'a_2.tif'], metadata, ['Blue'])
+
+
+class BandDefinitionTests(unittest.TestCase):
+
+    @staticmethod
+    def metadata(name, center, width, rig, **extra):
+        return dict({'XMP:BandName': name, 'XMP:CentralWavelength': center, 'XMP:WavelengthFWHM': width,
+                     'XMP:RigCameraIndex': rig, 'EXIF:Make': 'MicaSense', 'EXIF:Model': 'Altum',
+                     'EXIF:SerialNumber': 'AL06-1'}, **extra)
+
+    def read(self, metadata_list):
+        paths = [f'f_{i}.tif' for i in range(len(metadata_list))]
+        with mock.patch.object(rct, '_read_metadata', return_value=metadata_list):
+            return rct.read_band_definitions(paths)
+
+    def test_bands_come_in_the_order_of_the_rig_with_their_windows(self):
+        result = self.read([self.metadata('NIR', 842, 57, 3), self.metadata('Blue', 475, 32, 0),
+                            self.metadata('Green', 560, 27, 1)])
+        self.assertEqual([band['name'] for band in result['bands']], ['Blue', 'Green', 'NIR'])
+        self.assertEqual(result['bands'][2]['center_nm'], 842.0)
+        self.assertEqual(result['bands'][2]['bandwidth_nm'], 57.0)
+        self.assertEqual((result['camera'], result['serial']), ('MicaSense Altum', 'AL06-1'))
+
+    def test_a_thermal_band_is_suggested_to_be_left_out(self):
+        result = self.read([self.metadata('Blue', 475, 32, 0), self.metadata('LWIR', 11000, 6000, 5)])
+        self.assertEqual([band['thermal'] for band in result['bands']], [False, True])
+        result = self.read([self.metadata('Thermal', 10, 1, 0)])
+        self.assertTrue(result['bands'][0]['thermal'])
+
+    def test_missing_fields_and_duplicate_names_are_reported(self):
+        broken = self.metadata('Blue', 475, 32, 0)
+        del broken['XMP:WavelengthFWHM']
+        with self.assertRaisesRegex(rct.MetadataError, "XMP:WavelengthFWHM"):
+            self.read([broken])
+        with self.assertRaisesRegex(rct.MetadataError, 'more than one file'):
+            self.read([self.metadata('Blue', 475, 32, 0), self.metadata('Blue', 475, 32, 1)])
+
+    def test_files_without_a_rig_index_come_after_the_others_by_name(self):
+        result = self.read([self.metadata('B', 500, 10, None), self.metadata('A', 400, 10, None),
+                            self.metadata('C', 600, 10, 0)])
+        self.assertEqual([band['name'] for band in result['bands']], ['C', 'A', 'B'])
 
 
 class ValidatePolygonTests(unittest.TestCase):
@@ -482,6 +580,15 @@ class ExampleImageTests(unittest.TestCase):
         self.assertEqual(shown.dtype, np.uint8)
         self.assertEqual(shown.shape, image.image.shape)
         self.assertGreater(shown.max(), 200)
+
+    def test_the_bands_of_the_example_capture_are_read_from_its_metadata(self):
+        result = rct.read_band_definitions(rct.find_capture_paths(RAW, 'IMG_0010'), self.exiftool_path)
+        self.assertEqual(result['camera'], 'MicaSense RedEdge-P')
+        table = [(band['name'], band['center_nm'], band['bandwidth_nm']) for band in result['bands']]
+        self.assertEqual(table, [('Blue', 475.0, 32.0), ('Green', 560.0, 27.0), ('Red', 668.0, 14.0),
+                                 ('NIR', 842.0, 57.0), ('Red edge', 717.0, 12.0), ('Panchro', 634.5, 463.0)])
+        self.assertFalse(any(band['thermal'] for band in result['bands']))
+        self.assertTrue(result['bands'][0]['file'].endswith('IMG_0010_1.tif'))
 
     def test_missing_capture_is_reported(self):
         with self.assertRaises(FileNotFoundError):

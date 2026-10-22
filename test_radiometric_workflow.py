@@ -178,6 +178,38 @@ class ConfigurationTests(unittest.TestCase):
         config = wf.merge_config({'PANEL.spectral_file': 'missing.csv'})
         self.assertEqual(wf.validate_config(config, ROOT), [])
 
+    def test_the_band_lists_must_describe_the_same_bands(self):
+        defaults = wf.default_config()
+        config = wf.merge_config({'PANEL.band_center_wavelengths': {'Blue': 475.0}})
+        self.assertIn('must have the same bands', '\n'.join(wf.validate_config(config, ROOT)))
+        config = wf.merge_config({'PANEL.reflectance_by_band': {'Blue': 0.477, 'Coastal': 0.5}})
+        self.assertIn('must have the same bands', '\n'.join(wf.validate_config(config, ROOT)))
+        self.assertEqual(wf.validate_config(defaults, ROOT), [])
+
+    def test_ignored_bands_cannot_also_be_processed(self):
+        config = wf.merge_config({'INPUTS.ignored_bands': 'NIR, LWIR'})
+        self.assertIn("INPUTS.ignored_bands has bands that are also processed: ['NIR']",
+                      '\n'.join(wf.validate_config(config, ROOT)))
+
+    def test_a_bad_file_pattern_is_reported_with_its_key(self):
+        for pattern, message in (('(unclosed', 'not a valid regular expression'), (r'(.+)_(\d+)\.tif$', "group named 'capture'")):
+            config = wf.merge_config({'INPUTS.file_pattern': pattern})
+            problems = '\n'.join(wf.validate_config(config, ROOT))
+            self.assertIn('INPUTS.file_pattern', problems)
+            self.assertIn(message, problems)
+
+    def test_a_pattern_that_matches_nothing_means_that_the_capture_is_not_found(self):
+        config = wf.merge_config({'INPUTS.file_pattern': r'(?P<capture>.+)_B(?P<index>\d+)\.tif$'})
+        self.assertIn("Capture 'IMG_0005' not found", '\n'.join(wf.validate_config(config, ROOT)))
+
+    def test_the_bands_of_a_capture_can_be_detected_from_the_images(self):
+        result = wf.detect_bands(wf.default_config(), ROOT)
+        self.assertEqual([band['name'] for band in result['bands']],
+                         ['Blue', 'Green', 'Red', 'NIR', 'Red edge', 'Panchro'])
+        self.assertEqual(wf.detect_bands(wf.default_config(), ROOT, 'IMG_0010')['camera'], 'MicaSense RedEdge-P')
+        with self.assertRaises(FileNotFoundError):
+            wf.detect_bands(wf.default_config(), ROOT, 'IMG_9999')
+
     def test_irradiance_series_changes_names_the_capture(self):
         series = {'Blue': [('c1', 100.0), ('c2', 101.0), ('c3', 150.0), ('c4', 100.0), ('c5', 100.0)],
                   'Green': [('c1', 100.0), ('c2', 100.0)],
@@ -324,6 +356,58 @@ class RunTests(unittest.TestCase):
         self.assertIn("Band 'NIR'", result['errors'][0])
         self.assertEqual(result['outputs'], [])
 
+    def test_fewer_bands_can_be_processed_if_the_others_are_ignored(self):
+        three = ('Blue', 'Green', 'Red')
+        defaults = wf.default_config()
+        subset = {'PANEL.reflectance_by_band': {band: defaults['PANEL.reflectance_by_band'][band] for band in three},
+                  'PANEL.band_center_wavelengths': {band: defaults['PANEL.band_center_wavelengths'][band] for band in three},
+                  'PANEL.band_bandwidths': {band: defaults['PANEL.band_bandwidths'][band] for band in three}}
+        result = wf.run(config_for(self.folder / 'three_bands', **subset,
+                                   **{'INPUTS.ignored_bands': 'Red edge, NIR, Panchro'}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertEqual(sorted(Path(path).name for path in result['outputs']),
+                         ['IMG_0010_1.tif', 'IMG_0010_2.tif', 'IMG_0010_3.tif'])
+        self.assertEqual(set(result['panel']['before']['bands']), set(three))
+        provenance = json.loads((self.folder / 'three_bands' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual([band['band'] for band in provenance['bands']], list(three))
+        # a band gives the same result whether the others are processed or not
+        for name in ('IMG_0010_1.tif', 'IMG_0010_3.tif'):
+            self.assertTrue(np.array_equal(tifffile.imread(self.folder / 'three_bands' / name),
+                                           tifffile.imread(self.folder / 'panel_only' / name)))
+
+    def test_extra_bands_in_the_files_stop_the_capture_unless_they_are_ignored(self):
+        defaults = wf.default_config()
+        subset = {key: {'Blue': defaults[key]['Blue']} for key in ('PANEL.reflectance_by_band',
+                  'PANEL.band_center_wavelengths', 'PANEL.band_bandwidths')}
+        result = wf.run(config_for(self.folder / 'one_band', **subset), ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('unexpected', result['errors'][0])
+        self.assertIn('NIR', result['errors'][0])
+
+    def test_a_band_that_is_not_in_the_files_is_a_missing_band(self):
+        coastal = {'PANEL.reflectance_by_band': {'Coastal': 0.5}, 'PANEL.band_center_wavelengths': {'Coastal': 444.0},
+                   'PANEL.band_bandwidths': {'Coastal': 28.0}, 'INPUTS.ignored_bands': 'Blue, Green, Red, NIR, Red edge, Panchro'}
+        result = wf.run(config_for(self.folder / 'coastal', **coastal), ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn("missing: ['Coastal']", result['errors'][0])
+
+    def test_files_with_another_naming_scheme_give_the_same_result(self):
+        images = self.folder / 'renamed_images'
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            number = int(path.stem.rsplit('_', 1)[1])
+            new_name = path.stem.rsplit('_', 1)[0].replace('IMG_', 'FLIGHT-') + f'-band{number + 4}.TIF'    # 5..10
+            shutil.copy(path, images / new_name)
+        pattern = r'(?P<capture>FLIGHT-\d+)-band(?P<index>\d+)\.tif$'
+        result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'renamed'),
+                         'INPUTS.reference_panel_capture': 'FLIGHT-0005', 'INPUTS.file_pattern': pattern}, ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        names = sorted(Path(path).name for path in result['outputs'])
+        self.assertEqual(names, sorted(f'FLIGHT-0010-band{number}.TIF' for number in range(5, 11)))
+        # the band comes from the metadata: file band5 is the Blue band, as IMG_0010_1.tif was
+        self.assertTrue(np.array_equal(tifffile.imread(self.folder / 'renamed' / 'FLIGHT-0010-band5.TIF'),
+                                       tifffile.imread(self.folder / 'panel_only' / 'IMG_0010_1.tif')))
+
     def test_progress_reports_the_stages_in_order(self):
         events = []
         wf.run(config_for(self.folder / 'progress'), ROOT, events.append)
@@ -357,8 +441,8 @@ class RunTests(unittest.TestCase):
     def test_missing_irradiance_in_one_band_fails_the_dls_correction_of_the_capture(self):
         original = wf._read_capture
 
-        def without_panchro_irradiance(images_folder, name, bands, exiftool_path):
-            objects = original(images_folder, name, bands, exiftool_path)
+        def without_panchro_irradiance(images_folder, name, bands, exiftool_path, *arguments):
+            objects = original(images_folder, name, bands, exiftool_path, *arguments)
             if name == 'IMG_0010':
                 objects['Panchro'].metadata['XMP:HorizontalIrradiance'] = None
             return objects

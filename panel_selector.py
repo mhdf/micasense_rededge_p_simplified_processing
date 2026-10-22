@@ -506,12 +506,8 @@ def main(argv=None):
     capture = arguments.capture or config['INPUTS.reference_panel_capture'].strip()
     regions_path = wf.resolve_path(root, config['PANEL.manual_regions_file'] or
                                    Path(config['INPUTS.results_folder']) / 'panel_regions.json')
-    exiftool_path = wf.exiftool_executable(config, root)
-    bands = list(config['PANEL.reflectance_by_band'])
     print(f"Reading {capture} ...", flush=True)
-    files = rct.read_band_files(rct.find_capture_paths(wf.resolve_path(root, config['INPUTS.images_folder']), capture),
-                                bands, exiftool_path)
-    images = {band: rct.Image(*files[band]) for band in bands}
+    images = wf.read_capture_images(config, root, capture)
     saved = wf.load_panel_regions(regions_path).get(capture, {}) if regions_path.is_file() else {}
     selected = select_panel_regions(images, saved, config['PANEL.percent_inner_area'],
                                     config['PANEL.saturation_threshold'])

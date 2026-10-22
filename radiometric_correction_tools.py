@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,16 +121,20 @@ def _metadata_positive(metadata, key, image_path):
 
 
 # Map the files of one capture to their bands using the band name in the metadata (not the file order)
-def map_band_files(image_paths, metadata_list, expected_bands=None):
+def map_band_files(image_paths, metadata_list, expected_bands=None, ignore_bands=()):
     """
-    Inputs: image paths of one capture, their metadata (same order) and, optionally, the expected band names
+    Inputs: image paths of one capture, their metadata (same order), optionally the expected band names and the names of
+            the bands that are in the files but must be left out (for example a thermal band)
     Outputs: dictionary {band name: (image path, metadata)}, with exactly one file per band
     """
+    ignored = set(ignore_bands or ())
     if len(image_paths) != len(metadata_list):
         raise ValueError("image_paths and metadata_list must have the same length")
     band_files = {}
     for image_path, metadata in zip(image_paths, metadata_list):
         band_name = _metadata_value(metadata, 'XMP:BandName', image_path)
+        if band_name in ignored:
+            continue
         if band_name in band_files:
             raise MetadataError(f"Band '{band_name}' appears twice: {band_files[band_name][0]} and {image_path}")
         band_files[band_name] = (image_path, metadata)
@@ -389,31 +394,87 @@ def write_provenance(path, band_records, parameters=None, checks=None):
     return path
 
 
-def list_capture_names(images_folder):
+# Names of the files: a regular expression (case-insensitive) with a group 'capture' (the name of the capture, shared by
+# the files of the bands) and, optionally, a group 'index' (the number of the file in the capture). The band of each
+# file is not taken from the name but from the metadata
+CAPTURE_FILE_PATTERN = r'(?P<capture>.+)_(?P<index>\d+)\.tif$'
+
+
+def compile_file_pattern(pattern=None):
+    """ The compiled pattern of the file names; ValueError with the reason if it cannot be used """
+    try:
+        compiled = re.compile(pattern or CAPTURE_FILE_PATTERN, re.IGNORECASE)
+    except re.error as error:
+        raise ValueError(f"the file name pattern is not a valid regular expression: {error}")
+    if 'capture' not in compiled.groupindex:
+        raise ValueError("the file name pattern needs a group named 'capture', e.g. (?P<capture>.+)_(?P<index>\\d+)\\.tif$")
+    return compiled
+
+
+def _capture_files(images_folder, pattern=None):
+    """ [(capture name, index or None, path)] of the files of the folder whose names match the pattern """
+    compiled = compile_file_pattern(pattern)
+    found = []
+    for path in Path(images_folder).iterdir():
+        match = compiled.match(path.name) if path.is_file() else None
+        if match:
+            index = match.groupdict().get('index')
+            found.append((match.group('capture'), int(index) if index and index.isdigit() else None, path))
+    return found
+
+
+def list_capture_names(images_folder, pattern=None):
     """ Return the sorted names of the captures in a folder, e.g. IMG_0005_1.tif ... IMG_0005_6.tif -> 'IMG_0005' """
-    names = set()
-    for path in Path(images_folder).glob('*.tif'):
-        stem = path.stem
-        head, _, band_number = stem.rpartition('_')
-        if head and band_number.isdigit():
-            names.add(head)
-    return sorted(names)
+    return sorted({name for name, _, _ in _capture_files(images_folder, pattern)})
 
 
-def find_capture_paths(images_folder, capture_name):
-    """ Return the sorted image paths of a capture, e.g. 'IMG_0005' -> IMG_0005_1.tif, IMG_0005_2.tif, ... """
-    paths = sorted(str(path) for path in Path(images_folder).glob(capture_name + '_*.tif'))
-    if not paths:
-        raise FileNotFoundError(f"No images named '{capture_name}_*.tif' in {images_folder}")
-    return paths
+def find_capture_paths(images_folder, capture_name, pattern=None):
+    """ Return the image paths of a capture, in the order of their numbers: IMG_0005_1.tif, IMG_0005_2.tif, ... """
+    files = [(index, path) for name, index, path in _capture_files(images_folder, pattern) if name == capture_name]
+    if not files:
+        raise FileNotFoundError(f"No images of the capture '{capture_name}' matching the file name pattern "
+                                f"{pattern or CAPTURE_FILE_PATTERN} in {images_folder}")
+    files.sort(key=lambda item: (item[0] is None, item[0] or 0, item[1].name))
+    return [str(path) for _, path in files]
 
 
-def read_band_files(image_paths, expected_bands=None, exiftool_path=None):
-    """ Read the metadata with ExifTool and map the files of one capture to their bands (see map_band_files) """
+def _read_metadata(image_paths, exiftool_path=None):
     import exiftool
     with exiftool.ExifToolHelper(executable=exiftool_path) as et:
-        metadata_list = [ et.get_metadata(image_path, params=['-b', '-F'])[0] for image_path in image_paths ]
-    return map_band_files(image_paths, metadata_list, expected_bands)
+        return [ et.get_metadata(image_path, params=['-b', '-F'])[0] for image_path in image_paths ]
+
+
+def read_band_files(image_paths, expected_bands=None, exiftool_path=None, ignore_bands=()):
+    """ Read the metadata with ExifTool and map the files of one capture to their bands (see map_band_files) """
+    return map_band_files(image_paths, _read_metadata(image_paths, exiftool_path), expected_bands, ignore_bands)
+
+
+def read_band_definitions(image_paths, exiftool_path=None):
+    """
+    Read the bands of a capture from the metadata of its files: name (XMP:BandName), central wavelength and bandwidth
+    (XMP:CentralWavelength, XMP:WavelengthFWHM, in nm) and the position of the camera in the rig (XMP:RigCameraIndex)
+    Outputs: {'camera', 'serial', 'bands': [{'name', 'center_nm', 'bandwidth_nm', 'index', 'file', 'thermal'}]} with the
+             bands in the order of the rig. 'thermal' is a guess (center above 2500 nm or a name like LWIR) to help to
+             leave out bands that are not reflective. MetadataError if a field is missing
+    """
+    metadata_list = _read_metadata(image_paths, exiftool_path)
+    bands = []
+    for image_path, metadata in zip(image_paths, metadata_list):
+        name = _metadata_value(metadata, 'XMP:BandName', image_path)
+        center = _metadata_floats(metadata, 'XMP:CentralWavelength', image_path, count=1)[0]
+        width = _metadata_floats(metadata, 'XMP:WavelengthFWHM', image_path, count=1)[0]
+        rig = metadata.get('XMP:RigCameraIndex')
+        bands.append({'name': name, 'center_nm': center, 'bandwidth_nm': width,
+                      'index': int(rig) if isinstance(rig, (int, float)) else None, 'file': str(image_path),
+                      'thermal': center > 2500 or name.strip().lower() in ('lwir', 'thermal')})
+    names = [band['name'] for band in bands]
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if duplicated:
+        raise MetadataError(f"Band name(s) used by more than one file: {duplicated}")
+    bands.sort(key=lambda band: (band['index'] is None, band['index'] if band['index'] is not None else 0, band['name']))
+    first = metadata_list[0] if metadata_list else {}
+    return {'camera': ' '.join(str(first.get(key, '')).strip() for key in ('EXIF:Make', 'EXIF:Model')).strip(),
+            'serial': str(first.get('EXIF:SerialNumber', '')), 'bands': bands}
 
 
 #

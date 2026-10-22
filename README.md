@@ -171,10 +171,23 @@ The bands of the panel capture are shown one after another. The polygon starts f
 - A band with a region in the file uses it, the others are detected from the QR code, and a manual region does not need a QR code. The panel audit and the provenance record say, for each band, whether the region was ```automatic``` or ```manual```.
 - From Python: ```rct.Image.detect_reference_panel(levels, percent_inner_area, manual_bounds=polygon)``` and ```panel_selector.select_panel_regions(images)```. The logic of the dialog (```PolygonModel```, ```ViewTransform```, ```SelectionSession```) has no window and is tested without a display.
 
+## Window
+
+```
+python radiometric_window.py [--config radiometric_inputs.json] [--root <folder>]
+```
+
+The pages (Inputs, Reference panel, DLS correction, DLS checks) are built from ```radiometric_workflow.FIELDS```, so a new key appears in the window without changes to it. A value that cannot be read is marked in red. "Save configuration" writes only the values that differ from the defaults (```radiometric_inputs.json``` in ```--root``` by default).
+
+The last page runs the workflow in a separate thread, so the window stays responsive: "Check inputs" lists every problem, "Draw panel regions..." opens the dialog above (and sets ```PANEL.manual_regions_file``` if it was empty), "Run" saves the configuration and shows the progress, the flags of the checks, the errors and the result file, and "Open results folder" opens the folder in the file explorer.
+
+- ```radiometric_window.RadiometricFrame``` builds its widgets in a ```ttk.Frame``` (```.widget```), so it can be placed in any window, for example as a page of another program's window. ```ui_theme.py``` holds the colors and styles, which follow the dark window of the photogrammetric workflow.
+- ```ConfigModel``` (the text typed in each field, its conversion and the file) has no window and is tested without a display.
+
 ## Tests
 
 ```
-python -m unittest test_radiometric_correction_tools test_radiometric_workflow test_panel_selector -v
+python -m unittest test_radiometric_correction_tools test_radiometric_workflow test_panel_selector test_radiometric_window -v
 ```
 
 The tests use the example images and need ExifTool (set the environment variable ```exiftoolpath``` if it is not in the PATH).

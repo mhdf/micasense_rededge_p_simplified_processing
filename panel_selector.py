@@ -26,11 +26,7 @@ import numpy as np
 
 # Local Imports
 import radiometric_correction_tools as rct
-
-# Colors of the main photogrammetry window (dark theme)
-COLORS = {'background': '#242424', 'panel': '#2b2b2b', 'input': '#595d61', 'foreground': '#dedede',
-          'muted': '#aaaeb2', 'border': '#444444', 'accent': '#485968',
-          'manual': '#35c4e8', 'automatic': '#f2c84b', 'error': '#e8785a'}
+from ui_theme import COLORS, apply_dark_theme
 
 VERTEX_RADIUS_PIXELS = 7      # distance on the screen to pick a vertex
 EDGE_DISTANCE_PIXELS = 6      # distance on the screen to insert a vertex on an edge
@@ -230,26 +226,11 @@ class PanelSelectorWindow:
         self.root.title(title)
         self.root.geometry("1180x800")
         self.root.minsize(1060, 520)
-        self._style()
+        apply_dark_theme(self.root)
         self._build()
         self._load_band()
 
     # --- construction ---------------------------------------------------------------------------------------
-
-    def _style(self):
-        ttk, c = self.ttk, COLORS
-        self.root.configure(background=c['background'])
-        style = ttk.Style(self.root)
-        style.theme_use('clam')
-        style.configure('TFrame', background=c['background'])
-        style.configure('TLabel', background=c['background'], foreground=c['foreground'], font=('Segoe UI', 10))
-        style.configure('Muted.TLabel', foreground=c['muted'])
-        style.configure('Title.TLabel', font=('Segoe UI', 12, 'bold'))
-        style.configure('Error.TLabel', foreground=c['error'])
-        style.configure('TButton', background=c['input'], foreground=c['foreground'], bordercolor=c['border'],
-                        lightcolor=c['input'], darkcolor=c['input'], padding=(10, 4), font=('Segoe UI', 10))
-        style.map('TButton', background=[('active', c['accent']), ('disabled', c['panel'])],
-                  foreground=[('disabled', c['border'])])
 
     def _build(self):
         tk, ttk = self.tk, self.ttk
@@ -478,17 +459,25 @@ class PanelSelectorWindow:
         self.root.destroy()
 
 
-def select_panel_regions(images, saved=None, percent_inner_area=0.7, sat_threshold=65000, root=None):
+def select_panel_regions(images, saved=None, percent_inner_area=0.7, sat_threshold=65000, parent=None):
     """
     Open the dialog and wait for the user
-    Inputs: {band: rct.Image} of the panel capture, the regions saved before {band: polygon} (optional)
+    Inputs: {band: rct.Image} of the panel capture, the regions saved before {band: polygon} (optional) and, when
+            another window is open, that window (the dialog is then modal and opens above it)
     Outputs: {band: polygon or None (use the automatic detection)}, or None if the user cancelled
     """
     import tkinter as tk
-    window_root = root or tk.Tk()
     session = SelectionSession(images, saved, percent_inner_area, sat_threshold)
-    window = PanelSelectorWindow(window_root, session)
-    window_root.mainloop()
+    if parent is None:
+        window_root = tk.Tk()
+        window = PanelSelectorWindow(window_root, session)
+        window_root.mainloop()
+    else:
+        window_root = tk.Toplevel(parent)
+        window_root.transient(parent)
+        window = PanelSelectorWindow(window_root, session)
+        window_root.grab_set()
+        parent.wait_window(window_root)
     return None if window.cancelled else session.result()
 
 

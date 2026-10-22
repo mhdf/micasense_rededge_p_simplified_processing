@@ -5,7 +5,9 @@ The bands of the panel capture are shown one after the other; the region of the 
 one found automatically (or from a region saved before), and that can be edited and confirmed. The vertices are pixels
 of the undistorted image and are saved in the file used by the workflow (PANEL.manual_regions_file).
 
-    python panel_selector.py --config radiometric_inputs.json [--root folder] [--capture IMG_0005]
+    python panel_selector.py [--config radiometric_inputs.json] [--root folder] [--capture IMG_0005]
+
+Without --config, radiometric_inputs.json in the root folder is used if it exists, otherwise the defaults.
 
 Keys: Enter confirm (and go to the next band), S use the automatic detection for this band, R back to the automatic region, C clear,
 Backspace remove the last vertex, Left/Right previous/next band, Escape cancel.
@@ -484,12 +486,17 @@ def select_panel_regions(images, saved=None, percent_inner_area=0.7, sat_thresho
 def main(argv=None):
     import radiometric_workflow as wf
     parser = argparse.ArgumentParser(description="Draw the reference panel region of each band")
-    parser.add_argument('--config', required=True, help="configuration json file of the workflow")
+    parser.add_argument('--config', help="configuration json file of the workflow (default: radiometric_inputs.json "
+                                         "in --root if it exists, otherwise the defaults)")
     parser.add_argument('--root', default='.', help="folder from which the relative paths are resolved")
     parser.add_argument('--capture', help="panel capture (default: INPUTS.reference_panel_capture)")
     arguments = parser.parse_args(argv)
 
-    config = wf.load_config(arguments.config)
+    config_file = Path(arguments.config) if arguments.config else Path(arguments.root) / 'radiometric_inputs.json'
+    if arguments.config and not config_file.is_file():
+        print(f"ERROR: configuration file not found: {config_file}", file=sys.stderr)
+        return 2
+    config = wf.load_config(config_file) if config_file.is_file() else wf.default_config()
     problems = wf.validate_config(config, arguments.root)
     if problems:
         for problem in problems:

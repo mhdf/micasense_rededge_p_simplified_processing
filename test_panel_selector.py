@@ -292,6 +292,9 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
 
 class CommandLineTests(unittest.TestCase):
 
+    def test_a_configuration_file_that_does_not_exist_returns_2(self):
+        self.assertEqual(ps.main(['--config', str(ROOT / 'missing_inputs.json'), '--root', str(ROOT)]), 2)
+
     def test_invalid_configuration_is_reported_and_returns_1(self):
         with tempfile.TemporaryDirectory() as folder:
             config = Path(folder) / 'inputs.json'

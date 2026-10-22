@@ -171,6 +171,14 @@ The bands of the panel capture are shown one after another. The polygon starts f
 - A band with a region in the file uses it, the others are detected from the QR code, and a manual region does not need a QR code. The panel audit and the provenance record say, for each band, whether the region was ```automatic``` or ```manual```.
 - From Python: ```rct.Image.detect_reference_panel(levels, percent_inner_area, manual_bounds=polygon)``` and ```panel_selector.select_panel_regions(images)```. The logic of the dialog (```PolygonModel```, ```ViewTransform```, ```SelectionSession```) has no window and is tested without a display.
 
+## Launchers (Windows)
+
+Double-click one of these files in the project folder. They use the Python 3.10 environment at the top of each file (```PYTHON_DIR```; edit it if yours is elsewhere), and the project folder as ```--root```, so the relative paths of the configuration (for example ```images/raw```) are resolved from there.
+
+- ```open_radiometric_window.cmd```: the window, without a console (like the launcher of the photogrammetric workflow).
+- ```open_radiometric_window_debug.cmd```: the same window with the console kept open, to see messages and error traces while testing.
+- ```open_panel_selector.cmd```: only the dialog to draw the panel regions, using ```radiometric_inputs.json``` in the project folder if it exists, otherwise the defaults. Extra arguments are passed on (for example ```--capture IMG_0005```).
+
 ## Window
 
 ```

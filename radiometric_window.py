@@ -38,8 +38,24 @@ BAND_KEYS = ('PANEL.reflectance_by_band', 'PANEL.band_center_wavelengths', 'PANE
              'INPUTS.ignored_bands')
 
 # Pages of the window: key prefix, title. The last page ('RUN') is not made of fields
-SECTIONS = [('INPUTS', 'Inputs'), ('PANEL', 'Reference panel'), ('CORRECTION', 'DLS correction'),
-            ('CHECKS', 'DLS checks'), ('RUN', 'Run and results')]
+SECTIONS = [('INPUTS', 'Inputs'), ('PANEL', 'Reference panel'), ('CORRECTION', 'DLS'),
+            ('RUN', 'Run and results')]
+
+# The keys whose prefix is one of these are shown in the page (the DLS page has the correction and its checks), and
+# the keys that are shown in another page than their prefix says
+PAGE_PREFIXES = {'CORRECTION': ('CORRECTION', 'CHECKS')}
+FIELD_PAGE = {'PANEL.manual_regions_file': 'INPUTS'}
+
+
+def page_of(key):
+    """ The page where a key is shown """
+    if key in FIELD_PAGE:
+        return FIELD_PAGE[key]
+    prefix = key.split('.')[0]
+    for page, _ in SECTIONS:
+        if prefix in PAGE_PREFIXES.get(page, (page,)):
+            return page
+    return prefix
 
 
 # ======================================================================================
@@ -178,6 +194,7 @@ class RadiometricFrame:
         self.groups = {}                  # last heading written in each page
         self.source_widgets = {'values': [], 'spectral_file': []}
         self.band_table = None
+        self.buttons = {}
         self.syncing = False
         self.detecting = False
         self.presets, self.preset_problems = camera_presets.load_presets(camera_presets.preset_folders(self.root_folder))
@@ -254,7 +271,7 @@ class RadiometricFrame:
                 if prefix == 'PANEL':
                     self._build_band_section(page)
                 for field in wf.FIELDS:
-                    if field['key'].split('.')[0] == prefix:
+                    if page_of(field['key']) == prefix:
                         self._build_field(page, field)
         for key in BAND_KEYS:                                     # these keys live in the band table
             self.variables[key] = self.band_table
@@ -366,14 +383,29 @@ class RadiometricFrame:
         if key == 'PANEL.spectral_file':
             self.spectral_summary = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
             self.spectral_summary.pack(anchor='w', pady=(3, 0))
+        if key == 'PANEL.manual_regions_file':
+            self._build_regions_tool(page)
+
+    def _build_regions_tool(self, page):
+        """ The button that opens the tool to draw the regions of the panel, with what it does """
+        ttk = self.ttk
+        holder = ttk.Frame(page)
+        holder.pack(fill='x', pady=(0, 9))
+        self.buttons['regions'] = ttk.Button(holder, text='Draw panel regions...', command=self.draw_regions)
+        self.buttons['regions'].pack(anchor='w')
+        ttk.Label(holder, style='Muted.TLabel', wraplength=760, justify='left',
+                  text="Opens the images of the reference panel capture, band by band, so that you can check the region "
+                       "found from the QR code, correct it or draw it when the QR code cannot be read. Each band ends as "
+                       "a region that you confirmed or as 'use the automatic detection'. The regions are saved in the "
+                       "file above (if it is empty, in panel_regions.json in the results folder, which is then filled in "
+                       "above). It needs the images folder, the panel capture and the bands to be right: use Check inputs "
+                       "on the Run page if it does not open.").pack(anchor='w', pady=(4, 0))
 
     def _build_run_page(self, page):
         tk, ttk = self.tk, self.ttk
         buttons = ttk.Frame(page)
         buttons.pack(fill='x')
-        self.buttons = {}
         for name, text, command in (('check', 'Check inputs', self.check_inputs),
-                                    ('regions', 'Draw panel regions...', self.draw_regions),
                                     ('run', 'Run', self.start_run),
                                     ('open', 'Open results folder', self.open_results)):
             self.buttons[name] = ttk.Button(buttons, text=text, command=command)

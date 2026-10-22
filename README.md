@@ -186,6 +186,8 @@ Instead of typing the reflectance of each band, it can be computed from the spec
 
 ## Drawing the panel region by hand
 
+The tool is opened with "Draw panel regions..." on the Inputs page (next to the panel captures and the file where the regions are kept), or with ```open_panel_selector.cmd```. The bottom of its window explains the mouse, the keys and every button, and pointing at a button shows what it does.
+
 When the QR code is not found, or the automatic region is not on the panel, the region can be drawn for each band with ```panel_selector.py```:
 
 ```
@@ -214,9 +216,9 @@ Double-click one of these files in the project folder. They use the Python 3.10 
 python radiometric_window.py [--config radiometric_inputs.json] [--root <folder>]
 ```
 
-The pages (Inputs, Reference panel, DLS correction, DLS checks) are built from ```radiometric_workflow.FIELDS```, so a new key appears in the window without changes to it; the pages scroll when they are longer than the window. The bands of the camera are edited in a table (see above). A value that cannot be read is marked in red. "Save configuration" writes only the values that differ from the defaults (```radiometric_inputs.json``` in ```--root``` by default).
+The pages (Inputs, Reference panel, DLS) are built from ```radiometric_workflow.FIELDS```, so a new key appears in the window without changes to it; the pages scroll when they are longer than the window. The bands of the camera are edited in a table (see above). A value that cannot be read is marked in red. "Save configuration" writes only the values that differ from the defaults (```radiometric_inputs.json``` in ```--root``` by default).
 
-The last page runs the workflow in a separate thread, so the window stays responsive: "Check inputs" lists every problem, "Draw panel regions..." opens the dialog above (and sets ```PANEL.manual_regions_file``` if it was empty), "Run" saves the configuration and shows the progress, the flags of the checks, the errors and the result file, and "Open results folder" opens the folder in the file explorer.
+The last page runs the workflow in a separate thread, so the window stays responsive: "Check inputs" lists every problem, "Draw panel regions..." (on the Inputs page, next to the panel captures) opens the dialog above (and sets ```PANEL.manual_regions_file``` if it was empty), "Run" saves the configuration and shows the progress, the flags of the checks, the errors and the result file, and "Open results folder" opens the folder in the file explorer.
 
 - Load and Save profile (see above) are in the bottom bar. ```radiometric_window.RadiometricFrame``` builds its widgets in a ```ttk.Frame``` (```.widget```), so it can be placed in any window, for example as a page of another program's window. ```ui_theme.py``` holds the colors and styles, which follow the dark window of the photogrammetric workflow.
 - ```ConfigModel``` (the text typed in each field, its conversion and the file) has no window and is tested without a display.

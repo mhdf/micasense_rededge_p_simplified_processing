@@ -95,8 +95,11 @@ class ConfigModelTests(unittest.TestCase):
         self.assertEqual(model.overrides(), {'PANEL.reflectance_source': 'spectral_file'})
 
     def test_every_field_belongs_to_a_page(self):
-        prefixes = {prefix for prefix, _ in rw.SECTIONS}
-        self.assertTrue(all(field['key'].split('.')[0] in prefixes for field in wf.FIELDS))
+        pages = {page for page, _ in rw.SECTIONS}
+        self.assertTrue(all(rw.page_of(field['key']) in pages for field in wf.FIELDS))
+        self.assertEqual(rw.page_of('CHECKS.jump_threshold'), 'CORRECTION')           # the DLS page has the checks too
+        self.assertEqual(rw.page_of('PANEL.manual_regions_file'), 'INPUTS')
+        self.assertEqual(rw.page_of('PANEL.percent_inner_area'), 'PANEL')
 
 
 class WindowTests(unittest.TestCase):
@@ -590,6 +593,51 @@ class WindowTests(unittest.TestCase):
         self.root.update()
         self.assertFalse(self.frame.scroll_pages['PANEL'].scrolls())
         self.assertNotIn('RUN', self.frame.scroll_pages)                                   # the log scrolls by itself
+
+    def inside(self, widget, page):
+        return str(widget).startswith(str(self.frame.scroll_pages[page].body))
+
+    def test_the_dls_correction_and_its_checks_are_one_page(self):
+        titles = [self.frame.navigation.get(index).strip() for index in range(self.frame.navigation.size())]
+        self.assertEqual(titles, ['Inputs', 'Reference panel', 'DLS', 'Run and results'])
+        keys = ['CORRECTION.use_dls'] + [field['key'] for field in wf.FIELDS if field['key'].startswith('CHECKS.')]
+        self.assertEqual(len(keys), 7)
+        for key in keys:
+            self.assertIn(key, self.frame.variables)
+        for key in keys[1:]:
+            self.assertTrue(self.inside(self.frame.entries[key], 'CORRECTION'), key)
+        self.assertNotIn('CHECKS', self.frame.pages)
+
+    def test_the_dls_page_has_a_heading_for_each_part(self):
+        headings = [child.cget('text') for child in self.frame.scroll_pages['CORRECTION'].body.winfo_children()
+                    if child.winfo_class() == 'TLabel']
+        self.assertIn('Correction with the DLS', headings)
+        self.assertIn('Checks of the DLS data (limits)', headings)
+        self.assertLess(headings.index('Correction with the DLS'), headings.index('Checks of the DLS data (limits)'))
+
+    def test_the_panel_region_tool_is_on_the_inputs_page_next_to_the_panel_captures(self):
+        self.assertTrue(self.inside(self.frame.entries['PANEL.manual_regions_file'], 'INPUTS'))
+        self.assertTrue(self.inside(self.frame.buttons['regions'], 'INPUTS'))
+        self.assertFalse(self.inside(self.frame.buttons['regions'], 'PANEL'))
+        self.assertNotIn('PANEL.manual_regions_file', [key for key in self.frame.entries
+                                                       if self.inside(self.frame.entries[key], 'PANEL')])
+        order = wf.FIELD_KEYS
+        self.assertLess(order.index('INPUTS.reference_panel_capture_after'), order.index('PANEL.manual_regions_file'))
+        self.assertLess(order.index('PANEL.manual_regions_file'), order.index('INPUTS.image_captures'))
+        run_page_buttons = [child.cget('text') for child in self.frame.pages['RUN'].winfo_children()[1].winfo_children()]
+        self.assertEqual(run_page_buttons, ['Check inputs', 'Run', 'Open results folder'])
+
+    def test_the_regions_button_is_disabled_while_the_workflow_is_busy(self):
+        self.frame._set_busy(True)
+        self.assertTrue(self.frame.buttons['regions'].instate(['disabled']))
+        self.frame._set_busy(False)
+        self.assertFalse(self.frame.buttons['regions'].instate(['disabled']))
+
+    def test_the_inputs_page_has_headings_for_its_groups(self):
+        headings = [child.cget('text') for child in self.frame.scroll_pages['INPUTS'].body.winfo_children()
+                    if child.winfo_class() == 'TLabel']
+        self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Reference panel regions',
+                                        'Captures to correct'])
 
     def test_the_frame_can_be_placed_inside_another_window(self):
         import tkinter as tk

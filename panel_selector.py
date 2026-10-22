@@ -30,6 +30,22 @@ import numpy as np
 import radiometric_correction_tools as rct
 from ui_theme import COLORS, apply_dark_theme
 
+LEGEND = (
+    "Mouse: a click adds a vertex (on an edge it inserts one); drag a vertex to move it; right click removes it; the wheel zooms; the middle button drags the image.\nConfirm (Enter): accept this polygon for this band and go to the next. Use automatic detection (S): keep no region for this band, so the QR code is used when the workflow runs. Reset to automatic (R): put the polygon back on the region found from the QR code. Clear (C): remove all the vertices (Backspace removes the last one). Previous / Next (arrows): look at another band without deciding. Save and close: write the regions, when every band was decided. Cancel (Esc): close without saving.")
+
+DEFAULT_HINT = "Point at a button to see what it does."
+
+HINTS = {
+    'previous': 'Previous: show the previous band. Nothing is decided or changed.',
+    'next': 'Next: show the next band. Nothing is decided or changed.',
+    'reset': 'Reset to automatic: put the polygon back on the region found from the QR code (the yellow dashed line).',
+    'clear': 'Clear: remove all the vertices, to draw the region from scratch with clicks.',
+    'confirm': 'Confirm: accept the polygon as it is for this band and go to the next band. It must have 3 or more vertices and no crossing edges.',
+    'skip': 'Use automatic detection: save no region for this band; the QR code is used when the workflow runs.',
+    'finish': 'Save and close: write the regions in the file. It is available when every band was confirmed or set to the automatic detection.',
+    'cancel': 'Cancel: close the window and save nothing.',
+}
+
 VERTEX_RADIUS_PIXELS = 7      # distance on the screen to pick a vertex
 EDGE_DISTANCE_PIXELS = 6      # distance on the screen to insert a vertex on an edge
 
@@ -245,6 +261,14 @@ class PanelSelectorWindow:
 
         buttons = ttk.Frame(self.root, padding=(12, 4, 12, 12))
         buttons.pack(side='bottom', fill='x')
+        explanation = ttk.Frame(self.root, padding=(12, 0))
+        explanation.pack(side='bottom', fill='x')
+        self.hint_label = ttk.Label(explanation, text=DEFAULT_HINT, foreground=COLORS['foreground'])
+        self.hint_label.pack(anchor='w', pady=(0, 3))
+        self.legend_label = ttk.Label(explanation, text=LEGEND, style='Muted.TLabel', justify='left')
+        self.legend_label.pack(anchor='w', pady=(0, 6))
+        explanation.bind('<Configure>', lambda event: (self.legend_label.configure(wraplength=max(event.width - 24, 200)),
+                                                       self.hint_label.configure(wraplength=max(event.width - 24, 200))))
         info = ttk.Frame(self.root, padding=(12, 6))
         info.pack(side='bottom', fill='x')
         self.stats_label = ttk.Label(info)
@@ -273,6 +297,10 @@ class PanelSelectorWindow:
                                     ('confirm', 'Confirm', self.confirm)):
             self.buttons[name] = ttk.Button(buttons, text=text, command=command)
             self.buttons[name].pack(side='right', padx=(6, 0))
+
+        for name, button in self.buttons.items():                 # what a button does, when the mouse is over it
+            button.bind('<Enter>', lambda event, name=name: self.hint_label.configure(text=HINTS[name]))
+            button.bind('<Leave>', lambda event: self.hint_label.configure(text=DEFAULT_HINT))
 
         for sequence, command in (('<Return>', self.confirm), ('<s>', self.skip), ('<r>', self.reset),
                                   ('<c>', self.clear), ('<BackSpace>', self.undo), ('<Left>', self.previous),

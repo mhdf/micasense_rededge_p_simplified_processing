@@ -275,6 +275,34 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         window.undo()
         self.assertEqual(len(window.model.vertices), 3)
 
+    def test_the_window_explains_every_button_and_command(self):
+        legend = self.window.legend_label.cget('text')
+        for text in ('Confirm', 'Use automatic detection', 'Reset to automatic', 'Clear', 'Previous', 'Next',
+                     'Save and close', 'Cancel', 'a click adds a vertex', 'right click removes', 'wheel', 'middle button',
+                     'Enter', 'Backspace', 'Esc'):
+            self.assertIn(text, legend)
+        self.assertEqual(set(ps.HINTS), set(self.window.buttons))
+
+    def test_pointing_at_a_button_says_what_it_does(self):
+        self.assertEqual(self.window.hint_label.cget('text'), ps.DEFAULT_HINT)
+        for name, button in self.window.buttons.items():
+            button.event_generate('<Enter>')
+            self.root.update()
+            self.assertEqual(self.window.hint_label.cget('text'), ps.HINTS[name], name)
+            button.event_generate('<Leave>')
+            self.root.update()
+            self.assertEqual(self.window.hint_label.cget('text'), ps.DEFAULT_HINT)
+
+    def test_the_explanation_stays_visible_below_the_image(self):
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.geometry('900x700')
+        self.root.update()
+        buttons_top = self.window.buttons['confirm'].winfo_rooty()
+        self.assertLess(self.window.legend_label.winfo_rooty(), buttons_top)
+        self.assertGreater(self.window.legend_label.winfo_rooty(), self.window.canvas.winfo_rooty())
+        self.assertGreater(self.window.canvas.winfo_height(), 200)                   # the image keeps room
+
     def test_zoom_with_the_wheel_and_pan(self):
         window = self.window
         before = window.view.scale

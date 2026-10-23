@@ -95,10 +95,20 @@ class FilePatternTests(unittest.TestCase):
         with self.assertRaisesRegex(FileNotFoundError, "'IMG_9'.*pattern"):
             rct.find_capture_paths(self.folder.name, 'IMG_9')
 
+    def test_a_template_is_read_like_the_regular_expression_it_stands_for(self):
+        self.touch('IMG_0001_1.tif', 'IMG_0001_2.TIF', 'IMG_0002_1.tif', 'DJI_0001_MS_G.TIF', 'DJI_0001_MS_R.TIF', 'x.txt')
+        self.assertEqual(rct.list_capture_names(self.folder.name, '{capture}_{index}.tif'), ['IMG_0001', 'IMG_0002'])
+        self.assertEqual(rct.list_capture_names(self.folder.name, 'IMG_{capture}_{index}.tif'), ['0001', '0002'])
+        self.assertEqual(rct.list_capture_names(self.folder.name, '{capture}_MS_*.tif'), ['DJI_0001'])
+        names = [Path(path).name for path in rct.find_capture_paths(self.folder.name, 'IMG_0001', '{capture}_{index}.tif')]
+        self.assertEqual(names, ['IMG_0001_1.tif', 'IMG_0001_2.TIF'])
+        with self.assertRaisesRegex(ValueError, 'only once'):
+            rct.compile_file_pattern('{capture}_{capture}.tif')
+
     def test_invalid_patterns_are_reported(self):
         with self.assertRaisesRegex(ValueError, 'not a valid regular expression'):
             rct.compile_file_pattern('(unclosed')
-        with self.assertRaisesRegex(ValueError, "group named 'capture'"):
+        with self.assertRaisesRegex(ValueError, "needs {capture}"):
             rct.compile_file_pattern(r'(.+)_(\d+)\.tif$')
         self.assertIsNotNone(rct.compile_file_pattern(None))
 
@@ -116,7 +126,8 @@ class PatternPreviewTests(unittest.TestCase):
             (Path(self.folder.name) / name).write_bytes(b'')
 
     def test_the_pattern_is_written_as_a_name(self):
-        self.assertEqual(rct.pattern_template(rct.CAPTURE_FILE_PATTERN), '<capture>_<index>.tif')
+        self.assertEqual(rct.pattern_template(rct.CAPTURE_FILE_PATTERN), '{capture}_{index}.tif')
+        self.assertEqual(rct.pattern_template(r'(?P<capture>.+)_(?P<index>\d+)\.tif$'), '<capture>_<index>.tif')
         self.assertEqual(rct.pattern_template(r'^(?P<capture>DJI_\d+)_MS_(?P<band>[A-Z]+)\.tif$'), '<capture>_MS_<band>.tif')
 
     def test_the_preview_counts_files_and_captures(self):
@@ -132,11 +143,11 @@ class PatternPreviewTests(unittest.TestCase):
     def test_a_pattern_is_suggested_from_the_names(self):
         names = ['IMG_0001_1.tif', 'IMG_0001_2.tif', 'IMG_0002_1.tif', 'notes.txt']
         pattern = rct.suggest_file_pattern(names)
-        self.assertEqual(rct.pattern_template(pattern), '<capture>_<index>.tif')
+        self.assertEqual(pattern, '{capture}_{index}.tif')
         self.touch(*names)
         self.assertEqual(rct.list_capture_names(self.folder.name, pattern), ['IMG_0001', 'IMG_0002'])
         dashed = rct.suggest_file_pattern(['flight-A-0001-1.TIF', 'flight-A-0001-2.TIF'])
-        self.assertEqual(rct.pattern_template(dashed), '<capture>-<index>.tif')
+        self.assertEqual(dashed, '{capture}-{index}.tif')
         self.assertTrue(rct.compile_file_pattern(dashed).match('flight-A-0001-3.tif'))      # the extension is not case sensitive
         self.assertIsNone(rct.suggest_file_pattern(['readme.txt', 'photo.jpg']))
         self.assertIsNone(rct.suggest_file_pattern([]))

@@ -52,7 +52,7 @@ class ValidatePresetTests(unittest.TestCase):
 
     def test_a_bad_file_pattern_is_reported(self):
         self.assertIn('file_pattern', self.problems(valid_preset(file_pattern='(unclosed')))
-        self.assertIn("group named 'capture'", self.problems(valid_preset(file_pattern=r'(.+)\.tif')))
+        self.assertIn("needs {capture}", self.problems(valid_preset(file_pattern=r'(.+)\.tif')))
 
 
 class LoadPresetsTests(unittest.TestCase):

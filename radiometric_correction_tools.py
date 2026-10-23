@@ -448,20 +448,45 @@ def write_provenance(path, band_records, parameters=None, checks=None):
     return path
 
 
-# Names of the files: a regular expression (case-insensitive) with a group 'capture' (the name of the capture, shared by
-# the files of the bands) and, optionally, a group 'index' (the number of the file in the capture). The band of each
-# file is not taken from the name but from the metadata
-CAPTURE_FILE_PATTERN = r'(?P<capture>.+)_(?P<index>\d+)\.tif$'
+# Names of the files: a name with {capture} where the name of the capture is (the part shared by the files of its bands),
+# {index} where the number of the file in the capture is (optional) and * for any other text, for example
+# {capture}_{index}.tif. Not case sensitive. A regular expression with a group named capture (and, optionally, index) is
+# accepted too, for names that the template cannot describe. The band of each file is not taken from the name but from
+# the metadata
+CAPTURE_FILE_PATTERN = '{capture}_{index}.tif'
+
+_TEMPLATE_PARTS = re.compile(r'(\{capture\}|\{index\}|\*)')
+
+
+def template_to_regex(template):
+    """ The regular expression that a file name template stands for ({capture}, {index}, * = any text) """
+    pieces = []
+    for part in _TEMPLATE_PARTS.split(template):
+        if part == '{capture}':
+            pieces.append('(?P<capture>.+)')
+        elif part == '{index}':
+            pieces.append(r'(?P<index>\d+)')
+        elif part == '*':
+            pieces.append('.*')
+        else:
+            pieces.append(re.escape(part))
+    return ''.join(pieces) + '$'
 
 
 def compile_file_pattern(pattern=None):
-    """ The compiled pattern of the file names; ValueError with the reason if it cannot be used """
+    """ The compiled pattern of the file names (a template or a regular expression); ValueError with the reason if it cannot be used """
+    text = pattern or CAPTURE_FILE_PATTERN
+    if '{capture}' in text:
+        if text.count('{capture}') > 1 or text.count('{index}') > 1:
+            raise ValueError("the file name template can have {capture} and {index} only once each")
+        text = template_to_regex(text)
     try:
-        compiled = re.compile(pattern or CAPTURE_FILE_PATTERN, re.IGNORECASE)
+        compiled = re.compile(text, re.IGNORECASE)
     except re.error as error:
         raise ValueError(f"the file name pattern is not a valid regular expression: {error}")
     if 'capture' not in compiled.groupindex:
-        raise ValueError("the file name pattern needs a group named 'capture', e.g. (?P<capture>.+)_(?P<index>\\d+)\\.tif$")
+        raise ValueError("the file name pattern needs {capture} where the name of the capture is, e.g. {capture}_{index}.tif "
+                         "(or a regular expression with a group named capture)")
     return compiled
 
 
@@ -494,9 +519,11 @@ def find_capture_paths(images_folder, capture_name, pattern=None):
 
 def pattern_template(pattern):
     """
-    The file name pattern written as a name: the groups become <capture> and <index>, the anchors and the escapes of the
-    regular expression are removed. r'(?P<capture>.+)_(?P<index>\\d+)\\.tif$' -> '<capture>_<index>.tif'
+    The file name pattern written as a name: a template is returned as it is; for a regular expression the groups become
+    <capture> and <index> and the anchors and the escapes are removed: r'(?P<capture>.+)_(?P<index>\\d+)\\.tif$' -> '<capture>_<index>.tif'
     """
+    if '{capture}' in (pattern or CAPTURE_FILE_PATTERN):
+        return pattern or CAPTURE_FILE_PATTERN
     text = re.sub(r'\(\?P<(\w+)>(?:[^()]|\([^()]*\))*\)', lambda match: f"<{match.group(1)}>", pattern or CAPTURE_FILE_PATTERN)
     text = text.lstrip('^').rstrip('$')
     return re.sub(r'\\(.)', r'\1', text)
@@ -530,7 +557,7 @@ def preview_file_pattern(images_folder, pattern=None, examples=3):
 
 def suggest_file_pattern(file_names):
     """
-    A file name pattern for the names of a folder, or None if there is no obvious one. The names are expected to be
+    A file name template for the names of a folder, or None if there is no obvious one. The names are expected to be
     <capture name><separator><number of the file>.<extension> (IMG_0005_1.tif); the most common extension and separator
     are used and the pattern is kept only if most of the files follow it
     """
@@ -550,7 +577,7 @@ def suggest_file_pattern(file_names):
     separator = max(set(separators), key=separators.count)
     if len(separators) < 0.5 * len(file_names):
         return None
-    return rf"(?P<capture>.+){re.escape(separator)}(?P<index>\d+)\.{re.escape(extension)}$"
+    return f"{{capture}}{separator}{{index}}.{extension}"
 
 
 def _read_metadata(image_paths, exiftool_path=None):

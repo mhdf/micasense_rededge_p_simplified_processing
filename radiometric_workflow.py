@@ -94,10 +94,10 @@ FIELDS = [
     {'key': 'INPUTS.file_pattern', 'group': 'Images to correct', 'kind': 'text', 'default': rct.CAPTURE_FILE_PATTERN,
      'label': 'File name pattern',
      'help': "How the program tells which files belong to the same capture. The camera writes one file per band "
-             "(IMG_0005_1.tif ... IMG_0005_6.tif); this regular expression says which part of the name is the capture "
-             "(group capture) and, optionally, which is the number of the file (group index). The band itself is read from "
+             "(IMG_0005_1.tif ... IMG_0005_6.tif). Write the name with {capture} where the name of the capture is, {index} "
+             "where the number of the file is and * for any other text: {capture}_{index}.tif. The band itself is read from "
              "the metadata, not from the name. Change it only if your files are named differently; Suggest from files "
-             "writes it from the names in the folder."},
+             "writes it from the names in the folder. A regular expression with a group named capture also works."},
     {'key': 'INPUTS.ignored_bands', 'kind': 'text', 'default': '',
      'label': 'Bands to ignore',
      'help': "Names (as written by the camera, XMP:BandName) separated by commas, of bands that are in the files but "

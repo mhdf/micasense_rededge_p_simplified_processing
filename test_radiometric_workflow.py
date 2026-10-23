@@ -251,7 +251,7 @@ class ConfigurationTests(unittest.TestCase):
                       '\n'.join(wf.validate_config(config, ROOT)))
 
     def test_a_bad_file_pattern_is_reported_with_its_key(self):
-        for pattern, message in (('(unclosed', 'not a valid regular expression'), (r'(.+)_(\d+)\.tif$', "group named 'capture'")):
+        for pattern, message in (('(unclosed', 'not a valid regular expression'), (r'(.+)_(\d+)\.tif$', 'needs {capture}')):
             config = wf.merge_config({'INPUTS.file_pattern': pattern})
             problems = '\n'.join(wf.validate_config(config, ROOT))
             self.assertIn('INPUTS.file_pattern', problems)

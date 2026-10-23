@@ -8,7 +8,7 @@ project folder; add a file there to add a camera. The format of a file:
     {
       "label": "Name shown in the window",
       "notes": "Anything worth knowing (optional)",
-      "file_pattern": "regular expression of the file names (optional)",
+      "file_pattern": "template of the file names, e.g. {capture}_{index}.tif, or a regular expression (optional)",
       "bands": [ {"name": "Blue", "center_nm": 475, "bandwidth_nm": 32},
                  {"name": "LWIR", "center_nm": 11000, "bandwidth_nm": 6000, "process": false} ]
     }

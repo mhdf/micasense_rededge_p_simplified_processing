@@ -387,19 +387,25 @@ class RadiometricFrame:
             self._build_regions_tool(page)
 
     def _build_regions_tool(self, page):
-        """ The button that opens the tool to draw the regions of the panel, with what it does """
+        """ The buttons to check the inputs and to open the tool that checks, accepts and draws the panel regions """
         ttk = self.ttk
         holder = ttk.Frame(page)
         holder.pack(fill='x', pady=(0, 9))
-        self.buttons['regions'] = ttk.Button(holder, text='Draw panel regions...', command=self.draw_regions)
-        self.buttons['regions'].pack(anchor='w')
+        line = ttk.Frame(holder)
+        line.pack(anchor='w')
+        self.buttons['check_here'] = ttk.Button(line, text='Check inputs', command=self.check_inputs_here)
+        self.buttons['check_here'].pack(side='left')
+        self.buttons['regions'] = ttk.Button(line, text='Check / draw panel regions...', command=self.draw_regions)
+        self.buttons['regions'].pack(side='left', padx=(6, 0))
+        self.inputs_status = ttk.Label(holder, text='', style='Muted.TLabel', wraplength=760, justify='left')
+        self.inputs_status.pack(anchor='w', pady=(6, 0))
         ttk.Label(holder, style='Muted.TLabel', wraplength=760, justify='left',
-                  text="Opens the images of the reference panel capture, band by band, so that you can check the region "
-                       "found from the QR code, correct it or draw it when the QR code cannot be read. Each band ends as "
-                       "a region that you confirmed or as 'use the automatic detection'. The regions are saved in the "
-                       "file above (if it is empty, in panel_regions.json in the results folder, which is then filled in "
-                       "above). It needs the images folder, the panel capture and the bands to be right: use Check inputs "
-                       "on the Run page if it does not open.").pack(anchor='w', pady=(4, 0))
+                  text="Check inputs tells whether the folders, the panel capture and the bands are right, before anything "
+                       "is opened. The second button opens an overview of the reference panel capture with the region "
+                       "found from the QR code in each band (and the regions saved before): accept them there, or edit or "
+                       "draw a band when the region is wrong or the QR code cannot be read. Every band has to be accepted. "
+                       "The regions are saved in the file above (if it is empty, in panel_regions.json in the results "
+                       "folder, which is then filled in above).").pack(anchor='w', pady=(4, 0))
 
     def _build_run_page(self, page):
         tk, ttk = self.tk, self.ttk
@@ -770,6 +776,16 @@ class RadiometricFrame:
             return config, [f"{self.model.fields[key]['label']} ({key}): {message}" for key, message in errors.items()]
         return config, wf.validate_config(config, self.root_folder)
 
+    def check_inputs_here(self):
+        """ Check the inputs and show the result next to the tool, without leaving the page. Returns (config, problems) """
+        config, problems = self.problems()
+        if problems:
+            self.inputs_status.configure(text='\n'.join(problems), style='Error.TLabel')
+        else:
+            self.inputs_status.configure(text='The inputs are valid: the folders, the panel capture, the bands and the '
+                                              'other values can be used.', style='Ok.TLabel')
+        return config, problems
+
     def check_inputs(self):
         self.show_page('RUN')
         self.clear_log()
@@ -783,7 +799,7 @@ class RadiometricFrame:
 
     def _set_busy(self, busy):
         self.running = busy
-        for name in ('check', 'regions', 'run'):
+        for name in ('check', 'check_here', 'regions', 'run'):
             self.buttons[name].configure(state='disabled' if busy else 'normal')
 
     def start_run(self):
@@ -808,10 +824,11 @@ class RadiometricFrame:
     def draw_regions(self):
         if self.running:
             return
-        config, problems = self.check_inputs()
+        config, problems = self.check_inputs_here()                 # the inputs are checked first, in this page
         if problems:
             return
         self._set_busy(True)
+        self.inputs_status.configure(text='Reading the reference panel images...', style='Muted.TLabel')
         self.log('Reading the reference panel images...')
         threading.Thread(target=self._regions_worker, args=(config,), daemon=True).start()
 
@@ -825,24 +842,30 @@ class RadiometricFrame:
             images = wf.read_capture_images(config, self.root_folder, capture)
             path = self.regions_path(config)
             saved = wf.load_panel_regions(path).get(capture, {}) if path.is_file() else {}
-            self.events.put(('images', (config, capture, images, saved, path)))
+            origins = wf.load_panel_origins(path).get(capture, {}) if path.is_file() else {}
+            self.events.put(('images', (config, capture, images, saved, path, origins)))
         except Exception as error:
             self.events.put(('regions_failed', f"{type(error).__name__}: {error}"))
 
     def _open_selector(self, payload):
         from panel_selector import select_panel_regions
-        config, capture, images, saved, path = payload
+        config, capture, images, saved, path, origins = payload
         try:
             selected = select_panel_regions(images, saved, config['PANEL.percent_inner_area'],
-                                            config['PANEL.saturation_threshold'], parent=self.parent.winfo_toplevel())
+                                            config['PANEL.saturation_threshold'], parent=self.parent.winfo_toplevel(),
+                                            saved_origins=origins)
             if selected is None:
                 self.log('Cancelled: no region was saved.')
+                self.inputs_status.configure(text='Cancelled: no region was saved.', style='Muted.TLabel')
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                wf.save_panel_regions(path, capture, selected)
-                manual = sum(polygon is not None for polygon in selected.values())
-                self.log(f"Saved {manual} region(s) drawn by hand and {len(selected) - manual} band(s) left to the "
-                         f"automatic detection in {path}", 'ok')
+                found = getattr(selected, 'origins', {})
+                wf.save_panel_regions(path, capture, selected, found)
+                automatic = sum(origin == 'accepted_automatic' for origin in found.values())
+                text = (f"Saved {len(selected)} accepted region(s) in {path}: {automatic} as found from the QR code, "
+                        f"{len(selected) - automatic} drawn or edited.")
+                self.log(text, 'ok')
+                self.inputs_status.configure(text=text, style='Ok.TLabel')
                 if not config['PANEL.manual_regions_file']:
                     self.set_value('PANEL.manual_regions_file', str(path))
                     self.log('PANEL.manual_regions_file was set to this file.')

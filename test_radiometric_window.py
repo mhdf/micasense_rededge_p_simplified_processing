@@ -211,17 +211,28 @@ class WindowTests(unittest.TestCase):
         self.assertIsNone(self.frame.last_result)
         self.assertTrue(any('must be an integer' in line for line in self.frame.log_lines()))
 
-    def test_drawing_regions_saves_them_and_sets_the_regions_file(self):
+    def accepted(self, polygons, origins):
+        import panel_selector
+        return panel_selector.SelectionResult(polygons, origins)
+
+    def test_the_accepted_regions_are_saved_with_their_origin_and_the_regions_file_is_set(self):
         self.frame.set_value('INPUTS.results_folder', self.results('regions'))
         polygon = [[700, 200], [850, 200], [850, 320], [700, 320]]
-        selection = {band: (polygon if band == 'Blue' else None) for band in wf.default_config()['PANEL.reflectance_by_band']}
+        bands = list(wf.default_config()['PANEL.reflectance_by_band'])
+        selection = self.accepted({band: polygon for band in bands},
+                                  {band: ('accepted_automatic' if band != 'Blue' else 'edited') for band in bands})
         with mock.patch('panel_selector.select_panel_regions', return_value=selection) as selector:
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
         path = Path(self.results('regions')) / 'panel_regions.json'
-        self.assertEqual(wf.load_panel_regions(path), {'IMG_0005': {'Blue': polygon}})
+        self.assertEqual(wf.load_panel_regions(path), {'IMG_0005': {band: polygon for band in bands}})
+        origins = wf.load_panel_origins(path)['IMG_0005']
+        self.assertEqual((origins['Blue'], origins['Green']), ('edited', 'accepted_automatic'))
         self.assertEqual(self.frame.model.config()[0]['PANEL.manual_regions_file'], str(path))
-        self.assertIn('1 region(s) drawn by hand and 5 band(s)', '\n'.join(self.frame.log_lines()))
+        text = '\n'.join(self.frame.log_lines())
+        self.assertIn('Saved 6 accepted region(s)', text)
+        self.assertIn('5 as found from the QR code, 1 drawn or edited', text)
+        self.assertIn('Saved 6 accepted region(s)', self.frame.inputs_status.cget('text'))
         saved = json.loads(self.config_path.read_text(encoding='utf-8'))
         self.assertEqual(saved['PANEL.manual_regions_file'], str(path))
 
@@ -232,13 +243,14 @@ class WindowTests(unittest.TestCase):
             self.pump(lambda: selector.called and not self.frame.running)
         self.assertFalse((Path(self.results('cancel')) / 'panel_regions.json').exists())
         self.assertIn('Cancelled: no region was saved.', self.frame.log_lines())
+        self.assertEqual(self.frame.inputs_status.cget('text'), 'Cancelled: no region was saved.')
 
-    def test_the_dialog_receives_the_saved_regions_and_the_panel_parameters(self):
+    def test_the_dialog_receives_the_saved_regions_their_origins_and_the_panel_parameters(self):
         self.frame.set_value('INPUTS.results_folder', self.results('again'))
         self.frame.set_value('PANEL.percent_inner_area', '0.6')
         path = Path(self.results('again')) / 'panel_regions.json'
         path.parent.mkdir(parents=True)
-        wf.save_panel_regions(path, 'IMG_0005', {'Red': [[10, 10], [50, 10], [50, 50]]})
+        wf.save_panel_regions(path, 'IMG_0005', {'Red': [[10, 10], [50, 10], [50, 50]]}, {'Red': 'edited'})
         with mock.patch('panel_selector.select_panel_regions', return_value=None) as selector:
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
@@ -246,6 +258,49 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(set(images), set(wf.default_config()['PANEL.reflectance_by_band']))
         self.assertEqual(saved, {'Red': [[10, 10], [50, 10], [50, 50]]})
         self.assertEqual((percent, saturation), (0.6, 65000))
+        self.assertEqual(selector.call_args.kwargs['saved_origins'], {'Red': 'edited'})
+
+    # --- checking the inputs before the tool is opened ----------------------------------------------------------
+
+    def test_the_inputs_can_be_checked_next_to_the_tool_without_leaving_the_page(self):
+        self.frame.show_page('INPUTS')
+        config, problems = self.frame.check_inputs_here()
+        self.assertEqual(problems, [])
+        self.assertIn('The inputs are valid', self.frame.inputs_status.cget('text'))
+        self.assertEqual(str(self.frame.inputs_status.cget('style')), 'Ok.TLabel')
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_9999')
+        _, problems = self.frame.check_inputs_here()
+        self.assertTrue(any("Capture 'IMG_9999' not found" in problem for problem in problems))
+        self.assertIn("Capture 'IMG_9999' not found", self.frame.inputs_status.cget('text'))
+        self.assertEqual(str(self.frame.inputs_status.cget('style')), 'Error.TLabel')
+        self.assertEqual([line for line in self.frame.log_lines() if line], [])      # the Run page log is not used
+
+    def test_the_check_button_is_next_to_the_tool_on_the_inputs_page(self):
+        self.assertTrue(self.inside(self.frame.buttons['check_here'], 'INPUTS'))
+        self.assertEqual(self.frame.buttons['check_here'].cget('text'), 'Check inputs')
+        self.assertEqual(self.frame.buttons['check_here'].master, self.frame.buttons['regions'].master)
+
+    def test_the_tool_is_not_opened_when_the_inputs_have_problems(self):
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_9999')
+        with mock.patch('panel_selector.select_panel_regions') as selector:
+            self.frame.draw_regions()
+        self.assertFalse(self.frame.running)
+        self.assertFalse(selector.called)
+        self.assertIn("Capture 'IMG_9999' not found", self.frame.inputs_status.cget('text'))
+        self.assertEqual(self.frame.navigation.curselection(), (0,))      # still on the Inputs page
+
+    def test_problems_in_the_band_table_are_shown_next_to_the_tool_too(self):
+        self.frame.band_table.add_row({'name': 'Blue', 'center': '1', 'width': '1', 'reflectance': '0.5'})
+        _, problems = self.frame.check_inputs_here()
+        self.assertTrue(any('used by more than one band' in problem for problem in problems))
+        self.assertIn('used by more than one band', self.frame.inputs_status.cget('text'))
+
+    def test_both_buttons_are_disabled_while_the_workflow_is_busy(self):
+        self.frame._set_busy(True)
+        self.assertTrue(self.frame.buttons['check_here'].instate(['disabled']))
+        self.assertTrue(self.frame.buttons['regions'].instate(['disabled']))
+        self.frame._set_busy(False)
+        self.assertFalse(self.frame.buttons['check_here'].instate(['disabled']))
 
     # --- spectral response of the panel and profiles ---------------------------------------------------------
 
@@ -626,12 +681,6 @@ class WindowTests(unittest.TestCase):
         self.assertLess(order.index('PANEL.manual_regions_file'), order.index('INPUTS.image_captures'))
         run_page_buttons = [child.cget('text') for child in self.frame.pages['RUN'].winfo_children()[1].winfo_children()]
         self.assertEqual(run_page_buttons, ['Check inputs', 'Run', 'Open results folder'])
-
-    def test_the_regions_button_is_disabled_while_the_workflow_is_busy(self):
-        self.frame._set_busy(True)
-        self.assertTrue(self.frame.buttons['regions'].instate(['disabled']))
-        self.frame._set_busy(False)
-        self.assertFalse(self.frame.buttons['regions'].instate(['disabled']))
 
     def test_the_inputs_page_has_headings_for_its_groups(self):
         headings = [child.cget('text') for child in self.frame.scroll_pages['INPUTS'].body.winfo_children()

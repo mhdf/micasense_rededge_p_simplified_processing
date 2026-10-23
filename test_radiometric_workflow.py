@@ -86,6 +86,29 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(list(wf.load_panel_regions(path)), ['IMG_0100'])
             self.assertFalse(Path(str(path) + '.tmp').exists())
 
+    def test_the_origin_of_each_region_is_saved_next_to_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'regions.json'
+            square = [[1, 2], [30, 2], [30, 40]]
+            wf.save_panel_regions(path, 'IMG_0005', {'Blue': square, 'Red': square},
+                                  {'Blue': 'accepted_automatic', 'Red': 'edited', 'NIR': 'edited'})
+            wf.save_panel_regions(path, 'IMG_0100', {'Green': square}, {'Green': 'edited'})
+            self.assertEqual(wf.load_panel_origins(path), {'IMG_0005': {'Blue': 'accepted_automatic', 'Red': 'edited'},
+                                                           'IMG_0100': {'Green': 'edited'}})      # only for saved bands
+            wf.save_panel_regions(path, 'IMG_0005', {'Blue': square})                              # no origins given
+            self.assertEqual(wf.load_panel_origins(path), {'IMG_0100': {'Green': 'edited'}})
+            wf.save_panel_regions(path, 'IMG_0100', {})
+            self.assertEqual(wf.load_panel_origins(path), {})
+            self.assertNotIn('origins', json.loads(path.read_text(encoding='utf-8')))
+
+    def test_a_file_without_origins_is_still_read(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'old.json'
+            path.write_text(json.dumps({'version': 1, 'geometry': 'undistorted',
+                                        'captures': {'IMG_0005': {'Blue': [[1, 2], [30, 2], [30, 40]]}}}), encoding='utf-8')
+            self.assertEqual(wf.load_panel_origins(path), {})
+            self.assertEqual(list(wf.load_panel_regions(path)['IMG_0005']), ['Blue'])
+
     def test_a_file_that_is_not_a_regions_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'regions.json'
@@ -350,6 +373,20 @@ class RunTests(unittest.TestCase):
                                                              'PANEL.manual_regions_file': str(regions)}), ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
         self.assertTrue(all(audit['region_source'] == 'manual' for audit in result['panel']['before']['bands'].values()))
+
+    def test_the_origin_of_the_regions_reaches_the_audit_of_the_panel(self):
+        automatic = self.panel_only['panel']['before']['bands']
+        regions = self.folder / 'regions_origin.json'
+        wf.save_panel_regions(regions, 'IMG_0005', {band: audit['panel_bounds'] for band, audit in automatic.items()},
+                              {'Blue': 'accepted_automatic', 'Green': 'edited'})
+        result = wf.run(config_for(self.folder / 'origin', **{'PANEL.manual_regions_file': str(regions)}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        bands = result['panel']['before']['bands']
+        self.assertEqual((bands['Blue']['region_source'], bands['Blue']['region_origin']), ('manual', 'accepted_automatic'))
+        self.assertEqual(bands['Green']['region_origin'], 'edited')
+        self.assertIsNone(bands['Red']['region_origin'])                              # a file that does not say it
+        self.assertEqual(bands['Blue']['radiance_to_reflectance_factor'], automatic['Blue']['radiance_to_reflectance_factor'])
+        self.assertIsNone(automatic['Blue'].get('region_origin'))                     # the automatic run has none
 
     def test_an_invalid_region_names_the_band(self):
         regions = self.folder / 'regions_bad.json'

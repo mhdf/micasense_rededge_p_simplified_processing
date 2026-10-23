@@ -887,11 +887,12 @@ class Image(object):
 
     # Detect the reference panel (or use a region drawn by hand) and return radiance to reflectance conversion factor
     def detect_reference_panel(self, reflectance_level_reference_panel, percent_inner_area, sat_threshold=65000,
-                               manual_bounds=None):
+                               manual_bounds=None, region_origin=None):
         """
         Inputs: reflectance of the panel by band, the inner fraction of the panel to measure, the saturation threshold
-                and, optionally, a polygon [[x, y], ...] drawn by hand in the undistorted image (then no QR code is
-                needed and percent_inner_area is not used)
+                and, optionally, a polygon [[x, y], ...] accepted or drawn by hand in the undistorted image (then no QR
+                code is needed and percent_inner_area is not used) with where it came from (region_origin: 'edited' or
+                'accepted_automatic', recorded in the audit)
         Outputs: panel bounds, radiance to reflectance factor, QR code data (None if manual) and where the region was
                  found ('undistorted', 'original' or 'manual')
         """
@@ -910,7 +911,8 @@ class Image(object):
                                              audit_extra={'region_source': region_source,
                                                           'barcode_data': barcode_data,
                                                           'barcode_source': barcode_source,
-                                                          'percent_inner_area': percent_inner_area},
+                                                          'percent_inner_area': percent_inner_area,
+                                                          'region_origin': region_origin},
                                              validate=manual_bounds is not None)
         return panel_bounds, factor, barcode_data, barcode_source
 

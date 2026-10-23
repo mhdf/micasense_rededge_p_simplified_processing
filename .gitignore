@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
 .vscode/
+
+# files written by using the tools: the configuration, the regions of the panel and the results of a run
+radiometric_inputs.json
+panel_regions.json
+radiometric_result.json
+*_provenance.json

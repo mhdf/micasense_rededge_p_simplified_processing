@@ -292,22 +292,43 @@ def load_panel_regions(path):
     return regions
 
 
-def save_panel_regions(path, capture, regions):
+def load_panel_origins(path):
     """
-    Save the regions of one capture ({band: [[x, y], ...]}, None or missing bands are not saved), keeping the other
-    captures of the file. The file is replaced atomically
+    Where each region of the file came from: {capture name: {band name: 'accepted_automatic' or 'edited'}}.
+    'accepted_automatic' is a region found from the QR code that the user accepted as it was; files that do not say it
+    give an empty dictionary
+    """
+    saved = json.loads(Path(path).read_text(encoding='utf-8'))
+    origins = saved.get('origins', {})
+    return origins if isinstance(origins, dict) else {}
+
+
+def save_panel_regions(path, capture, regions, origins=None):
+    """
+    Save the regions of one capture ({band: [[x, y], ...]}, None or missing bands are not saved) and, optionally, where
+    each came from ({band: 'accepted_automatic' or 'edited'}), keeping the other captures of the file. The file is
+    replaced atomically
     """
     path = Path(path)
     captures = load_panel_regions(path) if path.is_file() else {}
+    all_origins = load_panel_origins(path) if path.is_file() else {}
     kept = {band: [[int(round(x)), int(round(y))] for x, y in polygon]
             for band, polygon in regions.items() if polygon is not None}
     if kept:
         captures[capture] = kept
+        known = {band: origin for band, origin in (origins or {}).items() if band in kept and origin}
+        if known:
+            all_origins[capture] = known
+        else:
+            all_origins.pop(capture, None)
     else:
         captures.pop(capture, None)
+        all_origins.pop(capture, None)
+    content = {'version': REGIONS_VERSION, 'geometry': 'undistorted', 'captures': captures}
+    if all_origins:
+        content['origins'] = all_origins
     temporary = path.with_suffix(path.suffix + '.tmp')
-    temporary.write_text(json.dumps({'version': REGIONS_VERSION, 'geometry': 'undistorted', 'captures': captures},
-                                    indent=2), encoding='utf-8')
+    temporary.write_text(json.dumps(content, indent=2), encoding='utf-8')
     os.replace(temporary, path)
     return path
 
@@ -505,9 +526,10 @@ def _run_stages(config, root, results_folder, result, progress):
     _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct; panel capture {panel_name}", 0, len(names))
 
     # PANEL_CALIBRATION
-    regions = {}
+    regions, origins = {}, {}
     if config['PANEL.manual_regions_file']:
-        regions = load_panel_regions(resolve_path(root, config['PANEL.manual_regions_file']))
+        regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
+        regions, origins = load_panel_regions(regions_file), load_panel_origins(regions_file)
     panels = {}
     for label, name in (('before', panel_name), ('after', panel_after_name)):
         if not name:
@@ -518,7 +540,8 @@ def _run_stages(config, root, results_folder, result, progress):
             try:
                 image.detect_reference_panel(levels, config['PANEL.percent_inner_area'],
                                              config['PANEL.saturation_threshold'],
-                                             manual_bounds=regions.get(name, {}).get(band))
+                                             manual_bounds=regions.get(name, {}).get(band),
+                                             region_origin=origins.get(name, {}).get(band))
             except Exception as error:
                 raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
         panels[label] = objects

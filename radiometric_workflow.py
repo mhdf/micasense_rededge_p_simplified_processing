@@ -51,25 +51,20 @@ GROUP_NOTES = {
         "given as a value per band, in the table of the bands (above), or as the spectral curve of the panel, from which "
         "the value of each band is computed.",
     'Correction with the DLS':
-        "The DLS (downwelling light sensor) measures, for each band, the irradiance on a horizontal surface: the light that "
-        "arrives from the sky. The DLS ratio of a band is E_panel / E_image: the irradiance that the DLS measured when the "
-        "reference panel was photographed divided by the irradiance that it measured when the image was taken. The panel "
-        "calibrates the camera for the light of that moment, so an image taken in more light than the panel (ratio below 1) "
-        "would look too bright; multiplying by the ratio corrects it. Example: a ratio of 0.885 means that the DLS measured "
-        "13 % more light at the image than at the panel, so the reflectance is lowered by 11.5 %. The ratio is 1 at the panel "
-        "capture. The irradiance is read from XMP:HorizontalIrradiance of each file; the scale to SI units, when it is "
-        "written, cancels in the ratio.",
+        "The panel photo gives the scale of the reflectance for the light at the moment it was taken. The DLS (downwelling "
+        "light sensor) measures the irradiance, the light arriving from the sky, so it tells how much the light changed "
+        "between the panel photo and each image. For each band: DLS ratio = E_panel / E_image, where E is read from "
+        "XMP:HorizontalIrradiance of the panel capture and of the band file of the image. Reflectance = reflectance from "
+        "the panel x DLS ratio. Example: 0.885 means that the light was 13 % stronger at the image than at the panel, so "
+        "the reflectance is multiplied by 0.885. Only the metadata of the image and of the panel capture is used.",
     'Checks of the DLS data (limits)':
-        "These checks look for DLS data that should not be trusted. They only raise flags: they never change the result. "
-        "All the bands must have nearly the same ratio, because a change of the light changes all of them together. The "
-        "plausible range catches ratios that are not credible (a covered DLS, a DLS pointing at the ground). The sun angle "
-        "check uses two things written in each file: the direction of the direct sunlight in the frame of the DLS "
-        "(XMP:EstimatedDirectLightVector) and the solar elevation (XMP:SolarElevation, in radians; it is taken as written, "
-        "not recomputed from position and time). The solar zenith is 90 degrees minus the elevation. If the DLS were level, "
-        "the angle between the sunlight and the axis of the DLS (the arccosine of minus the z component of the unit "
-        "vector) would be equal to the zenith, so the difference between the two is at least the tilt of the DLS, or a sign "
-        "that the two are inconsistent. The jump and panel limits apply to several captures along a flight and to two panel "
-        "captures.",
+        "These checks only raise flags; they never change the result. They use the DLS data of the image capture and of the "
+        "panel capture(s). Band ratio and plausible range: the ratio E_panel / E_image of the bands of a capture must be "
+        "almost the same (the light changes all the bands together) and credible. Sun angle: the DLS measures the "
+        "direction of the sunlight (XMP:EstimatedDirectLightVector); if it were level, that angle to its axis would equal "
+        "the solar zenith, 90 degrees minus XMP:SolarElevation. A large difference means a tilted DLS or inconsistent data "
+        "(checked in the panel capture and in the image capture). Jump: the irradiance of a band between consecutive "
+        "captures. Panel drift: the two panel captures against each other.",
 }
 
 FIELDS = [
@@ -96,7 +91,8 @@ FIELDS = [
      'help': "json file written by the Draw panel regions tool. A band with a region there uses it instead of the "
              "region found from the QR code; the other bands are detected automatically."},
     {'key': 'INPUTS.image_captures', 'group': 'Captures to correct', 'kind': 'text', 'default': '',
-     'label': 'Captures to correct', 'help': 'Names separated by commas. Empty: all the other captures in the folder.'},
+     'label': 'Captures to correct', 'help': "Names separated by commas, or pick them from the images folder with Choose... Empty: all the other "
+                                                   "captures in the folder."},
     {'key': 'INPUTS.file_pattern', 'group': 'Captures to correct', 'kind': 'text', 'default': rct.CAPTURE_FILE_PATTERN,
      'label': 'File name pattern',
      'help': "Regular expression for the names of the image files, with a group named capture (the name of the "
@@ -173,11 +169,11 @@ FIELDS = [
      'help': 'Fraction (0 to 1] of the window of a band that must have valid samples in the file.'},
     {'key': 'PANEL.panels_used', 'kind': 'choice', 'choices': list(rct.PANELS_USED), 'default': 'first',
      'group': 'Panel measurement', 'label': 'Panels used when there are two',
-     'help': "With a second panel capture: first = only the first panel calibrates (the second is only compared with it); "
-             "mean = the average of the two; interpolate_time = weighted by the time of each image between the two panel "
-             "captures; nearest_time = the panel captured closest in time to each image (times from "
-             "EXIF:DateTimeOriginal). With the DLS the combination is of factor x irradiance, which does not depend on "
-             "the light, so no panel is the reference of the DLS: only the panels that are used matter."},
+     'help': "Only with a second panel capture. first: only the first panel is used (the second is only compared with it). "
+             "mean: the average of the two. interpolate_time: weighted by the time of each image between the two panel "
+             "captures. nearest_time: the panel captured closest in time to each image (times from EXIF:DateTimeOriginal). "
+             "This choice does change the result: it decides which panel data are used. With the DLS correction, each "
+             "panel is used with its own DLS irradiance, so the result does not depend on a 'reference panel' of the DLS."},
     {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
      'label': 'Inner area of the panel', 'help': 'Fraction (0 to 1] of the panel used to measure its radiance.'},
     {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000, 'group': 'Panel measurement',

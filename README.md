@@ -233,6 +233,8 @@ Double-click one of these files in the project folder. They use the Python 3.10 
 
 ## Window
 
+**Choosing captures and reading the file names.** The reference panel capture and the second panel capture are chosen in a list of the captures found in the images folder (or typed); "Choose..." next to the captures to correct opens a list in which any number of them can be selected (all of them is the same as leaving the field empty, and the panel captures are not offered). Under the file name pattern the window shows the pattern as a name (```<capture>_<index>.tif```), how many files of the folder it matches, how many captures and files per capture it finds, and an example of how the first files are read; "Suggest from files" writes a pattern from the names of the files in the folder (names such as ```IMG_0005_1.tif```: capture name, a separator, the number of the file, the extension). The pattern is a library function too (```suggest_file_pattern```, ```preview_file_pattern```, ```pattern_template```).
+
 ```
 python radiometric_window.py [--config radiometric_inputs.json] [--root <folder>]
 ```

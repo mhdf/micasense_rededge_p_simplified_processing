@@ -744,17 +744,17 @@ class WindowTests(unittest.TestCase):
 
     def test_the_dls_page_explains_the_ratio_and_where_the_zenith_comes_from(self):
         texts = ' '.join(self.dls_labels())
-        for phrase in ('E_panel / E_image', 'XMP:HorizontalIrradiance', 'ratio of 0.885 means that the DLS measured 13 % more',
-                       'The ratio is 1 at the panel capture', 'XMP:EstimatedDirectLightVector',
-                       'XMP:SolarElevation, in radians', 'The solar zenith is 90 degrees minus the elevation',
-                       'at least the tilt of the DLS'):
+        for phrase in ('E_panel / E_image', 'XMP:HorizontalIrradiance', 'Example: 0.885 means that the light was 13 % stronger',
+                       'the reflectance is multiplied by 0.885', 'XMP:EstimatedDirectLightVector',
+                       'the solar zenith, 90 degrees minus XMP:SolarElevation', 'tilted DLS or inconsistent data',
+                       'Only the metadata of the image and of the panel capture is used'):
             self.assertIn(phrase, texts)
         self.assertIn('Checks of the DLS data (limits)', self.dls_labels())
 
     def test_each_part_of_the_dls_page_has_its_explanation_under_its_heading(self):
         labels = self.dls_labels()
-        for group, start in (('Correction with the DLS', 'The DLS (downwelling light sensor)'),
-                             ('Checks of the DLS data (limits)', 'These checks look for DLS data')):
+        for group, start in (('Correction with the DLS', 'The panel photo gives the scale'),
+                             ('Checks of the DLS data (limits)', 'These checks only raise flags')):
             self.assertEqual(labels[labels.index(group) + 1][:len(start)], start)
 
     def test_the_limits_say_what_they_mean(self):
@@ -789,6 +789,50 @@ class WindowTests(unittest.TestCase):
         host.update()
         self.assertEqual(frame.widget.winfo_parent(), str(notebook))
         host.destroy()
+
+
+class CaptureChoiceTests(unittest.TestCase):
+    setUp = WindowTests.setUp
+    tearDown = WindowTests.tearDown
+
+    def test_panel_captures_are_chosen_among_the_captures_of_the_folder(self):
+        box = self.frame.entries['INPUTS.reference_panel_capture']
+        self.assertEqual(box.winfo_class(), 'TCombobox')
+        self.assertEqual(self.frame.capture_names(), ['IMG_0005', 'IMG_0010'])
+        self.frame._refresh_capture_choices('INPUTS.reference_panel_capture_after')
+        self.assertEqual(list(self.frame.entries['INPUTS.reference_panel_capture_after'].cget('values')),
+                         ['', 'IMG_0005', 'IMG_0010'])
+        self.frame.set_value('INPUTS.images_folder', 'does/not/exist')
+        self.assertEqual(self.frame.capture_names(), [])
+
+    def test_captures_to_correct_are_chosen_from_a_list(self):
+        with mock.patch.object(rw, 'pick_names', return_value=['IMG_0010']) as picker:
+            self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
+            self.frame.choose_captures()
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010'])             # the panel capture is not offered
+        self.assertEqual(self.frame.model.get('INPUTS.image_captures'), '')  # all the others: empty
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0001')
+        with mock.patch.object(rw, 'pick_names', return_value=['IMG_0010']):
+            self.frame.choose_captures()
+        self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')
+        with mock.patch.object(rw, 'pick_names', return_value=None):
+            self.frame.choose_captures()
+        self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')
+
+    def test_the_pattern_preview_and_the_suggestion(self):
+        self.frame._update_pattern_preview()
+        text = self.frame.pattern_preview.cget('text')
+        self.assertIn('<capture>_<index>.tif', text)
+        self.assertIn('IMG_0005_1.tif  ->  capture IMG_0005, file 1', text)
+        self.assertIn('2 captures (2 with 6 files)', text)
+        self.frame.set_value('INPUTS.file_pattern', r'(?P<capture>X.+)\.tif$')
+        self.frame._update_pattern_preview()
+        self.assertEqual(self.frame.pattern_preview.cget('style'), 'Error.TLabel')
+        self.frame.suggest_pattern()
+        self.assertEqual(self.frame.model.get('INPUTS.file_pattern'), r'(?P<capture>.+)_(?P<index>\d+)\.tif$')
+        self.frame.set_value('INPUTS.file_pattern', '(unclosed')
+        self.frame._update_pattern_preview()
+        self.assertIn('not a valid regular expression', self.frame.pattern_preview.cget('text'))
 
 
 if __name__ == '__main__':

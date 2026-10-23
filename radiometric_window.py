@@ -28,7 +28,7 @@ import camera_presets
 import radiometric_correction_tools as rct
 import radiometric_workflow as wf
 from ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
-from ui_widgets import BandTable, ScrollablePage, model_from_rows, rows_from_model
+from ui_widgets import BandTable, ScrollablePage, model_from_rows, pick_names, rows_from_model
 
 DEFAULT_CONFIG_NAME = 'radiometric_inputs.json'
 
@@ -45,6 +45,10 @@ SECTIONS = [('INPUTS', 'Inputs'), ('PANEL', 'Reference panel'), ('CORRECTION', '
 # the keys that are shown in another page than their prefix says
 PAGE_PREFIXES = {'CORRECTION': ('CORRECTION', 'CHECKS')}
 FIELD_PAGE = {'PANEL.manual_regions_file': 'INPUTS'}
+
+# The keys that hold the name of a capture, chosen from the captures of the images folder (or typed): whether an empty
+# name is one of the choices
+CAPTURE_KEYS = {'INPUTS.reference_panel_capture': False, 'INPUTS.reference_panel_capture_after': True}
 
 
 def page_of(key):
@@ -213,12 +217,20 @@ class RadiometricFrame:
         self._show_page(SECTIONS[0][0])
         self._apply_source_state()
         self._update_spectral_summary()
+        self.preview_after = None
+        self._update_pattern_preview()
         if self.load_message:
             self.log(self.load_message, 'error')
         self._after_id = self.parent.after(100, self._poll)
 
     def close(self):
         """ Stop looking for events of the worker threads (done when the frame is destroyed) """
+        if getattr(self, 'preview_after', None) is not None:
+            try:
+                self.parent.after_cancel(self.preview_after)
+            except self.tk.TclError:
+                pass
+            self.preview_after = None
         if self.summary_after is not None:
             try:
                 self.parent.after_cancel(self.summary_after)
@@ -373,6 +385,9 @@ class RadiometricFrame:
                 if kind == 'choice':
                     entry = ttk.Combobox(line, textvariable=variable, values=field['choices'], state='readonly',
                                          width=18)
+                elif key in CAPTURE_KEYS:                     # typed, or chosen among the captures of the folder
+                    entry = ttk.Combobox(line, textvariable=variable, values=self.capture_names(CAPTURE_KEYS[key]),
+                                         postcommand=lambda key=key: self._refresh_capture_choices(key))
                 else:
                     entry = ttk.Entry(line, textvariable=variable, width=12 if kind in ('float', 'int') else 56)
                 entry.pack(side='left', fill='x', expand=kind in ('folder', 'file', 'text'))
@@ -383,9 +398,16 @@ class RadiometricFrame:
                         importer = ttk.Button(line, text='Import / preview...', command=self.import_spectrum)
                         importer.pack(side='left', padx=(6, 0))
                         self.source_widgets['spectral_file'].extend([entry, browse, importer])
+                if key == 'INPUTS.image_captures':
+                    ttk.Button(line, text='Choose...', command=self.choose_captures).pack(side='left', padx=(6, 0))
+                if key == 'INPUTS.file_pattern':
+                    ttk.Button(line, text='Suggest from files', command=self.suggest_pattern).pack(side='left', padx=(6, 0))
                 variable.trace_add('write', lambda *_, key=key, variable=variable: self._changed(key, variable.get()))
                 self.variables[key], self.entries[key] = variable, entry
         ttk.Label(row, text=field['help'], style='Muted.TLabel', wraplength=760, justify='left').pack(anchor='w')
+        if key == 'INPUTS.file_pattern':
+            self.pattern_preview = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
+            self.pattern_preview.pack(anchor='w', pady=(3, 0))
         if key == 'PANEL.spectral_file':
             self.spectral_summary = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
             self.spectral_summary.pack(anchor='w', pady=(3, 0))
@@ -516,7 +538,78 @@ class RadiometricFrame:
         finally:
             self.syncing = False
 
+    # --- the captures of the images folder ---------------------------------------------------------------------
+
+    def capture_names(self, with_empty=False):
+        """ Names of the captures that the file name pattern finds in the images folder ([] if it cannot be read) """
+        try:
+            names = rct.list_capture_names(wf.resolve_path(self.root_folder, self.model.get('INPUTS.images_folder')),
+                                           self.model.get('INPUTS.file_pattern'))
+        except (OSError, ValueError):
+            names = []
+        return ([''] if with_empty else []) + names
+
+    def _refresh_capture_choices(self, key):
+        self.entries[key].configure(values=self.capture_names(CAPTURE_KEYS[key]))
+
+    def choose_captures(self):
+        """ Choose the captures to correct in a list of those of the folder (the panel captures are left out) """
+        names = [name for name in self.capture_names()
+                 if name not in (self.model.get('INPUTS.reference_panel_capture').strip(),
+                                 self.model.get('INPUTS.reference_panel_capture_after').strip())]
+        if not names:
+            self.log('There are no other captures in the images folder (check the folder and the file name pattern).', 'error')
+            return
+        chosen = pick_names(self.parent.winfo_toplevel(), names, wf.capture_names(self.model.get('INPUTS.image_captures')))
+        if chosen is not None:
+            self.set_value('INPUTS.image_captures', '' if len(chosen) == len(names) else ', '.join(chosen))
+
+    def suggest_pattern(self):
+        folder = wf.resolve_path(self.root_folder, self.model.get('INPUTS.images_folder'))
+        try:
+            pattern = rct.suggest_file_pattern(path.name for path in folder.iterdir() if path.is_file())
+        except OSError as error:
+            self.log(f"The images folder cannot be read: {error}", 'error')
+            return
+        if pattern is None:
+            self.log('No pattern could be suggested from the file names (expected names such as IMG_0005_1.tif).', 'error')
+            return
+        self.set_value('INPUTS.file_pattern', pattern)
+        self.log(f"File name pattern suggested from the files of the images folder: {pattern}")
+
+    def _update_pattern_preview(self):
+        """ Show how the file name pattern reads the files of the images folder """
+        self.preview_after = None
+        if not hasattr(self, 'pattern_preview'):
+            return
+        pattern = self.model.get('INPUTS.file_pattern')
+        folder = wf.resolve_path(self.root_folder, self.model.get('INPUTS.images_folder'))
+        try:
+            template = rct.pattern_template(pattern)
+            info = rct.preview_file_pattern(folder, pattern)
+        except ValueError as error:
+            self.pattern_preview.configure(text=str(error), style='Error.TLabel')
+            return
+        except OSError:
+            self.pattern_preview.configure(text='The images folder cannot be read.', style='Error.TLabel')
+            return
+        lines = [f"The pattern reads names written as {template}: <capture> is the name of the capture, <index> the number "
+                 f"of the file. In the images folder it matches {info['matched']} of {info['files']} files, in "
+                 f"{info['captures']} captures"
+                 + (' (' + ', '.join(f"{count} with {files} files" for files, count in info['files_per_capture'].items()) + ')'
+                    if info['captures'] else '') + '.']
+        for name, capture, index in info['examples']:
+            lines.append(f"    {name}  ->  capture {capture}" + ('' if index is None else f", file {index}"))
+        if info['unmatched']:
+            lines.append('Not matched, for example: ' + ', '.join(info['unmatched']))
+        self.pattern_preview.configure(text='\n'.join(lines),
+                                       style='Muted.TLabel' if info['matched'] else 'Error.TLabel')
+
     def _after_change(self, key):
+        if key in ('INPUTS.images_folder', 'INPUTS.file_pattern'):
+            if getattr(self, 'preview_after', None) is not None:
+                self.parent.after_cancel(self.preview_after)
+            self.preview_after = self.parent.after(400, self._update_pattern_preview)
         if key == 'PANEL.reflectance_source':
             self._apply_source_state()
         if key.startswith('PANEL.spectral_') or key in ('PANEL.band_center_wavelengths', 'PANEL.band_bandwidths',

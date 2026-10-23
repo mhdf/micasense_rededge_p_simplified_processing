@@ -257,3 +257,48 @@ class BandTable:
                 widget.configure(style='Invalid.TEntry' if (number, field) in marked else 'TEntry')
                 disabled = (field != 'name' and not used) or (field == 'reflectance' and not self.reflectance_enabled)
                 widget.state(['disabled'] if disabled else ['!disabled'])
+
+
+def pick_names(parent, names, selected=(), title='Choose captures'):
+    """
+    A modal list in which several of the names can be selected (click, ctrl-click, shift-click)
+    Inputs: the names to show and those that start selected
+    Outputs: the list of the names that were selected, in the order of the list, or None if the dialog was cancelled
+    """
+    import tkinter as tk
+    from tkinter import ttk
+    window = tk.Toplevel(parent)
+    window.title(title)
+    window.configure(background=COLORS['background'])
+    window.transient(parent)
+    outcome = {'value': None}
+    ttk.Label(window, text='Select the captures to correct. Selecting all of them is the same as leaving the field empty.',
+              style='Muted.TLabel').pack(anchor='w', padx=12, pady=(12, 6))
+    holder = ttk.Frame(window)
+    holder.pack(fill='both', expand=True, padx=12)
+    listbox = tk.Listbox(holder, selectmode='extended', exportselection=False, activestyle='none', height=16, width=34,
+                         font=FONT, background=COLORS['input'], foreground=COLORS['foreground'], borderwidth=0,
+                         highlightthickness=0, selectbackground=COLORS['accent'], selectforeground=COLORS['foreground'])
+    scrollbar = ttk.Scrollbar(holder, orient='vertical', command=listbox.yview)
+    listbox.configure(yscrollcommand=scrollbar.set)
+    listbox.pack(side='left', fill='both', expand=True)
+    scrollbar.pack(side='right', fill='y')
+    for name in names:
+        listbox.insert('end', name)
+    for number, name in enumerate(names):
+        if name in selected:
+            listbox.selection_set(number)
+
+    def accept():
+        outcome['value'] = [names[number] for number in listbox.curselection()]
+        window.destroy()
+
+    buttons = ttk.Frame(window)
+    buttons.pack(fill='x', padx=12, pady=12)
+    ttk.Button(buttons, text='OK', command=accept).pack(side='right')
+    ttk.Button(buttons, text='Cancel', command=window.destroy).pack(side='right', padx=(0, 6))
+    ttk.Button(buttons, text='Select all', command=lambda: listbox.selection_set(0, 'end')).pack(side='left')
+    ttk.Button(buttons, text='Clear', command=lambda: listbox.selection_clear(0, 'end')).pack(side='left', padx=(6, 0))
+    window.grab_set()
+    window.wait_window()
+    return outcome['value']

@@ -103,6 +103,45 @@ class FilePatternTests(unittest.TestCase):
         self.assertIsNotNone(rct.compile_file_pattern(None))
 
 
+class PatternPreviewTests(unittest.TestCase):
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def touch(self, *names):
+        for name in names:
+            (Path(self.folder.name) / name).write_bytes(b'')
+
+    def test_the_pattern_is_written_as_a_name(self):
+        self.assertEqual(rct.pattern_template(rct.CAPTURE_FILE_PATTERN), '<capture>_<index>.tif')
+        self.assertEqual(rct.pattern_template(r'^(?P<capture>DJI_\d+)_MS_(?P<band>[A-Z]+)\.tif$'), '<capture>_MS_<band>.tif')
+
+    def test_the_preview_counts_files_and_captures(self):
+        self.touch('IMG_0001_1.tif', 'IMG_0001_2.tif', 'IMG_0002_1.tif', 'notes.txt')
+        info = rct.preview_file_pattern(self.folder.name)
+        self.assertEqual((info['files'], info['matched'], info['captures']), (4, 3, 2))
+        self.assertEqual(info['files_per_capture'], {1: 1, 2: 1})
+        self.assertEqual(info['examples'], [('IMG_0001_1.tif', 'IMG_0001', 1), ('IMG_0002_1.tif', 'IMG_0002', 1)])
+        self.assertEqual(info['unmatched'], ['notes.txt'])
+        with self.assertRaises(ValueError):
+            rct.preview_file_pattern(self.folder.name, '(unclosed')
+
+    def test_a_pattern_is_suggested_from_the_names(self):
+        names = ['IMG_0001_1.tif', 'IMG_0001_2.tif', 'IMG_0002_1.tif', 'notes.txt']
+        pattern = rct.suggest_file_pattern(names)
+        self.assertEqual(rct.pattern_template(pattern), '<capture>_<index>.tif')
+        self.touch(*names)
+        self.assertEqual(rct.list_capture_names(self.folder.name, pattern), ['IMG_0001', 'IMG_0002'])
+        dashed = rct.suggest_file_pattern(['flight-A-0001-1.TIF', 'flight-A-0001-2.TIF'])
+        self.assertEqual(rct.pattern_template(dashed), '<capture>-<index>.tif')
+        self.assertTrue(rct.compile_file_pattern(dashed).match('flight-A-0001-3.tif'))      # the extension is not case sensitive
+        self.assertIsNone(rct.suggest_file_pattern(['readme.txt', 'photo.jpg']))
+        self.assertIsNone(rct.suggest_file_pattern([]))
+
+
 class IgnoredBandsTests(unittest.TestCase):
 
     def test_ignored_bands_are_left_out_of_the_mapping_and_the_checks(self):

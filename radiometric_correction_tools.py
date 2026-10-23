@@ -492,6 +492,67 @@ def find_capture_paths(images_folder, capture_name, pattern=None):
     return [str(path) for _, path in files]
 
 
+def pattern_template(pattern):
+    """
+    The file name pattern written as a name: the groups become <capture> and <index>, the anchors and the escapes of the
+    regular expression are removed. r'(?P<capture>.+)_(?P<index>\\d+)\\.tif$' -> '<capture>_<index>.tif'
+    """
+    text = re.sub(r'\(\?P<(\w+)>(?:[^()]|\([^()]*\))*\)', lambda match: f"<{match.group(1)}>", pattern or CAPTURE_FILE_PATTERN)
+    text = text.lstrip('^').rstrip('$')
+    return re.sub(r'\\(.)', r'\1', text)
+
+
+def preview_file_pattern(images_folder, pattern=None, examples=3):
+    """
+    How a file name pattern reads the files of a folder
+    Outputs: {'files' (all the files), 'matched', 'captures', 'files_per_capture' ({number of files: number of captures}),
+             'examples' ([(file name, capture, index or None)], the first of each of the first captures), 'unmatched'
+             (names of a few files that do not match)}. ValueError if the pattern is not valid
+    """
+    compiled = compile_file_pattern(pattern)
+    names = sorted(path.name for path in Path(images_folder).iterdir() if path.is_file())
+    found = {}
+    unmatched = []
+    for name in names:
+        match = compiled.match(name)
+        if match:
+            index = match.groupdict().get('index')
+            found.setdefault(match.group('capture'), []).append((name, int(index) if index and index.isdigit() else None))
+        else:
+            unmatched.append(name)
+    per_capture = {}
+    for files in found.values():
+        per_capture[len(files)] = per_capture.get(len(files), 0) + 1
+    shown = [(files[0][0], capture, files[0][1]) for capture, files in sorted(found.items())[:examples]]
+    return {'files': len(names), 'matched': sum(len(files) for files in found.values()), 'captures': len(found),
+            'files_per_capture': dict(sorted(per_capture.items())), 'examples': shown, 'unmatched': unmatched[:3]}
+
+
+def suggest_file_pattern(file_names):
+    """
+    A file name pattern for the names of a folder, or None if there is no obvious one. The names are expected to be
+    <capture name><separator><number of the file>.<extension> (IMG_0005_1.tif); the most common extension and separator
+    are used and the pattern is kept only if most of the files follow it
+    """
+    file_names = list(file_names)
+    stems = {}
+    for name in file_names:
+        stem, dot, extension = str(name).rpartition('.')
+        if not dot or not stem:
+            continue
+        match = re.match(r'^(.+?)([_\-. ])(\d+)$', stem)
+        if match:
+            stems.setdefault(extension.lower(), []).append(match.group(2))
+    if not stems:
+        return None
+    extension = max(stems, key=lambda key: len(stems[key]))
+    separators = stems[extension]
+    separator = max(set(separators), key=separators.count)
+    if len(separators) < 0.5 * len(file_names):
+        return None
+    return rf"(?P<capture>.+){re.escape(separator)}(?P<index>\d+)\.{re.escape(extension)}$"
+
+
 def _read_metadata(image_paths, exiftool_path=None):
     import exiftool
     with exiftool.ExifToolHelper(executable=exiftool_path) as et:

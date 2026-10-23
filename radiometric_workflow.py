@@ -161,8 +161,9 @@ FIELDS = [
      'group': 'Panel measurement', 'label': 'Panels used when there are two',
      'help': "With a second panel capture: first = only the first panel calibrates (the second is only compared with it); "
              "mean = the average of the two; interpolate_time = weighted by the time of each image between the two panel "
-             "captures (EXIF:DateTimeOriginal). With the DLS the average is of factor x irradiance, which does not depend "
-             "on the light."},
+             "captures; nearest_time = the panel captured closest in time to each image (times from "
+             "EXIF:DateTimeOriginal). With the DLS the combination is of factor x irradiance, which does not depend on "
+             "the light, so no panel is the reference of the DLS: only the panels that are used matter."},
     {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000, 'group': 'Panel measurement',
      'label': 'Saturation threshold', 'help': 'Pixels above this value are left out of the panel radiance.'},
     {'key': 'CORRECTION.use_dls', 'group': 'Correction with the DLS', 'kind': 'bool', 'default': False,
@@ -546,7 +547,7 @@ def _second_panel_weight(mode, second_present, image, first_panel, second_panel,
     """ Weight of the second panel for one image (see rct.panel_weight); names are those of the image and the two panels """
     if not second_present or mode == 'first':
         return 0.0
-    if mode != 'interpolate_time':
+    if mode not in ('interpolate_time', 'nearest_time'):
         return rct.panel_weight(mode)
     return rct.panel_weight(mode, rct.capture_time(image.metadata, names[0]), rct.capture_time(first_panel.metadata, names[1]),
                             rct.capture_time(second_panel.metadata, names[2]))

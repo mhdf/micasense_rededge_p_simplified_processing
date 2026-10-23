@@ -771,7 +771,7 @@ class WindowTests(unittest.TestCase):
     def test_the_use_of_two_panels_is_a_choice_in_the_panel_page(self):
         self.assertTrue(self.inside(self.frame.entries['PANEL.panels_used'], 'PANEL'))
         self.assertEqual(self.frame.entries['PANEL.panels_used'].winfo_class(), 'TCombobox')
-        self.assertEqual(list(self.frame.entries['PANEL.panels_used'].cget('values')), ['first', 'mean', 'interpolate_time'])
+        self.assertEqual(list(self.frame.entries['PANEL.panels_used'].cget('values')), ['first', 'mean', 'interpolate_time', 'nearest_time'])
         self.frame.set_value('PANEL.panels_used', 'mean')
         _, problems = self.frame.problems()
         self.assertTrue(any('no second panel capture' in problem for problem in problems))

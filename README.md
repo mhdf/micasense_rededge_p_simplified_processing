@@ -151,8 +151,13 @@ A second panel capture (```INPUTS.reference_panel_capture_after```) is always co
 - ```first``` (default): only the first panel is used; the second is only compared.
 - ```mean```: the two panels weigh the same (0.5 each).
 - ```interpolate_time```: each image is weighted by its time between the two panel captures, from ```EXIF:DateTimeOriginal``` (0 at the first panel, 1 at the second; an image outside them uses the nearest panel; two panels taken at the same time weigh 0.5 each). It needs that tag in the images of the capture and of both panels.
+- ```nearest_time```: each image uses, entirely, the panel that was captured closest in time to it (the first one if both are equally close or were taken at the same time). It needs the same time tags as ```interpolate_time```.
 
 Without the DLS the panel factors are averaged with these weights. With the DLS what is averaged is the factor times the irradiance of each panel, which is a constant of the camera that does not depend on the light (the two panels should agree on it), and the result is expressed for the irradiance of the first panel, which the DLS ratio refers to: ```factor = ((1 - w) f1 E1 + w f2 E2) / E1```. The weight and the factor that was used are written in the provenance record of each band (```second_panel_weight```, ```effective_factor```) and the weight of each capture in the result file. The regions of both panel captures are drawn and accepted in the same tool, and both must be accepted before saving.
+
+With the DLS the choice of "the reference panel" does not exist as such: the product factor x irradiance of a panel is the same constant wherever the panel was photographed, so what matters is which panels contribute to it (```first```, the nearest, or a mean), and the result is the same whatever panel the irradiance ratio is written relative to. The two panels agree on that constant when the DLS followed the light seen by the camera; ```CHECKS.panel_drift_tolerance``` flags it when they do not. MicaSense advises taking the panel image that best represents the average illumination of the flight when only one is used.
+
+How Metashape combines several panel images, and what its sun sensor option is referenced to, is not described in its manual (2.1) or in the forum threads of Agisoft that were read for this project; the photogrammetric workflow gives all the panel captures of the chunk to ```chunk.calibrateReflectance(use_reflectance_panels, use_sun_sensor)``` and cannot choose among them. Do not assume that it averages or follows the time: test it with panels of known different factors before relying on one behaviour.
 
 ## Workflow runner (no user interface)
 

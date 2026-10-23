@@ -166,6 +166,16 @@ class TwoPanelsTests(unittest.TestCase):
         self.assertEqual(rct.panel_weight('interpolate_time', 100, 0, 100), 1.0)
         self.assertEqual(rct.panel_weight('interpolate_time', 25, 0, 100), 0.25)
 
+    def test_the_nearest_panel_in_time_is_used_entirely(self):
+        self.assertEqual(rct.panel_weight('nearest_time', 10, 0, 100), 0.0)
+        self.assertEqual(rct.panel_weight('nearest_time', 90, 0, 100), 1.0)
+        self.assertEqual(rct.panel_weight('nearest_time', 49, 0, 100), 0.0)
+        self.assertEqual(rct.panel_weight('nearest_time', 51, 0, 100), 1.0)
+        self.assertEqual(rct.panel_weight('nearest_time', 50, 0, 100), 0.0)        # equally close: the first
+        self.assertEqual(rct.panel_weight('nearest_time', -30, 0, 100), 0.0)       # outside the two panels
+        self.assertEqual(rct.panel_weight('nearest_time', 400, 0, 100), 1.0)
+        self.assertEqual(rct.panel_weight('nearest_time', 7, 5, 5), 0.0)           # panels taken at the same time
+
     def test_outside_the_two_panels_the_nearest_one_is_used(self):
         self.assertEqual(rct.panel_weight('interpolate_time', -30, 0, 100), 0.0)
         self.assertEqual(rct.panel_weight('interpolate_time', 400, 0, 100), 1.0)

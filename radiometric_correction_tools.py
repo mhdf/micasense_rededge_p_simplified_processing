@@ -344,7 +344,7 @@ def _jsonable(value):
 
 
 # Two panel captures (before and after the flight)
-PANELS_USED = ('first', 'mean', 'interpolate_time')
+PANELS_USED = ('first', 'mean', 'interpolate_time', 'nearest_time')
 
 
 def capture_time(metadata, name='image'):
@@ -360,8 +360,10 @@ def capture_time(metadata, name='image'):
 def panel_weight(mode, image_time=None, first_time=None, second_time=None):
     """
     Weight of the second panel in the calibration of an image
-    mode: 'first' (0: only the first panel), 'mean' (0.5) or 'interpolate_time' (the position in time of the image between
-    the two panel captures, from 0 at the first to 1 at the second; outside them the nearest panel is used)
+    mode: 'first' (0: only the first panel), 'mean' (0.5), 'interpolate_time' (the position in time of the image between
+    the two panel captures, from 0 at the first to 1 at the second; outside them the nearest panel is used) or
+    'nearest_time' (0 or 1: the panel captured closest in time to the image; the first one if they are equally close or
+    were captured at the same time)
     """
     if mode == 'first':
         return 0.0
@@ -371,6 +373,8 @@ def panel_weight(mode, image_time=None, first_time=None, second_time=None):
         if second_time == first_time:
             return 0.5
         return float(min(1.0, max(0.0, (image_time - first_time) / (second_time - first_time))))
+    if mode == 'nearest_time':
+        return 1.0 if abs(image_time - second_time) < abs(image_time - first_time) else 0.0
     raise ValueError(f"panels_used must be one of {list(PANELS_USED)}, got {mode!r}")
 
 

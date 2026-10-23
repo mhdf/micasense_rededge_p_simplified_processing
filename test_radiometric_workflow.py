@@ -270,7 +270,7 @@ class ConfigurationTests(unittest.TestCase):
             wf.detect_bands(wf.default_config(), ROOT, 'IMG_9999')
 
     def test_a_second_panel_is_needed_to_use_two_panels(self):
-        for mode in ('mean', 'interpolate_time'):
+        for mode in ('mean', 'interpolate_time', 'nearest_time'):
             config = wf.merge_config({'PANEL.panels_used': mode})
             self.assertIn('there is no second panel capture', '\n'.join(wf.validate_config(config, ROOT)))
             config = wf.merge_config({'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005'})
@@ -545,6 +545,33 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['status'], 'completed', result['errors'])
         # IMG_0005 at 13:26:38, IMG_0010 at 13:30:11, IMG_0007 at 13:37:44: 213 s of 666 s
         self.assertAlmostEqual(result['captures']['IMG_0010']['panels']['weight_of_the_second_panel'], 213 / 666)
+
+    def run_with_a_later_panel(self, name, mode, time):
+        import exiftool
+        images = self.folder / (name + '_images')
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            shutil.copy(path, images / path.name)
+            if path.name.startswith('IMG_0005'):
+                shutil.copy(path, images / path.name.replace('IMG_0005', 'IMG_0007'))
+        with exiftool.ExifToolHelper() as et:
+            for path in images.glob('IMG_0007_*.tif'):
+                et.execute('-overwrite_original', '-EXIF:DateTimeOriginal=' + time, str(path))
+        return wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / name),
+                       'INPUTS.reference_panel_capture': 'IMG_0005', 'INPUTS.reference_panel_capture_after': 'IMG_0007',
+                       'INPUTS.image_captures': 'IMG_0010', 'PANEL.panels_used': mode}, ROOT)
+
+    def test_the_panel_closest_in_time_is_the_one_that_is_used(self):
+        # IMG_0005 at 13:26:38 and IMG_0010 at 13:30:11: the second panel at 13:37:44 is farther, at 13:31:00 it is nearer
+        far = self.run_with_a_later_panel('nearest_far', 'nearest_time', '2023:02:02 13:37:44')
+        self.assertEqual(far['status'], 'completed', far['errors'])
+        self.assertEqual(far['captures']['IMG_0010']['panels'], {'used': 'nearest_time', 'weight_of_the_second_panel': 0.0})
+        near = self.run_with_a_later_panel('nearest_near', 'nearest_time', '2023:02:02 13:31:00')
+        self.assertEqual(near['status'], 'completed', near['errors'])
+        self.assertEqual(near['captures']['IMG_0010']['panels'], {'used': 'nearest_time', 'weight_of_the_second_panel': 1.0})
+        provenance = json.loads((self.folder / 'nearest_near' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertTrue(provenance['bands'][0]['second_panel_file'].endswith('IMG_0007_1.tif'))
+        self.assertEqual(provenance['bands'][0]['second_panel_weight'], 1.0)
 
     def test_the_time_of_the_images_is_needed_to_interpolate(self):
         original = wf._read_capture

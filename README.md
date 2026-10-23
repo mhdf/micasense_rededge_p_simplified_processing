@@ -2,6 +2,8 @@
 
 This Python module provides a simplified alternative for converting raw images from the Micasense RedEdge-P sensor into radiance or reflectance, using the reference panel and, optionally, the Downwelling Light Sensor (DLS) data to correct changes in illumination.
 
+**What has been tested.** The program is written so that it can be used with other MicaSense cameras (RedEdge-M/MX, Altum, Altum-PT, dual-camera systems): the bands, the file names and the bands that are left out are configurable, and the bands can be read from the images themselves (see "Other cameras and other numbers of bands"). For the moment, however, it has been tested **only with images of the MicaSense RedEdge-P**. The other MicaSense models, and cameras of other makers (for example Sentera), have not been tested, and the presets of other models come from the documentation of the manufacturer, not from images. Use "Detect from capture" and compare the result with your own data before relying on them.
+
 All functions are derived from the original [Micasense image processing repository](https://github.com/micasense/imageprocessing) but have been streamlined to mitigate issues caused by Exif metadata inconsistencies. These issues were encountered while pre-processing images captured with the camera firmware v1.4.5 in preparation for geometric correction using photogrammetry software.
 
 For processing, it is only required the path and metadata for the images and for the reference panel. Images metadata can be extracted for example using [ExifTool](https://exiftool.org/). The only caution needed here is to maintain the same field labels adopted in the original Exif information.
@@ -119,6 +121,8 @@ In summary, with the function ```rct.Image(image, metadata)``` an object with th
 
 **What the DLS ratio is.** The DLS (downwelling light sensor) measures, for each band, the irradiance on a horizontal surface, ```E``` (```XMP:HorizontalIrradiance```). The DLS ratio of a band is ```E_panel / E_image```: the irradiance measured when the panel was photographed divided by the irradiance measured when the image was taken. The panel calibrates the camera for the light of that moment, so an image taken in more light than the panel (ratio below 1) would look too bright, and multiplying by the ratio corrects it. A ratio of 0.885 means that the DLS measured 13 % more light at the image than at the panel, so the reflectance is lowered by 11.5 %. The ratio is 1 at the panel capture, and the scale to SI units (```XMP:IrradianceScaleToSIUnits```), when it is written, cancels in it. The same explanation is shown in the DLS page of the window.
 
+**What data each image uses.** The DLS correction needs no reference data other than what is written in files: the irradiance of an image comes from the metadata of that image only (```XMP:HorizontalIrradiance```, per band), and the irradiance of the panel comes from the metadata of the panel capture (or captures) that is used. There is no flight-wide reference, no averaging with neighbouring images and no smoothing of the irradiance along the flight. The checks that compare neighbouring captures (spikes and steps) only raise flags; they never change a result.
+
 **How the solar zenith is obtained.** The solar elevation is read as it is written in the file (```XMP:SolarElevation```, in radians; it is not recomputed from position and time) and the solar zenith is 90 degrees minus the elevation. The DLS also writes the direction of the direct sunlight in its own frame (```XMP:EstimatedDirectLightVector```). If the DLS were level, the angle between that direction and the axis of the DLS (the arccosine of minus the z component of the unit vector) would be equal to the zenith; the absolute difference between the two is at least the tilt of the DLS, or a sign that the two are inconsistent. It was checked only against the example panel capture (0.2 degrees, with a level DLS).
 
 With ```use_dls = True``` the reflectance of each image is multiplied by ```E_panel / E_image```, the ratio between the horizontal irradiance measured by the DLS (```XMP:HorizontalIrradiance```) at the panel capture and at the image capture, for the same band:
@@ -177,6 +181,8 @@ python radiometric_workflow.py --request-json request.json                      
 - From Python: ```radiometric_workflow.run(config, root, progress)```, where ```progress``` receives ```{'stage', 'message', 'current', 'total'}```.
 
 ## Other cameras and other numbers of bands
+
+**Tested only with the MicaSense RedEdge-P.** What follows describes what the program is prepared for, not what has been verified on other cameras.
 
 Nothing in the processing depends on there being six bands: the bands are a table of the configuration (name, spectral window and panel reflectance of each band), and the same code runs with 3, 5, 6 or 10 of them.
 

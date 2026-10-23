@@ -157,6 +157,63 @@ class BandDefinitionTests(unittest.TestCase):
         self.assertEqual([band['name'] for band in result['bands']], ['C', 'A', 'B'])
 
 
+class TwoPanelsTests(unittest.TestCase):
+
+    def test_the_weight_of_the_second_panel(self):
+        self.assertEqual(rct.panel_weight('first', 50, 0, 100), 0.0)
+        self.assertEqual(rct.panel_weight('mean', 50, 0, 100), 0.5)
+        self.assertEqual(rct.panel_weight('interpolate_time', 0, 0, 100), 0.0)
+        self.assertEqual(rct.panel_weight('interpolate_time', 100, 0, 100), 1.0)
+        self.assertEqual(rct.panel_weight('interpolate_time', 25, 0, 100), 0.25)
+
+    def test_outside_the_two_panels_the_nearest_one_is_used(self):
+        self.assertEqual(rct.panel_weight('interpolate_time', -30, 0, 100), 0.0)
+        self.assertEqual(rct.panel_weight('interpolate_time', 400, 0, 100), 1.0)
+
+    def test_panels_taken_at_the_same_time_count_the_same(self):
+        self.assertEqual(rct.panel_weight('interpolate_time', 7, 5, 5), 0.5)
+
+    def test_an_unknown_mode_is_an_error(self):
+        with self.assertRaisesRegex(ValueError, 'panels_used'):
+            rct.panel_weight('last', 1, 0, 2)
+
+    def test_the_time_of_a_capture_is_read_from_the_metadata(self):
+        first = rct.capture_time({'EXIF:DateTimeOriginal': '2023:02:02 13:26:38'})
+        second = rct.capture_time({'EXIF:DateTimeOriginal': '2023:02:02 13:30:11'})
+        self.assertEqual(second - first, 213.0)
+        for bad in ({}, {'EXIF:DateTimeOriginal': 'yesterday'}, {'EXIF:DateTimeOriginal': None}):
+            with self.assertRaisesRegex(rct.MetadataError, 'IMG_1: EXIF:DateTimeOriginal'):
+                rct.capture_time(bad, 'IMG_1')
+
+    def test_without_the_dls_the_factors_are_averaged_with_the_weight(self):
+        self.assertEqual(rct.effective_panel_factor(2.0, 3.0, 0.0), 2.0)
+        self.assertEqual(rct.effective_panel_factor(2.0, None, 0.7), 2.0)
+        self.assertAlmostEqual(rct.effective_panel_factor(2.0, 3.0, 0.5), 2.5)
+        self.assertAlmostEqual(rct.effective_panel_factor(2.0, 3.0, 0.25), 2.25)
+
+    def test_with_the_dls_what_is_averaged_is_the_factor_times_the_irradiance(self):
+        # the same camera constant (factor x irradiance = 200) seen under different light: the panels agree
+        self.assertAlmostEqual(rct.effective_panel_factor(2.0, 2.5, 0.5, 100.0, 80.0), 2.0)
+        # a panel that gives another constant (210) moves the result, expressed for the irradiance of the first panel
+        self.assertAlmostEqual(rct.effective_panel_factor(2.0, 2.625, 0.5, 100.0, 80.0), (0.5 * 200 + 0.5 * 210) / 100)
+
+    def test_a_record_names_the_second_panel_and_the_factor_that_was_used(self):
+        class Fake:
+            def __init__(self, name):
+                self.image_path, self.metadata, self.band_name = name, {}, 'Blue'
+                self.panel_audit = {'radiance_to_reflectance_factor': 2.0}
+                self.horizontal_irradiance = self.irradiance_scale_to_si = self.dls_ratio = self.dls_ratio_source = None
+
+            def dls_sun_angle_discrepancy_deg(self):
+                return None
+        import numpy as np
+        record = rct.band_record('out.tif', Fake('p1.tif'), Fake('img.tif'), np.zeros((2, 2)), Fake('p2.tif'), 0.3, 2.3)
+        self.assertEqual((record['second_panel_file'], record['second_panel_weight'], record['effective_factor']),
+                         ('p2.tif', 0.3, 2.3))
+        plain = rct.band_record('out.tif', Fake('p1.tif'), Fake('img.tif'), np.zeros((2, 2)))
+        self.assertEqual((plain['second_panel_file'], plain['second_panel_weight']), (None, 0.0))
+
+
 class ValidatePolygonTests(unittest.TestCase):
 
     SIZE = (100, 80)

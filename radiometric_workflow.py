@@ -40,6 +40,30 @@ BAND_NAMES = ('Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR')
 # and description. Kinds: folder, file, text, bool, float, int, choice (one of 'choices'), band_values (dictionary
 # {band name: number}, with an optional 'range' (low exclusive, high inclusive)). Optional 'group' is a heading for the
 # window and 'dialog' marks the keys that the window edits in a dialog instead of on the page
+# What the groups of fields of the window are about (the window shows them under the heading of the group)
+GROUP_NOTES = {
+    'Correction with the DLS':
+        "The DLS (downwelling light sensor) measures, for each band, the irradiance on a horizontal surface: the light that "
+        "arrives from the sky. The DLS ratio of a band is E_panel / E_image: the irradiance that the DLS measured when the "
+        "reference panel was photographed divided by the irradiance that it measured when the image was taken. The panel "
+        "calibrates the camera for the light of that moment, so an image taken in more light than the panel (ratio below 1) "
+        "would look too bright; multiplying by the ratio corrects it. Example: a ratio of 0.885 means that the DLS measured "
+        "13 % more light at the image than at the panel, so the reflectance is lowered by 11.5 %. The ratio is 1 at the panel "
+        "capture. The irradiance is read from XMP:HorizontalIrradiance of each file; the scale to SI units, when it is "
+        "written, cancels in the ratio.",
+    'Checks of the DLS data (limits)':
+        "These checks look for DLS data that should not be trusted. They only raise flags: they never change the result. "
+        "All the bands must have nearly the same ratio, because a change of the light changes all of them together. The "
+        "plausible range catches ratios that are not credible (a covered DLS, a DLS pointing at the ground). The sun angle "
+        "check uses two things written in each file: the direction of the direct sunlight in the frame of the DLS "
+        "(XMP:EstimatedDirectLightVector) and the solar elevation (XMP:SolarElevation, in radians; it is taken as written, "
+        "not recomputed from position and time). The solar zenith is 90 degrees minus the elevation. If the DLS were level, "
+        "the angle between the sunlight and the axis of the DLS (the arccosine of minus the z component of the unit "
+        "vector) would be equal to the zenith, so the difference between the two is at least the tilt of the DLS, or a sign "
+        "that the two are inconsistent. The jump and panel limits apply to several captures along a flight and to two panel "
+        "captures.",
+}
+
 FIELDS = [
     {'key': 'INPUTS.images_folder', 'group': 'Folders and tools', 'kind': 'folder', 'default': 'images/raw',
      'label': 'Images folder', 'help': 'Folder with the raw .tif images (one file per band, e.g. IMG_0010_1.tif).'},
@@ -133,25 +157,38 @@ FIELDS = [
      'help': 'Fraction (0 to 1] of the window of a band that must have valid samples in the file.'},
     {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
      'label': 'Inner area of the panel', 'help': 'Fraction (0 to 1] of the panel used to measure its radiance.'},
+    {'key': 'PANEL.panels_used', 'kind': 'choice', 'choices': list(rct.PANELS_USED), 'default': 'first',
+     'group': 'Panel measurement', 'label': 'Panels used when there are two',
+     'help': "With a second panel capture: first = only the first panel calibrates (the second is only compared with it); "
+             "mean = the average of the two; interpolate_time = weighted by the time of each image between the two panel "
+             "captures (EXIF:DateTimeOriginal). With the DLS the average is of factor x irradiance, which does not depend "
+             "on the light."},
     {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000, 'group': 'Panel measurement',
      'label': 'Saturation threshold', 'help': 'Pixels above this value are left out of the panel radiance.'},
     {'key': 'CORRECTION.use_dls', 'group': 'Correction with the DLS', 'kind': 'bool', 'default': False,
      'label': 'Correct illumination changes with the DLS',
-     'help': 'Multiply the reflectance by E_panel / E_image of each band (Panchro included). Off: panel only.'},
+     'help': 'Multiply the reflectance of each band (Panchro included) by the DLS ratio E_panel / E_image. Off: panel '
+             'only.'},
     {'key': 'CHECKS.band_ratio_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['band_ratio_tolerance'],
-     'label': 'Band ratio tolerance', 'help': 'Largest relative departure of a band DLS ratio from the median of the bands.'},
+     'label': 'Band ratio tolerance', 'help': 'Largest relative departure of the DLS ratio of a band from the median ratio of the bands (0.03 = 3 %).'},
     {'key': 'CHECKS.ratio_range_min', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['ratio_range'][0],
-     'label': 'Smallest plausible DLS ratio', 'help': 'Ratios below this value are flagged.'},
+     'label': 'Smallest plausible DLS ratio', 'help': 'A DLS ratio below this value is flagged: the image would have more than 1 / value times the light of '
+             'the panel (0.5 = twice as much).'},
     {'key': 'CHECKS.ratio_range_max', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['ratio_range'][1],
-     'label': 'Largest plausible DLS ratio', 'help': 'Ratios above this value are flagged.'},
+     'label': 'Largest plausible DLS ratio', 'help': 'A DLS ratio above this value is flagged: the image would have less than 1 / value times the light of '
+             'the panel (2 = half as much).'},
     {'key': 'CHECKS.max_sun_angle_discrepancy_deg', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
      'default': rct.DLS_CHECKS['max_sun_angle_discrepancy_deg'],
      'label': 'Largest sun angle discrepancy (deg)',
-     'help': 'Difference between the sun direction seen by the DLS and the solar zenith.'},
+     'help': 'Degrees. Difference between the angle of the sunlight seen by the DLS and the solar zenith (90 degrees '
+             'minus XMP:SolarElevation): the DLS was tilted at least that much, or the angles are inconsistent.'},
     {'key': 'CHECKS.jump_threshold', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['jump_threshold'],
-     'label': 'Irradiance jump threshold', 'help': 'Relative change between consecutive captures reported as spike or step.'},
+     'label': 'Irradiance jump threshold', 'help': 'Relative change (0.1 = 10 %) of the irradiance of a band between two consecutive captures that is '
+             'reported: a spike if it comes back (one capture, for example a shaded or tilted DLS), a step if it stays '
+             '(for example a cloud).'},
     {'key': 'CHECKS.panel_drift_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['panel_drift_tolerance'],
-     'label': 'Panel drift tolerance', 'help': 'Largest relative change between the two panel captures.'},
+     'label': 'Panel drift tolerance', 'help': 'Largest relative change (0.05 = 5 %) between the first and the second panel captures of the panel factor '
+             'of a band, and of the DLS irradiance relative to the irradiance estimated from the panel.'},
 ]
 
 FIELD_KEYS = [field['key'] for field in FIELDS]
@@ -365,6 +402,9 @@ def validate_config(config, root='.'):
 
     if not 0 < config['PANEL.percent_inner_area'] <= 1:
         problems.append("PANEL.percent_inner_area must be in (0, 1]")
+    if config['PANEL.panels_used'] != 'first' and not config['INPUTS.reference_panel_capture_after'].strip():
+        problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}' but there is no second panel capture "
+                        "(INPUTS.reference_panel_capture_after)")
     if not 0 < config['PANEL.spectral_min_coverage'] <= 1:
         problems.append("PANEL.spectral_min_coverage must be in (0, 1]")
     band_sets = {frozenset(config[key]) for key in ('PANEL.reflectance_by_band', 'PANEL.band_center_wavelengths',
@@ -502,6 +542,16 @@ def run(config, root='.', progress=None):
     return result
 
 
+def _second_panel_weight(mode, second_present, image, first_panel, second_panel, names):
+    """ Weight of the second panel for one image (see rct.panel_weight); names are those of the image and the two panels """
+    if not second_present or mode == 'first':
+        return 0.0
+    if mode != 'interpolate_time':
+        return rct.panel_weight(mode)
+    return rct.panel_weight(mode, rct.capture_time(image.metadata, names[0]), rct.capture_time(first_panel.metadata, names[1]),
+                            rct.capture_time(second_panel.metadata, names[2]))
+
+
 def _read_capture(images_folder, name, bands, exiftool_path, pattern=None, ignored=()):
     files = rct.read_band_files(rct.find_capture_paths(images_folder, name, pattern), bands, exiftool_path, ignored)
     return {band: rct.Image(*files[band]) for band in bands}
@@ -566,15 +616,27 @@ def _run_stages(config, root, results_folder, result, progress):
                 warnings.simplefilter('always')
                 objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
                 ratios = rct.capture_dls_ratios(panels['before'], objects) if use_dls else {}
+                second = panels.get('after')
+                weight = _second_panel_weight(config['PANEL.panels_used'], second is not None, objects[bands[0]],
+                                              panels['before'][bands[0]], second[bands[0]] if second else None,
+                                              (name, panel_name, panel_after_name))
+                entry['panels'] = {'used': config['PANEL.panels_used'] if second is not None else 'first',
+                                   'weight_of_the_second_panel': weight}
                 records = []
                 for band in bands:
                     image, panel = objects[band], panels['before'][band]
                     ratio, source = ratios.get(band, (None, None))
-                    reflectance = image.digital_numbers_to_reflectance(
-                        panel.panel_audit['radiance_to_reflectance_factor'], dls_ratio=ratio, dls_ratio_source=source)
+                    factor = panel.panel_audit['radiance_to_reflectance_factor']
+                    if weight > 0:
+                        factor = rct.effective_panel_factor(
+                            factor, second[band].panel_audit['radiance_to_reflectance_factor'], weight,
+                            panel.dls_irradiance() if use_dls else None, second[band].dls_irradiance() if use_dls else None)
+                    reflectance = image.digital_numbers_to_reflectance(factor, dls_ratio=ratio, dls_ratio_source=source)
                     output_path = results_folder / Path(image.image_path).name
                     tifffile.imwrite(output_path, reflectance)
-                    records.append(rct.band_record(output_path, panel, image, reflectance))
+                    records.append(rct.band_record(output_path, panel, image, reflectance,
+                                                   second[band] if weight > 0 else None, weight,
+                                                   factor if weight > 0 else None))
                     entry['outputs'].append(str(output_path))
                 checks = rct.check_dls_capture(panels['before'], objects, ratios or None)
                 entry['checks'] = rct._jsonable(checks)

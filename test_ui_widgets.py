@@ -5,7 +5,9 @@ Tk cannot open one)
 Run from this folder with:  python -m unittest test_ui_widgets -v
 """
 
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 import ui_widgets as uw
@@ -225,6 +227,70 @@ class WidgetTests(unittest.TestCase):
         self.assertFalse(table.rows[0]['widgets']['center'].instate(['disabled']))
         table.set_reflectance_state(True)
         self.assertFalse(any(entry.instate(['disabled']) for entry in table.reflectance_entries()))
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'the title bar icon is a Windows matter')
+class TitleIconTests(unittest.TestCase):
+
+    def setUp(self):
+        import tkinter as tk
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"no display for Tk: {error}")
+        self.root.withdraw()
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    @staticmethod
+    def frame_state(window):
+        """ (icon registered on the class of the title-bar window, has the frame without the icon) """
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        user32.GetParent.argtypes = (wintypes.HWND,)
+        user32.GetParent.restype = wintypes.HWND
+        user32.GetClassLongPtrW.argtypes = (wintypes.HWND, ctypes.c_int)
+        user32.GetClassLongPtrW.restype = ctypes.c_void_p
+        user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
+        user32.GetWindowLongW.restype = ctypes.c_long
+        wrapper = user32.GetParent(window.winfo_id())
+        return bool(user32.GetClassLongPtrW(wrapper, -14)), bool(user32.GetWindowLongW(wrapper, -20) & 1)
+
+    def test_the_icon_of_the_title_bar_is_hidden_in_a_window_and_in_a_dialog(self):
+        import tkinter as tk
+        from ui_theme import hide_title_icon
+        self.assertFalse(self.frame_state(self.root)[1])                         # the normal frame at the start
+        self.assertTrue(hide_title_icon(self.root))
+        self.assertEqual(self.frame_state(self.root), (False, True))            # no icon, frame without the icon slot
+        dialog = tk.Toplevel(self.root)
+        self.assertTrue(hide_title_icon(dialog))
+        self.assertEqual(self.frame_state(dialog), (False, True))
+
+    def test_it_can_be_repeated_and_never_raises(self):
+        from ui_theme import hide_title_icon
+        self.assertTrue(hide_title_icon(self.root))
+        self.assertTrue(hide_title_icon(self.root))
+        self.root.destroy()
+        self.assertFalse(hide_title_icon(self.root))                             # a window that is gone: no error
+
+    def test_the_windows_of_the_program_hide_it(self):
+        import radiometric_window as rw
+        import tempfile
+        from ui_theme import apply_dark_theme
+        apply_dark_theme(self.root)
+        with tempfile.TemporaryDirectory() as folder:
+            frame = rw.RadiometricFrame(self.root, Path(folder) / 'inputs.json', folder)
+            frame.widget.pack()
+            import panel_spectrum_dialog as psd
+            import tkinter as tk
+            dialog_window = tk.Toplevel(self.root)
+            psd.ImportDialog(dialog_window, psd.ImportSession())
+            self.assertEqual(self.frame_state(dialog_window), (False, True))
 
 
 if __name__ == '__main__':

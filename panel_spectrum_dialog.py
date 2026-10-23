@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Local Imports
 import panel_spectrum as ps
-from ui_theme import COLORS
+from ui_theme import COLORS, hide_title_icon
 
 PREVIEW_ROWS = 300
 
@@ -177,6 +177,7 @@ class ImportDialog:
         window.geometry("1180x880")
         window.minsize(1000, 720)
         self._build()
+        hide_title_icon(self.window)
         self._load_into_fields()
         self.refresh()
 

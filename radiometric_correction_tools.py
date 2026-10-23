@@ -343,14 +343,64 @@ def _jsonable(value):
     return value
 
 
-def band_record(output_path, panel_image, image, reflectance):
+# Two panel captures (before and after the flight)
+PANELS_USED = ('first', 'mean', 'interpolate_time')
+
+
+def capture_time(metadata, name='image'):
+    """ Time of a capture, in seconds, from EXIF:DateTimeOriginal (written to the second); MetadataError if missing """
+    from datetime import datetime
+    text = metadata.get('EXIF:DateTimeOriginal')
+    try:
+        return datetime.strptime(str(text).strip(), '%Y:%m:%d %H:%M:%S').timestamp()
+    except ValueError:
+        raise MetadataError(f"{name}: EXIF:DateTimeOriginal is missing or not a date: {text!r}")
+
+
+def panel_weight(mode, image_time=None, first_time=None, second_time=None):
+    """
+    Weight of the second panel in the calibration of an image
+    mode: 'first' (0: only the first panel), 'mean' (0.5) or 'interpolate_time' (the position in time of the image between
+    the two panel captures, from 0 at the first to 1 at the second; outside them the nearest panel is used)
+    """
+    if mode == 'first':
+        return 0.0
+    if mode == 'mean':
+        return 0.5
+    if mode == 'interpolate_time':
+        if second_time == first_time:
+            return 0.5
+        return float(min(1.0, max(0.0, (image_time - first_time) / (second_time - first_time))))
+    raise ValueError(f"panels_used must be one of {list(PANELS_USED)}, got {mode!r}")
+
+
+def effective_panel_factor(first_factor, second_factor=None, weight=0.0, first_irradiance=None, second_irradiance=None):
+    """
+    The radiance to reflectance factor of an image from two panels. Without the DLS the factors are averaged with the weight
+    of the second one. With the DLS (irradiances of the panels given) what is averaged is factor x irradiance, which is a
+    constant of the camera that does not depend on the light, and the result is expressed for the irradiance of the
+    first panel, the one that the DLS ratio refers to: factor = ((1 - w) f1 E1 + w f2 E2) / E1
+    """
+    if weight == 0 or second_factor is None:
+        return first_factor
+    if first_irradiance is None or second_irradiance is None:
+        return (1 - weight) * first_factor + weight * second_factor
+    return ((1 - weight) * first_factor * first_irradiance + weight * second_factor * second_irradiance) / first_irradiance
+
+
+def band_record(output_path, panel_image, image, reflectance, second_panel=None, second_weight=0.0, effective_factor=None):
     """
     Describe how one output band was produced
     Inputs: path of the saved file, panel and target rct.Image of the band (after detect_reference_panel() and
-            digital_numbers_to_reflectance()) and the reflectance array that was saved
+            digital_numbers_to_reflectance()) and the reflectance array that was saved; optionally the image of the second
+            panel, its weight and the factor that was used when it was combined with the first
     Outputs: dictionary that can be saved as json (see write_provenance)
     """
     return _jsonable({ 'band': image.band_name,
+                       'second_panel_file': str(second_panel.image_path) if second_panel is not None else None,
+                       'second_panel': getattr(second_panel, 'panel_audit', None),
+                       'second_panel_weight': second_weight,
+                       'effective_factor': effective_factor,
                        'output_file': str(output_path),
                        'output_dtype': str(reflectance.dtype),
                        'output_shape': reflectance.shape,

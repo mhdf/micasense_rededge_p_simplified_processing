@@ -27,7 +27,7 @@ from pathlib import Path
 import camera_presets
 import radiometric_correction_tools as rct
 import radiometric_workflow as wf
-from ui_theme import COLORS, FONT, apply_dark_theme
+from ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
 from ui_widgets import BandTable, ScrollablePage, model_from_rows, rows_from_model
 
 DEFAULT_CONFIG_NAME = 'radiometric_inputs.json'
@@ -206,6 +206,9 @@ class RadiometricFrame:
         self._after_id = None
         self.widget.bind('<Destroy>', lambda event: self.close() if event.widget is self.widget else None)
         self._build()
+        self.wrapped_labels = []
+        self._collect_wrapped(self.content)
+        self.content.bind('<Configure>', self._rewrap)
         self._table_from_model()
         self._show_page(SECTIONS[0][0])
         self._apply_source_state()
@@ -334,6 +337,9 @@ class RadiometricFrame:
             self.groups[page] = group
             ttk.Label(page, text=group, style='Heading.TLabel').pack(anchor='w', pady=(10, 2))
             ttk.Separator(page).pack(fill='x', pady=(0, 8))
+            if wf.GROUP_NOTES.get(group):
+                ttk.Label(page, text=wf.GROUP_NOTES[group], style='Muted.TLabel', wraplength=760,
+                          justify='left').pack(anchor='w', pady=(0, 10))
         if field.get('dialog'):
             self._build_hidden(field)
             return
@@ -434,6 +440,18 @@ class RadiometricFrame:
             self.log_text.tag_configure(tag, foreground=color)
 
     # --- pages and values -----------------------------------------------------------------------------------
+
+    def _collect_wrapped(self, widget):
+        """ The labels that wrap their text (explanations, notes, messages): they follow the width of the page """
+        for child in widget.winfo_children():
+            if child.winfo_class() == 'TLabel' and int(float(child.cget('wraplength') or 0)) > 0:
+                self.wrapped_labels.append(child)
+            self._collect_wrapped(child)
+
+    def _rewrap(self, event=None):
+        width = max(self.content.winfo_width() - 100, 300)           # the margins, the scroll bar and the indentation
+        for label in self.wrapped_labels:
+            label.configure(wraplength=width)
 
     def _on_navigate(self, event):
         selection = self.navigation.curselection()
@@ -838,32 +856,40 @@ class RadiometricFrame:
 
     def _regions_worker(self, config):
         try:
-            capture = config['INPUTS.reference_panel_capture']
-            images = wf.read_capture_images(config, self.root_folder, capture)
+            required = list(dict.fromkeys(name for name in (config['INPUTS.reference_panel_capture'].strip(),
+                                                            config['INPUTS.reference_panel_capture_after'].strip())
+                                          if name))
+            preloaded = {name: wf.read_capture_images(config, self.root_folder, name) for name in required}
+            names = rct.list_capture_names(wf.resolve_path(self.root_folder, config['INPUTS.images_folder']),
+                                           config['INPUTS.file_pattern'])
             path = self.regions_path(config)
-            saved = wf.load_panel_regions(path).get(capture, {}) if path.is_file() else {}
-            origins = wf.load_panel_origins(path).get(capture, {}) if path.is_file() else {}
-            self.events.put(('images', (config, capture, images, saved, path, origins)))
+            saved = wf.load_panel_regions(path) if path.is_file() else {}
+            origins = wf.load_panel_origins(path) if path.is_file() else {}
+            self.events.put(('images', (config, names, required, preloaded, saved, origins, path)))
         except Exception as error:
             self.events.put(('regions_failed', f"{type(error).__name__}: {error}"))
 
     def _open_selector(self, payload):
         from panel_selector import select_panel_regions
-        config, capture, images, saved, path, origins = payload
+        config, names, required, preloaded, saved, origins, path = payload
         try:
-            selected = select_panel_regions(images, saved, config['PANEL.percent_inner_area'],
-                                            config['PANEL.saturation_threshold'], parent=self.parent.winfo_toplevel(),
-                                            saved_origins=origins)
+            selected = select_panel_regions(
+                names, lambda name: wf.read_capture_images(config, self.root_folder, name), required, saved, origins,
+                config['PANEL.percent_inner_area'], config['PANEL.saturation_threshold'],
+                parent=self.parent.winfo_toplevel(), preloaded=preloaded)
             if selected is None:
                 self.log('Cancelled: no region was saved.')
                 self.inputs_status.configure(text='Cancelled: no region was saved.', style='Muted.TLabel')
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                found = getattr(selected, 'origins', {})
-                wf.save_panel_regions(path, capture, selected, found)
-                automatic = sum(origin == 'accepted_automatic' for origin in found.values())
-                text = (f"Saved {len(selected)} accepted region(s) in {path}: {automatic} as found from the QR code, "
-                        f"{len(selected) - automatic} drawn or edited.")
+                parts = []
+                for capture, result in selected.items():
+                    found = getattr(result, 'origins', {})
+                    wf.save_panel_regions(path, capture, result, found)
+                    automatic = sum(origin == 'accepted_automatic' for origin in found.values())
+                    parts.append(f"{capture}: {len(result)} region(s), {automatic} as found from the QR code, "
+                                 f"{len(result) - automatic} drawn or edited")
+                text = f"Saved the accepted regions in {path} ({'; '.join(parts)})."
                 self.log(text, 'ok')
                 self.inputs_status.configure(text=text, style='Ok.TLabel')
                 if not config['PANEL.manual_regions_file']:
@@ -950,6 +976,7 @@ def main(argv=None):
     apply_dark_theme(window)
     frame = RadiometricFrame(window, arguments.config, arguments.root)
     frame.widget.pack(fill='both', expand=True)
+    hide_title_icon(window)
     window.mainloop()
     return 0
 

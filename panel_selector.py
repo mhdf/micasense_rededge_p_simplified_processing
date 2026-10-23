@@ -28,7 +28,7 @@ import numpy as np
 
 # Local Imports
 import radiometric_correction_tools as rct
-from ui_theme import COLORS, apply_dark_theme
+from ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
 
 DEFAULT_HINT = "Point at a button or at an image to see what it does."
 
@@ -53,6 +53,11 @@ HINTS = {
               "Yellow dashed: the region found from the QR code. Green: the region accepted or saved before. The numbers "
               "above are the pixels, the saturated pixels and the variation (std / mean) inside the polygon: lower means "
               "a more uniform panel.",
+    # --- both views
+    'capture': "Capture: choose which capture of the images folder to look at. The panel captures of the configuration (the "
+               "first one and the one after the flight, if there is one) come first and all their bands must be accepted "
+               "before saving; any other capture is saved only if all its bands are accepted. What you accepted is kept "
+               "for each capture while you switch.",
     # --- overview
     'accept_all': "Accept all automatic regions: for every band that is not accepted yet, accept the region found from the "
                   "QR code (yellow outline). Bands without one are left for you to draw with Edit. Look at the outlines "
@@ -376,6 +381,88 @@ class SelectionSession:
                                {band: self.origins[band] for band in accepted if self.origins[band]})
 
 
+class CaptureSet:
+    """
+    The captures that can be looked at, and the session of each one (opened when it is chosen)
+    Inputs: the names of the captures, a function that reads the images of a capture ({band: rct.Image}), the captures that
+            must be fully accepted before the regions are saved (the panel captures), the regions and origins saved before
+            for every capture ({capture: {band: ...}}) and images that were read already ({capture: {band: rct.Image}})
+    """
+
+    def __init__(self, names, load, required=(), saved=None, saved_origins=None, percent_inner_area=0.7,
+                 sat_threshold=65000, preloaded=None, current=None):
+        self.required = list(dict.fromkeys(required))
+        self.names = self.required + [name for name in dict.fromkeys(names) if name not in self.required]
+        if not self.names:
+            raise ValueError("There is no capture to look at")
+        self.load = load
+        self.saved, self.saved_origins = saved or {}, saved_origins or {}
+        self.percent_inner_area, self.sat_threshold = percent_inner_area, sat_threshold
+        self.sessions = {}
+        for name, images in (preloaded or {}).items():
+            self.sessions[name] = self._make(name, images)
+        self.current = current if current in self.names else self.names[0]
+
+    @classmethod
+    def single(cls, session, name='capture'):
+        """ A set with one capture whose session exists already """
+        captures = cls([name], None, required=[name])
+        captures.sessions[name] = session
+        return captures
+
+    def _make(self, name, images):
+        return SelectionSession(images, self.saved.get(name), self.percent_inner_area, self.sat_threshold,
+                                self.saved_origins.get(name))
+
+    def session(self, name):
+        """ The session of a capture; its images are read the first time (any error of the reading is raised) """
+        if name not in self.sessions:
+            if self.load is None:
+                raise KeyError(name)
+            self.sessions[name] = self._make(name, self.load(name))
+        return self.sessions[name]
+
+    def summary(self, name):
+        if name not in self.sessions:
+            return 'not opened'
+        session = self.sessions[name]
+        return f"{session.accepted_count()} of {len(session.bands)} accepted"
+
+    def not_ready(self):
+        """ The captures that must be accepted and are not: {capture: bands still to accept, or None if not opened} """
+        missing = {}
+        for name in self.required:
+            session = self.sessions.get(name)
+            if session is None:
+                missing[name] = None
+            elif not session.is_complete():
+                missing[name] = [band for band in session.bands if session.decisions[band] != 'accepted']
+        return missing
+
+    def is_ready(self):
+        return not self.not_ready()
+
+    def result(self):
+        """ {capture: SelectionResult} of the captures whose bands are all accepted """
+        return {name: session.result() for name, session in self.sessions.items() if session.is_complete()}
+
+
+def count_wrapped_lines(measure, text, width):
+    """ Lines that a text takes when it is wrapped at words in a width; measure(text) gives the width of a text """
+    total = 0
+    for paragraph in text.split('\n'):
+        line = ''
+        total += 1
+        for word in paragraph.split(' '):
+            candidate = f"{line} {word}" if line else word
+            if line and measure(candidate) > width:
+                total += 1
+                line = word
+            else:
+                line = candidate
+    return total
+
+
 # ======================================================================================
 # WINDOW
 # ======================================================================================
@@ -383,12 +470,15 @@ class SelectionSession:
 class PanelSelectorWindow:
     """ The overview and the editor; use select_panel_regions() to run it """
 
-    def __init__(self, root, session, title="Reference panel regions", start='overview'):
+    def __init__(self, root, source, title="Reference panel regions", start='overview'):
         import tkinter as tk
         from tkinter import ttk
         from PIL import Image as PILImage, ImageTk
         self.tk, self.ttk, self.PILImage, self.ImageTk = tk, ttk, PILImage, ImageTk
-        self.root, self.session = root, session
+        self.root = root
+        self.captures = CaptureSet.single(source) if isinstance(source, SelectionSession) else source
+        self.session = self.captures.session(self.captures.current)
+        self.capture_labels = {}
         self.cancelled = True
         self.finished = False
         self.mode = None
@@ -408,8 +498,9 @@ class PanelSelectorWindow:
         self.root.minsize(1060, 560)
         apply_dark_theme(self.root)
         self._build()
+        hide_title_icon(self.root)
         if start == 'editor':
-            self.show_editor(session.index)
+            self.show_editor(self.session.index)
         else:
             self.show_overview()
 
@@ -423,12 +514,24 @@ class PanelSelectorWindow:
         self.title_label.pack(side='left')
         self.status_label = ttk.Label(top, style='Muted.TLabel')
         self.status_label.pack(side='right')
+        self.capture_var = tk.StringVar()
+        self.capture_box = ttk.Combobox(top, textvariable=self.capture_var, state='readonly', width=44)
+        if len(self.captures.names) > 1:
+            self.capture_box.pack(side='right', padx=(6, 12))
+            ttk.Label(top, text='Capture', style='Muted.TLabel').pack(side='right')
+        self.capture_box.bind('<<ComboboxSelected>>', lambda event: self._on_capture_chosen())
+        self._hover(self.capture_box, 'capture')
 
+        # The explanation takes the whole width and has the height of the longest explanation, so that pointing at an
+        # element never changes the size of what is above it (which made the image blink)
         footer = ttk.Frame(self.root, padding=(12, 0, 12, 6))
         footer.pack(side='bottom', fill='x')
+        footer.pack_propagate(False)
+        self.footer = footer
         self.hint_label = ttk.Label(footer, text=DEFAULT_HINT, foreground=COLORS['foreground'], justify='left')
-        self.hint_label.pack(anchor='w')
-        footer.bind('<Configure>', lambda event: self.hint_label.configure(wraplength=max(event.width - 24, 200)))
+        self.hint_label.pack(anchor='w', fill='x')
+        footer.configure(height=self.hint_height(1156))
+        footer.bind('<Configure>', self._on_footer_configure)
 
         self.container = ttk.Frame(self.root)
         self.container.pack(fill='both', expand=True)
@@ -439,6 +542,20 @@ class PanelSelectorWindow:
                                   ('<Right>', self._key_next), ('<Escape>', self._key_escape)):
             self.root.bind(sequence, lambda event, command=command: command())
         self.root.protocol('WM_DELETE_WINDOW', self.cancel)
+
+    def hint_height(self, wrap):
+        """ Height in pixels of the footer: the lines of the longest explanation when it is wrapped at wrap pixels """
+        from tkinter import font as tkfont
+        font = tkfont.Font(root=self.root, font=FONT)
+        lines = max(count_wrapped_lines(font.measure, text, wrap) for text in [DEFAULT_HINT, *HINTS.values()])
+        return lines * font.metrics('linespace') + 12
+
+    def _on_footer_configure(self, event):
+        wrap = max(event.width - 24, 200)
+        self.hint_label.configure(wraplength=wrap)
+        height = self.hint_height(wrap)
+        if int(self.footer.cget('height')) != height:
+            self.footer.configure(height=height)
 
     def _hover(self, widget, name):
         """ Show what an element does while the mouse is over it """
@@ -461,6 +578,7 @@ class PanelSelectorWindow:
             self._hover(self.overview_buttons[name], name)
         self.tile_page = ScrollablePage(self.overview)
         self.tile_page.widget.pack(fill='both', expand=True, padx=(12, 0))
+        self.tile_bands = list(self.session.bands)
         for number, band in enumerate(self.session.bands):
             self._build_tile(band, number)
 
@@ -532,9 +650,47 @@ class PanelSelectorWindow:
         return f"{self.session.accepted_count()} of {len(self.session.bands)} bands accepted"
 
     def display_image(self, band):
-        if band not in self.display_cache:
-            self.display_cache[band] = self.session.images[band].display_image()
-        return self.display_cache[band]
+        key = (self.captures.current, band)
+        if key not in self.display_cache:
+            self.display_cache[key] = self.session.images[band].display_image()
+        return self.display_cache[key]
+
+    def _capture_label(self, name):
+        kind = 'panel, ' if name in self.captures.required else ''
+        return f"{name}  ({kind}{self.captures.summary(name)})"
+
+    def _refresh_capture_box(self):
+        self.capture_labels = {self._capture_label(name): name for name in self.captures.names}
+        self.capture_box.configure(values=list(self.capture_labels))
+        self.capture_var.set(self._capture_label(self.captures.current))
+
+    def _on_capture_chosen(self):
+        name = self.capture_labels.get(self.capture_var.get())
+        if name is not None:
+            self.switch_capture(name)
+
+    def switch_capture(self, name):
+        """ Look at another capture (its images are read the first time). Returns False if it could not be opened """
+        if name == self.captures.current:
+            return True
+        self.overview_message.configure(text=f"Reading {name}...", style='Muted.TLabel')
+        self.root.update_idletasks()
+        try:
+            session = self.captures.session(name)
+            if session.bands != self.tile_bands:
+                raise ValueError(f"{name} has the bands {session.bands}, not {self.tile_bands}")
+        except Exception as error:
+            self._refresh_capture_box()
+            self.overview_message.configure(text=f"{name} could not be opened: {type(error).__name__}: {error}",
+                                            style='Error.TLabel')
+            return False
+        self.captures.current = name
+        self.session = session
+        if self.mode == 'editor':
+            self.show_overview()
+        else:
+            self.refresh_overview()
+        return True
 
     def show_overview(self):
         self.mode = 'overview'
@@ -586,14 +742,21 @@ class PanelSelectorWindow:
     def _update_overview_state(self):
         session = self.session
         self.status_label.configure(text=self._status_text())
-        self.overview_buttons['finish'].state(['!disabled'] if session.is_complete() else ['disabled'])
+        ready = self.captures.is_ready()
+        self.overview_buttons['finish'].state(['!disabled'] if ready else ['disabled'])
         pending = [band for band in session.bands if session.decisions[band] != 'accepted']
-        text = (f"{session.accepted_count()} of {len(session.bands)} bands accepted. " +
-                ("Every region is accepted: Save and close writes them." if not pending else
-                 f"Still to accept: {', '.join(pending)}."))
+        text = (f"{self.captures.current}: {session.accepted_count()} of {len(session.bands)} bands accepted. " +
+                ("Every region is accepted." if not pending else f"Still to accept: {', '.join(pending)}."))
+        missing = self.captures.not_ready()
+        if len(self.captures.required) > 1 or (missing and list(missing) != [self.captures.current]):
+            text += (" Panel captures: " + ', '.join(f"{name} ({self.captures.summary(name)})"
+                                                     for name in self.captures.required) + '.')
+        if ready:
+            text += " Save and close writes the accepted captures."
         if session.notes:
             text += ' ' + ' '.join(session.notes)
         self.overview_message.configure(text=text, style='Muted.TLabel')
+        self._refresh_capture_box()
 
     def show_editor(self, band):
         """ Open a band (its name or number) in the editor """
@@ -761,6 +924,7 @@ class PanelSelectorWindow:
             self.message(str(error), error=True)
             return
         self.status_label.configure(text=self._status_text())
+        self._refresh_capture_box()
         following = self.session.next_not_accepted()
         if following is None:
             self.show_overview()
@@ -824,9 +988,11 @@ class PanelSelectorWindow:
     # --- end ----------------------------------------------------------------------------------------------------
 
     def finish(self):
-        if not self.session.is_complete():
-            pending = [band for band in self.session.bands if self.session.decisions[band] != 'accepted']
-            self.overview_message.configure(text=f"Accept every band first. Still to accept: {', '.join(pending)}",
+        missing = self.captures.not_ready()
+        if missing:
+            parts = [f"{name}: " + ('not opened' if bands is None else f"still to accept {', '.join(bands)}")
+                     for name, bands in missing.items()]
+            self.overview_message.configure(text="Accept every band of the panel captures first. " + '; '.join(parts),
                                             style='Error.TLabel')
             return
         self.cancelled = False
@@ -839,27 +1005,32 @@ class PanelSelectorWindow:
         self.root.destroy()
 
 
-def select_panel_regions(images, saved=None, percent_inner_area=0.7, sat_threshold=65000, parent=None,
-                         saved_origins=None, start='overview'):
+def select_panel_regions(captures, load, required=None, saved=None, saved_origins=None, percent_inner_area=0.7,
+                         sat_threshold=65000, parent=None, preloaded=None, current=None, start='overview'):
     """
     Open the window and wait for the user
-    Inputs: {band: rct.Image} of the panel capture, the regions saved before {band: polygon} and their origins (they are
-            shown as accepted) and, when another window is open, that window (the dialog is then modal and opens above it)
-    Outputs: SelectionResult ({band: polygon} of every band, all accepted, with .origins), or None if the user cancelled
+    Inputs: the names of the captures that can be looked at, a function that reads the images of a capture, the panel
+            captures that must be fully accepted (default: the first one), the regions and origins saved before for every
+            capture (they are shown as accepted), the images that were read already and, when another window is open,
+            that window (the window is then modal and opens above it)
+    Outputs: {capture: SelectionResult} for every capture whose bands are all accepted (the panel captures at least), or
+             None if the user cancelled
     """
     import tkinter as tk
-    session = SelectionSession(images, saved, percent_inner_area, sat_threshold, saved_origins)
+    required = list(captures[:1]) if required is None else list(required)
+    capture_set = CaptureSet(captures, load, required, saved, saved_origins, percent_inner_area, sat_threshold,
+                             preloaded, current)
     if parent is None:
         window_root = tk.Tk()
-        window = PanelSelectorWindow(window_root, session, start=start)
+        window = PanelSelectorWindow(window_root, capture_set, start=start)
         window_root.mainloop()
     else:
         window_root = tk.Toplevel(parent)
         window_root.transient(parent)
-        window = PanelSelectorWindow(window_root, session, start=start)
+        window = PanelSelectorWindow(window_root, capture_set, start=start)
         window_root.grab_set()
         parent.wait_window(window_root)
-    return None if window.cancelled else session.result()
+    return None if window.cancelled else capture_set.result()
 
 
 def main(argv=None):
@@ -868,7 +1039,8 @@ def main(argv=None):
     parser.add_argument('--config', help="configuration json file of the workflow (default: radiometric_inputs.json "
                                          "in --root if it exists, otherwise the defaults)")
     parser.add_argument('--root', default='.', help="folder from which the relative paths are resolved")
-    parser.add_argument('--capture', help="panel capture (default: INPUTS.reference_panel_capture)")
+    parser.add_argument('--capture', help="capture to show first; it is added to the panel captures if it is not one "
+                                          "(default: INPUTS.reference_panel_capture)")
     arguments = parser.parse_args(argv)
 
     config_file = Path(arguments.config) if arguments.config else Path(arguments.root) / 'radiometric_inputs.json'
@@ -882,20 +1054,30 @@ def main(argv=None):
             print(f"ERROR: {problem}", file=sys.stderr)
         return 1
     root = Path(arguments.root)
-    capture = arguments.capture or config['INPUTS.reference_panel_capture'].strip()
+    required = [name for name in (config['INPUTS.reference_panel_capture'].strip(),
+                                  config['INPUTS.reference_panel_capture_after'].strip()) if name]
+    if arguments.capture and arguments.capture not in required:
+        required.insert(0, arguments.capture)
+    first = arguments.capture or required[0]
     regions_path = wf.resolve_path(root, config['PANEL.manual_regions_file'] or
                                    Path(config['INPUTS.results_folder']) / 'panel_regions.json')
-    print(f"Reading {capture} ...", flush=True)
-    images = wf.read_capture_images(config, root, capture)
-    saved = wf.load_panel_regions(regions_path).get(capture, {}) if regions_path.is_file() else {}
-    origins = wf.load_panel_origins(regions_path).get(capture, {}) if regions_path.is_file() else {}
-    selected = select_panel_regions(images, saved, config['PANEL.percent_inner_area'],
-                                    config['PANEL.saturation_threshold'], saved_origins=origins)
+    images_folder = wf.resolve_path(root, config['INPUTS.images_folder'])
+    names = rct.list_capture_names(images_folder, config['INPUTS.file_pattern'])
+    preloaded = {}
+    for name in required:
+        print(f"Reading {name} ...", flush=True)
+        preloaded[name] = wf.read_capture_images(config, root, name)
+    saved = wf.load_panel_regions(regions_path) if regions_path.is_file() else {}
+    origins = wf.load_panel_origins(regions_path) if regions_path.is_file() else {}
+    selected = select_panel_regions(names, lambda name: wf.read_capture_images(config, root, name), required, saved,
+                                    origins, config['PANEL.percent_inner_area'], config['PANEL.saturation_threshold'],
+                                    preloaded=preloaded, current=first)
     if selected is None:
         print("Cancelled: nothing was saved.")
         return 1
     regions_path.parent.mkdir(parents=True, exist_ok=True)
-    wf.save_panel_regions(regions_path, capture, selected, selected.origins)
+    for name, result in selected.items():
+        wf.save_panel_regions(regions_path, name, result, result.origins)
     print(f"PANEL_REGIONS_JSON={regions_path.resolve()}")
     if config['PANEL.manual_regions_file'] == '':
         print("Set PANEL.manual_regions_file to this file in the configuration to use it.")

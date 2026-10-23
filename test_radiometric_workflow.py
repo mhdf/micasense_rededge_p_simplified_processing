@@ -269,6 +269,16 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             wf.detect_bands(wf.default_config(), ROOT, 'IMG_9999')
 
+    def test_a_second_panel_is_needed_to_use_two_panels(self):
+        for mode in ('mean', 'interpolate_time'):
+            config = wf.merge_config({'PANEL.panels_used': mode})
+            self.assertIn('there is no second panel capture', '\n'.join(wf.validate_config(config, ROOT)))
+            config = wf.merge_config({'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005'})
+            self.assertEqual(wf.validate_config(config, ROOT), [])
+        self.assertEqual(wf.validate_config(wf.merge_config({'PANEL.panels_used': 'first'}), ROOT), [])
+        self.assertIn('PANEL.panels_used must be one of', '\n'.join(wf.validate_config(
+            wf.merge_config({'PANEL.panels_used': 'last'}), ROOT)))
+
     def test_irradiance_series_changes_names_the_capture(self):
         series = {'Blue': [('c1', 100.0), ('c2', 101.0), ('c3', 150.0), ('c4', 100.0), ('c5', 100.0)],
                   'Green': [('c1', 100.0), ('c2', 100.0)],
@@ -480,6 +490,76 @@ class RunTests(unittest.TestCase):
         # the band comes from the metadata: file band5 is the Blue band, as IMG_0010_1.tif was
         self.assertTrue(np.array_equal(tifffile.imread(self.folder / 'renamed' / 'FLIGHT-0010-band5.TIF'),
                                        tifffile.imread(self.folder / 'panel_only' / 'IMG_0010_1.tif')))
+
+    def run_with_two_panels(self, name, mode, **changes):
+        values = {'INPUTS.reference_panel_capture_after': 'IMG_0005', 'PANEL.panels_used': mode}
+        values.update(changes)
+        return wf.run(config_for(self.folder / name, **values), ROOT)
+
+    def test_the_mean_of_two_equal_panels_gives_the_result_of_one(self):
+        result = self.run_with_two_panels('mean_panels', 'mean')
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertEqual(result['captures']['IMG_0010']['panels'], {'used': 'mean', 'weight_of_the_second_panel': 0.5})
+        for number in range(1, 7):
+            self.assertTrue(np.array_equal(tifffile.imread(self.folder / 'mean_panels' / f'IMG_0010_{number}.tif'),
+                                           tifffile.imread(self.folder / 'panel_only' / f'IMG_0010_{number}.tif')))
+        provenance = json.loads((self.folder / 'mean_panels' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        blue = provenance['bands'][0]
+        self.assertEqual(blue['second_panel_weight'], 0.5)
+        self.assertTrue(blue['second_panel_file'].endswith('IMG_0005_1.tif'))
+        self.assertEqual(blue['effective_factor'], blue['panel']['radiance_to_reflectance_factor'])
+
+    def test_the_mean_with_the_dls_uses_the_irradiance_of_each_panel(self):
+        result = self.run_with_two_panels('mean_dls', 'mean', **{'CORRECTION.use_dls': True})
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        for number in range(1, 7):
+            mean = tifffile.imread(self.folder / 'mean_dls' / f'IMG_0010_{number}.tif')
+            single = tifffile.imread(self.folder / 'dls' / f'IMG_0010_{number}.tif')
+            self.assertTrue(np.allclose(mean, single, rtol=1e-12, atol=0), number)
+
+    def test_the_first_panel_alone_is_still_the_default_and_leaves_the_second_for_the_comparison(self):
+        result = self.run_with_two_panels('first_panel', 'first')
+        self.assertEqual(result['captures']['IMG_0010']['panels'], {'used': 'first', 'weight_of_the_second_panel': 0.0})
+        self.assertIn('comparison', result['panel'])
+        provenance = json.loads((self.folder / 'first_panel' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertIsNone(provenance['bands'][0]['second_panel_file'])
+
+    def test_a_second_panel_that_is_not_used_when_there_is_only_one(self):
+        entry = self.panel_only['captures']['IMG_0010']
+        self.assertEqual(entry['panels'], {'used': 'first', 'weight_of_the_second_panel': 0.0})
+
+    def test_the_weight_follows_the_time_of_the_image_between_the_panels(self):
+        import exiftool
+        images = self.folder / 'later_panel_images'
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            shutil.copy(path, images / path.name)
+            if path.name.startswith('IMG_0005'):
+                shutil.copy(path, images / path.name.replace('IMG_0005', 'IMG_0007'))   # the panel again, "after the flight"
+        with exiftool.ExifToolHelper() as et:
+            for path in images.glob('IMG_0007_*.tif'):
+                et.execute('-overwrite_original', '-EXIF:DateTimeOriginal=2023:02:02 13:37:44', str(path))
+        result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'timed'),
+                         'INPUTS.reference_panel_capture': 'IMG_0005', 'INPUTS.reference_panel_capture_after': 'IMG_0007',
+                         'INPUTS.image_captures': 'IMG_0010', 'PANEL.panels_used': 'interpolate_time'}, ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        # IMG_0005 at 13:26:38, IMG_0010 at 13:30:11, IMG_0007 at 13:37:44: 213 s of 666 s
+        self.assertAlmostEqual(result['captures']['IMG_0010']['panels']['weight_of_the_second_panel'], 213 / 666)
+
+    def test_the_time_of_the_images_is_needed_to_interpolate(self):
+        original = wf._read_capture
+
+        def without_time(images_folder, name, bands, exiftool_path, *arguments):
+            objects = original(images_folder, name, bands, exiftool_path, *arguments)
+            if name == 'IMG_0010':
+                for image in objects.values():
+                    image.metadata['EXIF:DateTimeOriginal'] = None
+            return objects
+
+        with mock.patch.object(wf, '_read_capture', without_time):
+            result = self.run_with_two_panels('no_time', 'interpolate_time')
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('IMG_0010: EXIF:DateTimeOriginal', result['captures']['IMG_0010']['errors'][0])
 
     def test_progress_reports_the_stages_in_order(self):
         events = []

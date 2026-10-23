@@ -219,8 +219,9 @@ class WindowTests(unittest.TestCase):
         self.frame.set_value('INPUTS.results_folder', self.results('regions'))
         polygon = [[700, 200], [850, 200], [850, 320], [700, 320]]
         bands = list(wf.default_config()['PANEL.reflectance_by_band'])
-        selection = self.accepted({band: polygon for band in bands},
-                                  {band: ('accepted_automatic' if band != 'Blue' else 'edited') for band in bands})
+        selection = {'IMG_0005': self.accepted({band: polygon for band in bands},
+                                               {band: ('accepted_automatic' if band != 'Blue' else 'edited')
+                                                for band in bands})}
         with mock.patch('panel_selector.select_panel_regions', return_value=selection) as selector:
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
@@ -230,9 +231,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual((origins['Blue'], origins['Green']), ('edited', 'accepted_automatic'))
         self.assertEqual(self.frame.model.config()[0]['PANEL.manual_regions_file'], str(path))
         text = '\n'.join(self.frame.log_lines())
-        self.assertIn('Saved 6 accepted region(s)', text)
-        self.assertIn('5 as found from the QR code, 1 drawn or edited', text)
-        self.assertIn('Saved 6 accepted region(s)', self.frame.inputs_status.cget('text'))
+        self.assertIn('IMG_0005: 6 region(s), 5 as found from the QR code, 1 drawn or edited', text)
+        self.assertIn('Saved the accepted regions', self.frame.inputs_status.cget('text'))
         saved = json.loads(self.config_path.read_text(encoding='utf-8'))
         self.assertEqual(saved['PANEL.manual_regions_file'], str(path))
 
@@ -254,11 +254,33 @@ class WindowTests(unittest.TestCase):
         with mock.patch('panel_selector.select_panel_regions', return_value=None) as selector:
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
-        images, saved, percent, saturation = selector.call_args[0]
-        self.assertEqual(set(images), set(wf.default_config()['PANEL.reflectance_by_band']))
-        self.assertEqual(saved, {'Red': [[10, 10], [50, 10], [50, 50]]})
+        names, load, required, saved, origins, percent, saturation = selector.call_args[0]
+        self.assertEqual(names, ['IMG_0005', 'IMG_0010'])                         # the captures of the images folder
+        self.assertEqual(required, ['IMG_0005'])
+        self.assertEqual(saved, {'IMG_0005': {'Red': [[10, 10], [50, 10], [50, 50]]}})
+        self.assertEqual(origins, {'IMG_0005': {'Red': 'edited'}})
         self.assertEqual((percent, saturation), (0.6, 65000))
-        self.assertEqual(selector.call_args.kwargs['saved_origins'], {'Red': 'edited'})
+        preloaded = selector.call_args.kwargs['preloaded']
+        self.assertEqual(list(preloaded), ['IMG_0005'])
+        self.assertEqual(set(preloaded['IMG_0005']), set(wf.default_config()['PANEL.reflectance_by_band']))
+        other = load('IMG_0010')                                                  # the others are read when they are opened
+        self.assertEqual(set(other), set(preloaded['IMG_0005']))
+
+    def test_both_panel_captures_are_required_and_their_regions_are_saved(self):
+        self.frame.set_value('INPUTS.results_folder', self.results('two'))
+        self.frame.set_value('INPUTS.reference_panel_capture_after', 'IMG_0005')
+        polygon = [[700, 200], [850, 200], [850, 320], [700, 320]]
+        bands = list(wf.default_config()['PANEL.reflectance_by_band'])
+        selection = {name: self.accepted({band: polygon for band in bands}, {band: 'edited' for band in bands})
+                     for name in ('IMG_0005', 'IMG_0010')}
+        with mock.patch('panel_selector.select_panel_regions', return_value=selection) as selector:
+            self.frame.draw_regions()
+            self.pump(lambda: selector.called and not self.frame.running)
+        self.assertEqual(selector.call_args[0][2], ['IMG_0005'])                   # the same capture twice is one
+        path = Path(self.results('two')) / 'panel_regions.json'
+        self.assertEqual(sorted(wf.load_panel_regions(path)), ['IMG_0005', 'IMG_0010'])
+        self.assertEqual(wf.load_panel_origins(path)['IMG_0010']['Blue'], 'edited')
+        self.assertIn('IMG_0010: 6 region(s)', self.frame.inputs_status.cget('text'))
 
     # --- checking the inputs before the tool is opened ----------------------------------------------------------
 
@@ -687,6 +709,74 @@ class WindowTests(unittest.TestCase):
                     if child.winfo_class() == 'TLabel']
         self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Reference panel regions',
                                         'Captures to correct'])
+
+    def test_the_explanations_follow_the_width_of_the_page(self):
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.geometry('1000x760')
+        self.root.update()
+        self.assertGreater(len(self.frame.wrapped_labels), 20)
+        narrow = {int(label.cget('wraplength')) for label in self.frame.wrapped_labels}
+        self.assertEqual(len(narrow), 1)
+        self.root.geometry('1600x760')
+        self.root.update()
+        wide = {int(label.cget('wraplength')) for label in self.frame.wrapped_labels}
+        self.assertEqual(len(wide), 1)
+        self.assertGreater(wide.pop(), narrow.pop() + 400)
+        self.assertGreater(max(int(label.cget('wraplength')) for label in self.frame.wrapped_labels), 1200)
+
+    def test_the_help_of_a_field_uses_the_width_of_the_page_on_every_page(self):
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.geometry('1500x760')
+        self.root.update()
+        width = self.frame.content.winfo_width() - 100
+        for key in ('INPUTS.images_folder', 'CHECKS.jump_threshold', 'PANEL.panels_used'):
+            page = rw.page_of(key)
+            helps = [label for label in self.frame.wrapped_labels
+                     if label.cget('text') == next(f for f in wf.FIELDS if f['key'] == key)['help']]
+            self.assertEqual(len(helps), 1, key)
+            self.assertEqual(int(helps[0].cget('wraplength')), width, key)
+
+    def dls_labels(self):
+        return [child.cget('text') for child in self.frame.scroll_pages['CORRECTION'].body.winfo_children()
+                if child.winfo_class() == 'TLabel']
+
+    def test_the_dls_page_explains_the_ratio_and_where_the_zenith_comes_from(self):
+        texts = ' '.join(self.dls_labels())
+        for phrase in ('E_panel / E_image', 'XMP:HorizontalIrradiance', 'ratio of 0.885 means that the DLS measured 13 % more',
+                       'The ratio is 1 at the panel capture', 'XMP:EstimatedDirectLightVector',
+                       'XMP:SolarElevation, in radians', 'The solar zenith is 90 degrees minus the elevation',
+                       'at least the tilt of the DLS'):
+            self.assertIn(phrase, texts)
+        self.assertIn('Checks of the DLS data (limits)', self.dls_labels())
+
+    def test_each_part_of_the_dls_page_has_its_explanation_under_its_heading(self):
+        labels = self.dls_labels()
+        for group, start in (('Correction with the DLS', 'The DLS (downwelling light sensor)'),
+                             ('Checks of the DLS data (limits)', 'These checks look for DLS data')):
+            self.assertEqual(labels[labels.index(group) + 1][:len(start)], start)
+
+    def test_the_limits_say_what_they_mean(self):
+        helps = {field['key']: field['help'] for field in wf.FIELDS if field['key'].startswith(('CHECKS.', 'CORRECTION.'))}
+        self.assertIn('DLS ratio E_panel / E_image', helps['CORRECTION.use_dls'])
+        self.assertIn('median ratio', helps['CHECKS.band_ratio_tolerance'])
+        self.assertIn('twice as much', helps['CHECKS.ratio_range_min'])
+        self.assertIn('half as much', helps['CHECKS.ratio_range_max'])
+        self.assertIn('90 degrees minus XMP:SolarElevation', helps['CHECKS.max_sun_angle_discrepancy_deg'])
+        self.assertIn('spike', helps['CHECKS.jump_threshold'])
+        self.assertIn('step', helps['CHECKS.jump_threshold'])
+        self.assertIn('second panel captures', helps['CHECKS.panel_drift_tolerance'])
+
+    def test_the_use_of_two_panels_is_a_choice_in_the_panel_page(self):
+        self.assertTrue(self.inside(self.frame.entries['PANEL.panels_used'], 'PANEL'))
+        self.assertEqual(self.frame.entries['PANEL.panels_used'].winfo_class(), 'TCombobox')
+        self.assertEqual(list(self.frame.entries['PANEL.panels_used'].cget('values')), ['first', 'mean', 'interpolate_time'])
+        self.frame.set_value('PANEL.panels_used', 'mean')
+        _, problems = self.frame.problems()
+        self.assertTrue(any('no second panel capture' in problem for problem in problems))
+        self.frame.set_value('INPUTS.reference_panel_capture_after', 'IMG_0005')
+        self.assertEqual(self.frame.problems()[1], [])
 
     def test_the_frame_can_be_placed_inside_another_window(self):
         import tkinter as tk

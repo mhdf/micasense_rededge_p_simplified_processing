@@ -174,6 +174,103 @@ class PanelImagesMixin:
         return PanelImagesMixin._target
 
 
+class WrappedLinesTests(unittest.TestCase):
+
+    def test_text_is_wrapped_at_words(self):
+        self.assertEqual(ps.count_wrapped_lines(len, 'aaa bbb ccc', 20), 1)
+        self.assertEqual(ps.count_wrapped_lines(len, 'aaa bbb ccc', 7), 2)          # 'aaa bbb' / 'ccc'
+        self.assertEqual(ps.count_wrapped_lines(len, 'aaa bbb ccc', 3), 3)
+
+    def test_a_word_longer_than_the_width_takes_its_own_line_and_new_lines_count(self):
+        self.assertEqual(ps.count_wrapped_lines(len, 'a verylongword b', 5), 3)
+        self.assertEqual(ps.count_wrapped_lines(len, 'one\ntwo', 50), 2)
+        self.assertEqual(ps.count_wrapped_lines(len, '', 10), 1)
+
+
+class CaptureSetTests(PanelImagesMixin, unittest.TestCase):
+
+    def make(self, names=('IMG_0010', 'IMG_0005', 'IMG_0007'), required=('IMG_0005',), **kwargs):
+        self.loaded = []
+
+        def load(name):
+            self.loaded.append(name)
+            if name == 'BROKEN':
+                raise OSError('cannot read')
+            return self.panel_images() if name in ('IMG_0005', 'IMG_0007') else self.target_images()
+        return ps.CaptureSet(names, load, required, **kwargs)
+
+    def test_the_panel_captures_come_first_and_every_name_is_there_once(self):
+        captures = self.make(('IMG_0010', 'IMG_0005', 'IMG_0010'), ('IMG_0007', 'IMG_0005', 'IMG_0007'))
+        self.assertEqual(captures.names, ['IMG_0007', 'IMG_0005', 'IMG_0010'])
+        self.assertEqual(captures.required, ['IMG_0007', 'IMG_0005'])
+        self.assertEqual(captures.current, 'IMG_0007')
+
+    def test_a_required_capture_that_is_not_in_the_list_is_added(self):
+        self.assertEqual(self.make(('IMG_0010',), ('IMG_0005',)).names, ['IMG_0005', 'IMG_0010'])
+
+    def test_there_must_be_a_capture(self):
+        with self.assertRaises(ValueError):
+            ps.CaptureSet([], None)
+
+    def test_images_are_read_when_a_capture_is_opened_and_only_once(self):
+        captures = self.make()
+        self.assertEqual(self.loaded, [])
+        first = captures.session('IMG_0010')
+        self.assertIs(captures.session('IMG_0010'), first)
+        self.assertEqual(self.loaded, ['IMG_0010'])
+        self.assertEqual(captures.summary('IMG_0005'), 'not opened')
+        self.assertEqual(captures.summary('IMG_0010'), '0 of 6 accepted')
+
+    def test_images_that_were_read_already_are_used(self):
+        captures = self.make(preloaded={'IMG_0005': self.panel_images()})
+        captures.session('IMG_0005')
+        self.assertEqual(self.loaded, [])
+
+    def test_a_reading_error_is_raised_and_nothing_is_kept(self):
+        captures = self.make(('BROKEN', 'IMG_0005'))
+        with self.assertRaises(OSError):
+            captures.session('BROKEN')
+        self.assertNotIn('BROKEN', captures.sessions)
+
+    def test_a_capture_without_a_loader_cannot_be_opened(self):
+        with self.assertRaises(KeyError):
+            ps.CaptureSet(['a'], None).session('a')
+
+    def test_the_regions_saved_for_each_capture_are_applied_to_that_capture(self):
+        polygon = [[700, 200], [850, 200], [850, 320], [700, 320]]
+        captures = self.make(saved={'IMG_0005': {'Blue': polygon}}, saved_origins={'IMG_0005': {'Blue': 'edited'}})
+        self.assertEqual(captures.session('IMG_0005').state('Blue'), 'accepted')
+        self.assertEqual(captures.session('IMG_0007').state('Blue'), 'pending')
+        self.assertEqual(captures.summary('IMG_0005'), '1 of 6 accepted')
+
+    def test_the_panel_captures_must_be_accepted_before_saving(self):
+        captures = self.make(required=('IMG_0005', 'IMG_0007'))
+        self.assertEqual(captures.not_ready(), {'IMG_0005': None, 'IMG_0007': None})
+        captures.session('IMG_0005').accept_all_automatic()
+        self.assertEqual(captures.not_ready(), {'IMG_0007': None})
+        self.assertFalse(captures.is_ready())
+        captures.session('IMG_0007').accept('Blue')
+        self.assertEqual(captures.not_ready(), {'IMG_0007': BANDS[1:]})
+        captures.session('IMG_0007').accept_all_automatic()
+        self.assertTrue(captures.is_ready())
+
+    def test_only_the_captures_that_are_fully_accepted_are_in_the_result(self):
+        captures = self.make(required=('IMG_0005',))
+        captures.session('IMG_0005').accept_all_automatic()
+        captures.session('IMG_0007').accept('Blue')                    # not complete: left out
+        captures.session('IMG_0010')                                   # opened, nothing accepted
+        result = captures.result()
+        self.assertEqual(list(result), ['IMG_0005'])
+        self.assertEqual(list(result['IMG_0005']), BANDS)
+        self.assertEqual(set(result['IMG_0005'].origins.values()), {'accepted_automatic'})
+
+    def test_a_single_session_is_a_set_with_one_capture(self):
+        session = ps.SelectionSession(self.panel_images())
+        captures = ps.CaptureSet.single(session, 'IMG_0005')
+        self.assertIs(captures.session('IMG_0005'), session)
+        self.assertEqual((captures.names, captures.required, captures.current), (['IMG_0005'], ['IMG_0005'], 'IMG_0005'))
+
+
 class SelectionSessionTests(PanelImagesMixin, unittest.TestCase):
 
     def session(self, saved=None, origins=None):
@@ -392,7 +489,7 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         window.toggle_accept('Blue')
         window.finish()
         self.assertFalse(window.finished)
-        self.assertIn('Accept every band first', window.overview_message.cget('text'))
+        self.assertIn('Accept every band of the panel captures first', window.overview_message.cget('text'))
         self.assertIn('Green', window.overview_message.cget('text'))
 
     def test_the_regions_saved_before_are_shown_as_accepted(self):
@@ -579,6 +676,187 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         self.assertEqual(window.mode, 'overview')
         self.assertEqual(self.session.accepted_count(), 0)
 
+    # --- several captures ----------------------------------------------------------------------------------------
+
+    def open_captures(self, names=('IMG_0005', 'IMG_0007', 'IMG_0010'), required=('IMG_0005',), **kwargs):
+        """ A window on a set of captures: IMG_0005 and IMG_0007 show the panel, IMG_0010 does not """
+        self.root.destroy()
+        import tkinter as tk
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.loaded = []
+
+        def load(name):
+            self.loaded.append(name)
+            if name == 'BROKEN':
+                raise OSError('cannot read')
+            return self.panel_images() if name in ('IMG_0005', 'IMG_0007') else self.target_images()
+        self.captures = ps.CaptureSet(names, load, required, **kwargs)
+        self.window = ps.PanelSelectorWindow(self.root, self.captures)
+        self.session = self.window.session
+        self.root.geometry('1100x760')
+        self.root.update()
+
+    def test_the_capture_box_is_only_shown_when_there_is_more_than_one_capture(self):
+        self.assertEqual(self.window.capture_box.winfo_manager(), '')
+        self.open_captures()
+        self.assertEqual(self.window.capture_box.winfo_manager(), 'pack')
+        self.assertEqual(list(self.window.capture_box.cget('values')),
+                         ['IMG_0005  (panel, 0 of 6 accepted)', 'IMG_0007  (not opened)', 'IMG_0010  (not opened)'])
+        self.assertEqual(self.window.capture_var.get(), 'IMG_0005  (panel, 0 of 6 accepted)')
+
+    def test_another_capture_of_the_images_folder_can_be_chosen(self):
+        self.open_captures()
+        window = self.window
+        self.assertEqual(self.loaded, ['IMG_0005'])                           # the first capture is opened with the window
+        window.capture_var.set('IMG_0010  (not opened)')
+        window._on_capture_chosen()
+        self.assertEqual(self.captures.current, 'IMG_0010')
+        self.assertEqual(self.loaded, ['IMG_0005', 'IMG_0010'])
+        self.assertIs(window.session, self.captures.session('IMG_0010'))
+        self.assertEqual(window.tiles['Blue']['badge'].cget('text'), 'No region: use Edit')       # it has no panel
+        self.assertIn('IMG_0010: 0 of 6 bands accepted', window.overview_message.cget('text'))
+        self.assertEqual(window.capture_var.get(), 'IMG_0010  (0 of 6 accepted)')
+
+    def test_what_is_accepted_is_kept_for_each_capture(self):
+        self.open_captures()
+        window = self.window
+        window.accept_all()
+        self.assertTrue(window.switch_capture('IMG_0007'))
+        self.assertEqual(window.session.accepted_count(), 0)
+        window.toggle_accept('Green')
+        self.assertTrue(window.switch_capture('IMG_0005'))
+        self.assertEqual(window.session.accepted_count(), 6)
+        self.assertEqual(window.status_label.cget('text'), '6 of 6 bands accepted')
+        self.assertEqual(self.captures.session('IMG_0007').accepted_count(), 1)
+        self.assertIn('IMG_0007  (1 of 6 accepted)', window.capture_box.cget('values'))
+
+    def test_the_images_of_each_capture_are_shown_in_its_own_tiles(self):
+        self.open_captures()
+        window = self.window
+        window.switch_capture('IMG_0010')
+        window.switch_capture('IMG_0005')
+        self.assertEqual(window.tiles['Blue']['badge'].cget('text'), 'Not accepted (QR code)')
+        keys = set(window.display_cache)
+        self.assertIn(('IMG_0005', 'Blue'), keys)
+        self.assertIn(('IMG_0010', 'Blue'), keys)
+
+    def test_switching_from_the_editor_goes_to_the_overview(self):
+        self.open_captures()
+        window = self.window
+        window.edit_band('Blue')
+        self.assertTrue(window.switch_capture('IMG_0007'))
+        self.assertEqual(window.mode, 'overview')
+
+    def test_a_capture_that_cannot_be_read_is_reported_and_the_current_one_stays(self):
+        self.open_captures(('IMG_0005', 'BROKEN'))
+        window = self.window
+        self.assertFalse(window.switch_capture('BROKEN'))
+        self.assertEqual(self.captures.current, 'IMG_0005')
+        self.assertIn('BROKEN could not be opened: OSError: cannot read', window.overview_message.cget('text'))
+        self.assertEqual(window.capture_var.get(), 'IMG_0005  (panel, 0 of 6 accepted)')
+
+    def test_a_capture_with_other_bands_is_refused(self):
+        self.open_captures()
+        window = self.window
+        self.captures.sessions['IMG_0007'] = ps.SelectionSession({'Blue': self.panel_images()['Blue']})
+        self.assertFalse(window.switch_capture('IMG_0007'))
+        self.assertIn('has the bands', window.overview_message.cget('text'))
+
+    def test_two_panel_captures_must_both_be_accepted_before_saving(self):
+        self.open_captures(required=('IMG_0005', 'IMG_0007'))
+        window = self.window
+        window.accept_all()
+        self.assertTrue(window.overview_buttons['finish'].instate(['disabled']))
+        self.assertIn('Panel captures: IMG_0005 (6 of 6 accepted), IMG_0007 (not opened)',
+                      window.overview_message.cget('text'))
+        window.finish()
+        self.assertFalse(window.finished)
+        self.assertIn('IMG_0007: not opened', window.overview_message.cget('text'))
+        window.switch_capture('IMG_0007')
+        window.toggle_accept('Blue')
+        window.finish()
+        self.assertIn('IMG_0007: still to accept Green', window.overview_message.cget('text'))
+        window.accept_all()
+        self.assertFalse(window.overview_buttons['finish'].instate(['disabled']))
+        window.finish()
+        self.assertFalse(window.cancelled)
+        result = self.captures.result()
+        self.assertEqual(list(result), ['IMG_0005', 'IMG_0007'])
+        self.assertEqual(list(result['IMG_0007']), BANDS)
+
+    def test_a_capture_that_was_only_looked_at_does_not_stop_saving(self):
+        self.open_captures()
+        window = self.window
+        window.accept_all()
+        window.switch_capture('IMG_0010')                               # looked at, nothing accepted
+        self.assertFalse(window.overview_buttons['finish'].instate(['disabled']))
+        window.finish()
+        self.assertEqual(list(self.captures.result()), ['IMG_0005'])
+
+    def test_saved_regions_of_the_other_captures_are_shown_when_they_are_opened(self):
+        polygon = [[700, 200], [850, 200], [850, 320], [700, 320]]
+        self.open_captures(saved={'IMG_0007': {'Blue': polygon}}, saved_origins={'IMG_0007': {'Blue': 'edited'}})
+        window = self.window
+        window.switch_capture('IMG_0007')
+        self.assertEqual(window.tiles['Blue']['badge'].cget('text'), 'Accepted (edited)')
+        self.assertEqual(window.tiles['Green']['badge'].cget('text'), 'Not accepted (QR code)')
+
+    def test_pointing_at_the_capture_box_says_what_it_is(self):
+        self.open_captures()
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.update()
+        self.assertEqual(self.hover(self.window.capture_box), ps.HINTS['capture'])
+        self.assertIn('first one and the one after the flight', ps.HINTS['capture'])
+
+    # --- the explanation area ------------------------------------------------------------------------------------
+
+    def test_the_explanation_area_does_not_change_size_while_pointing_at_elements(self):
+        window = self.window
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.geometry('1100x760')
+        self.root.update()
+        window.edit_band('Blue')
+        self.root.update()
+        sizes = {(window.footer.winfo_height(), window.canvas.winfo_height(), window.canvas.winfo_width())}
+        for name, button in window.buttons.items():
+            self.hover(button)
+            self.root.update()
+            sizes.add((window.footer.winfo_height(), window.canvas.winfo_height(), window.canvas.winfo_width()))
+        self.hover(window.canvas)
+        sizes.add((window.footer.winfo_height(), window.canvas.winfo_height(), window.canvas.winfo_width()))
+        self.assertEqual(len(sizes), 1, sizes)
+
+    def test_the_area_has_the_height_of_the_longest_explanation_and_the_whole_width(self):
+        window = self.window
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.geometry('1000x700')
+        self.root.update()
+        wrap = window.footer.winfo_width() - 24
+        self.assertEqual(int(window.hint_label.cget('wraplength')), wrap)
+        self.assertEqual(window.footer.winfo_width(), self.root.winfo_width())              # all the width of the window
+        self.assertEqual(window.footer.winfo_height(), window.hint_height(wrap))
+        self.root.geometry('1060x700')                                                         # narrower: more lines
+        self.root.update()
+        narrow = window.footer.winfo_height()
+        self.root.geometry('1800x700')
+        self.root.update()
+        self.assertLess(window.footer.winfo_height(), narrow)
+
+    def test_the_longest_explanation_fits_in_the_area(self):
+        window = self.window
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.update()
+        longest = max(ps.HINTS.values(), key=len)
+        window.hint_label.configure(text=longest)
+        self.root.update()
+        self.assertLessEqual(window.hint_label.winfo_reqheight(), window.footer.winfo_height())
+        self.assertGreaterEqual(window.hint_label.winfo_height(), window.hint_label.winfo_reqheight() - 1)
+
     # --- what each element does ------------------------------------------------------------------------------
 
     def test_there_is_no_fixed_explanation_only_the_hint_of_the_element_under_the_mouse(self):
@@ -589,7 +867,7 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
 
     def test_every_button_and_image_has_a_hint(self):
         window = self.window
-        names = set(window.buttons) | set(window.overview_buttons) | {'canvas', 'tile_accept', 'tile_edit', 'tile_image'}
+        names = set(window.buttons) | set(window.overview_buttons) | {'canvas', 'tile_accept', 'tile_edit', 'tile_image', 'capture'}
         self.assertEqual(set(ps.HINTS), names)
         self.assertNotIn('skip', ps.HINTS)                                  # there is no separate automatic option
 

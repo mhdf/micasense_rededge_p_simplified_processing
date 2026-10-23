@@ -51,20 +51,17 @@ GROUP_NOTES = {
         "given as a value per band, in the table of the bands (above), or as the spectral curve of the panel, from which "
         "the value of each band is computed.",
     'Correction with the DLS':
-        "The panel photo gives the scale of the reflectance for the light at the moment it was taken. The DLS (downwelling "
-        "light sensor) measures the irradiance, the light arriving from the sky, so it tells how much the light changed "
-        "between the panel photo and each image. For each band: DLS ratio = E_panel / E_image, where E is read from "
-        "XMP:HorizontalIrradiance of the panel capture and of the band file of the image. Reflectance = reflectance from "
-        "the panel x DLS ratio. Example: 0.885 means that the light was 13 % stronger at the image than at the panel, so "
-        "the reflectance is multiplied by 0.885. Only the metadata of the image and of the panel capture is used.",
+        "The panel photo sets the reflectance scale for the light at that moment. The DLS measures the irradiance (the light "
+        "from the sky), so it shows how the light changed since then. For each band, DLS ratio = E_panel / E_image, with E "
+        "read from XMP:HorizontalIrradiance of the panel capture and of the image. Reflectance = reflectance from the panel "
+        "x ratio. Example: 0.885 means that the light was 13 % stronger at the image than at the panel, so the reflectance "
+        "is multiplied by 0.885. Only the metadata of the image and of the panel capture is used.",
     'Checks of the DLS data (limits)':
-        "These checks only raise flags; they never change the result. They use the DLS data of the image capture and of the "
-        "panel capture(s). Band ratio and plausible range: the ratio E_panel / E_image of the bands of a capture must be "
-        "almost the same (the light changes all the bands together) and credible. Sun angle: the DLS measures the "
-        "direction of the sunlight (XMP:EstimatedDirectLightVector); if it were level, that angle to its axis would equal "
-        "the solar zenith, 90 degrees minus XMP:SolarElevation. A large difference means a tilted DLS or inconsistent data "
-        "(checked in the panel capture and in the image capture). Jump: the irradiance of a band between consecutive "
-        "captures. Panel drift: the two panel captures against each other.",
+        "Flags only: they never change the result. They use the DLS data of the image and panel captures. Band ratio and "
+        "plausible range: the bands of a capture must have almost the same ratio, within a credible range. Sun angle: if "
+        "the DLS is level, the sun direction it measures (XMP:EstimatedDirectLightVector) matches the solar zenith, "
+        "90 degrees minus XMP:SolarElevation; a large difference means a tilted DLS or inconsistent data. Jump: change of "
+        "the irradiance between consecutive captures. Panel drift: the two panel captures against each other.",
 }
 
 FIELDS = [
@@ -90,25 +87,29 @@ FIELDS = [
      'label': 'Panel regions drawn by hand (optional)',
      'help': "json file written by the Draw panel regions tool. A band with a region there uses it instead of the "
              "region found from the QR code; the other bands are detected automatically."},
-    {'key': 'INPUTS.image_captures', 'group': 'Captures to correct', 'kind': 'text', 'default': '',
-     'label': 'Captures to correct', 'help': "Names separated by commas, or pick them from the images folder with Choose... Empty: all the other "
-                                                   "captures in the folder."},
-    {'key': 'INPUTS.file_pattern', 'group': 'Captures to correct', 'kind': 'text', 'default': rct.CAPTURE_FILE_PATTERN,
+    {'key': 'INPUTS.image_captures', 'group': 'Images to correct', 'kind': 'text', 'default': '',
+     'label': 'Select captures',
+     'help': "Names separated by commas, or chosen from the images folder with Select... Empty: all the captures of the "
+             "folder except the panel captures."},
+    {'key': 'INPUTS.file_pattern', 'group': 'Images to correct', 'kind': 'text', 'default': rct.CAPTURE_FILE_PATTERN,
      'label': 'File name pattern',
-     'help': "Regular expression for the names of the image files, with a group named capture (the name of the "
-             "capture, shared by the files of its bands) and, optionally, a group named index (the number of the "
-             "file). The band of each file is read from its metadata, not from its name."},
+     'help': "How the program tells which files belong to the same capture. The camera writes one file per band "
+             "(IMG_0005_1.tif ... IMG_0005_6.tif); this regular expression says which part of the name is the capture "
+             "(group capture) and, optionally, which is the number of the file (group index). The band itself is read from "
+             "the metadata, not from the name. Change it only if your files are named differently; Suggest from files "
+             "writes it from the names in the folder."},
     {'key': 'INPUTS.ignored_bands', 'kind': 'text', 'default': '',
      'label': 'Bands to ignore',
      'help': "Names (as written by the camera, XMP:BandName) separated by commas, of bands that are in the files but "
              "must not be processed, for example a thermal band."},
     {'key': 'PANEL.reflectance_source', 'kind': 'choice', 'choices': ['values', 'spectral_file'],
+     'labels': {'values': 'Values typed in the table of the bands', 'spectral_file': 'Spectral response file (.csv)'},
      'default': 'values', 'group': 'Reflectance of the panel',
      'label': 'Source of the panel reflectance',
-     'help': "values: the 'Panel reflectance' column of the table of the bands (above), typed by hand from the values "
-             "provided with the panel; the file below is not used. spectral_file: computed from the spectral response "
-             "file (.csv) of the panel, below, as the mean of the curve over the spectral window of each band; the "
-             "reflectance column of the table is not used then."},
+     'help': "Values typed in the table of the bands: the 'Panel reflectance' column of the table above, typed by hand "
+             "from the values provided with the panel (the file below is not used). Spectral response file: computed from "
+             "the .csv file of the panel, below, as the mean of the curve over the spectral window of each band (the "
+             "reflectance column of the table is not used then)."},
     {'key': 'PANEL.reflectance_by_band', 'kind': 'band_values', 'group': 'Reflectance of the panel', 'range': (0, 1),
      'default': {'Blue': 0.477, 'Green': 0.478, 'Panchro': 0.479, 'Red': 0.478, 'Red edge': 0.478, 'NIR': 0.477},
      'label': 'Panel reflectance by band', 'help': 'Values provided by Micasense with the reference panel. The band '
@@ -183,25 +184,22 @@ FIELDS = [
      'help': 'Multiply the reflectance of each band (Panchro included) by the DLS ratio E_panel / E_image. Off: panel '
              'only.'},
     {'key': 'CHECKS.band_ratio_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['band_ratio_tolerance'],
-     'label': 'Band ratio tolerance', 'help': 'Largest relative departure of the DLS ratio of a band from the median ratio of the bands (0.03 = 3 %).'},
+     'label': 'Band ratio tolerance', 'help': 'Largest departure of the DLS ratio of a band from the median ratio of the bands (0.03 = 3 %).'},
     {'key': 'CHECKS.ratio_range_min', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['ratio_range'][0],
-     'label': 'Smallest plausible DLS ratio', 'help': 'A DLS ratio below this value is flagged: the image would have more than 1 / value times the light of '
-             'the panel (0.5 = twice as much).'},
+     'label': 'Smallest plausible DLS ratio', 'help': 'Ratios below this are flagged: the image would have more light than the panel (0.5 = twice as much).'},
     {'key': 'CHECKS.ratio_range_max', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['ratio_range'][1],
-     'label': 'Largest plausible DLS ratio', 'help': 'A DLS ratio above this value is flagged: the image would have less than 1 / value times the light of '
-             'the panel (2 = half as much).'},
+     'label': 'Largest plausible DLS ratio', 'help': 'Ratios above this are flagged: the image would have less light than the panel (2 = half as much).'},
     {'key': 'CHECKS.max_sun_angle_discrepancy_deg', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
      'default': rct.DLS_CHECKS['max_sun_angle_discrepancy_deg'],
      'label': 'Largest sun angle discrepancy (deg)',
-     'help': 'Degrees. Difference between the angle of the sunlight seen by the DLS and the solar zenith (90 degrees '
-             'minus XMP:SolarElevation): the DLS was tilted at least that much, or the angles are inconsistent.'},
+     'help': 'Degrees. Largest difference between the sun angle seen by the DLS and the solar zenith (90 degrees minus '
+             'XMP:SolarElevation).'},
     {'key': 'CHECKS.jump_threshold', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['jump_threshold'],
-     'label': 'Irradiance jump threshold', 'help': 'Relative change (0.1 = 10 %) of the irradiance of a band between two consecutive captures that is '
-             'reported: a spike if it comes back (one capture, for example a shaded or tilted DLS), a step if it stays '
-             '(for example a cloud).'},
+     'label': 'Irradiance jump threshold', 'help': 'Change (0.1 = 10 %) of the irradiance of a band between consecutive captures that is reported: a spike '
+             'if it comes back, a step if it stays (a cloud, for example).'},
     {'key': 'CHECKS.panel_drift_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['panel_drift_tolerance'],
-     'label': 'Panel drift tolerance', 'help': 'Largest relative change (0.05 = 5 %) between the first and the second panel captures of the panel factor '
-             'of a band, and of the DLS irradiance relative to the irradiance estimated from the panel.'},
+     'label': 'Panel drift tolerance', 'help': 'Largest change (0.05 = 5 %) between the first and the second panel captures of the panel factor of a '
+             'band and of the DLS irradiance relative to the irradiance estimated from the panel.'},
 ]
 
 FIELD_KEYS = [field['key'] for field in FIELDS]

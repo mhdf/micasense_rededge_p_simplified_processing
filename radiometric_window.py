@@ -43,6 +43,7 @@ SECTIONS = [('INPUTS', 'Inputs'), ('PANEL', 'Reference panel'), ('CORRECTION', '
 
 # The keys whose prefix is one of these are shown in the page (the DLS page has the correction and its checks), and
 # the keys that are shown in another page than their prefix says
+PAGE_TITLES = {'CORRECTION': 'DLS (Downwelling Light Sensor)'}          # where it is not the title in the list of pages
 PAGE_PREFIXES = {'CORRECTION': ('CORRECTION', 'CHECKS')}
 FIELD_PAGE = {'PANEL.manual_regions_file': 'INPUTS'}
 
@@ -279,7 +280,7 @@ class RadiometricFrame:
                 self.scroll_pages[prefix] = scrolling
                 self.pages[prefix] = scrolling.widget
                 page = scrolling.body
-            ttk.Label(page, text=title, style='Title.TLabel').pack(anchor='w', pady=(0, 10))
+            ttk.Label(page, text=PAGE_TITLES.get(prefix, title), style='Title.TLabel').pack(anchor='w', pady=(0, 10))
             if prefix == 'RUN':
                 self._build_run_page(page)
             else:
@@ -309,15 +310,17 @@ class RadiometricFrame:
         self.band_buttons['detect'] = ttk.Button(tools, text='Detect from capture', command=self.detect_bands)
         self.band_buttons['add'].pack(side='left')
         self.band_buttons['detect'].pack(side='left', padx=(6, 0))
-        ttk.Label(tools, text='Camera preset', style='Muted.TLabel').pack(side='left', padx=(18, 6))
+        preset_line = ttk.Frame(page)                         # its own line: the descriptions of the presets are long
+        preset_line.pack(fill='x', pady=(8, 0))
+        ttk.Label(preset_line, text='Camera preset', style='Muted.TLabel').pack(side='left', padx=(0, 6))
         self.preset_labels = {preset['label']: key for key, preset in sorted(self.presets.items(),
                                                                               key=lambda item: item[1]['label'])}
         self.preset_var = tk.StringVar()
-        self.preset_box = ttk.Combobox(tools, textvariable=self.preset_var, values=list(self.preset_labels),
-                                       state='readonly', width=34)
-        self.preset_box.pack(side='left')
-        self.band_buttons['preset'] = ttk.Button(tools, text='Apply preset', command=self.apply_selected_preset)
-        self.band_buttons['preset'].pack(side='left', padx=(6, 0))
+        self.band_buttons['preset'] = ttk.Button(preset_line, text='Apply preset', command=self.apply_selected_preset)
+        self.band_buttons['preset'].pack(side='right', padx=(6, 0))
+        self.preset_box = ttk.Combobox(preset_line, textvariable=self.preset_var, values=list(self.preset_labels),
+                                       state='readonly')
+        self.preset_box.pack(side='left', fill='x', expand=True)
         self.band_info = ttk.Label(page, text='', style='Muted.TLabel', wraplength=900, justify='left')
         self.band_info.pack(anchor='w', pady=(6, 0))
         if self.preset_problems:
@@ -382,7 +385,17 @@ class RadiometricFrame:
                 line = ttk.Frame(row)
                 line.pack(fill='x', pady=(3, 0))
                 variable = tk.StringVar(value=self.model.get(key))
-                if kind == 'choice':
+                if kind == 'choice' and field.get('labels'):      # a list of descriptions that stands for the stored names
+                    labels = field['labels']
+                    shown = tk.StringVar(value=labels[variable.get()] if variable.get() in labels else variable.get())
+                    entry = ttk.Combobox(line, textvariable=shown, values=[labels[name] for name in field['choices']],
+                                         state='readonly', width=38)
+                    names = {label: name for name, label in labels.items()}
+                    shown.trace_add('write', lambda *_, shown=shown, variable=variable, names=names:
+                                    variable.set(names.get(shown.get(), shown.get())))
+                    variable.trace_add('write', lambda *_, shown=shown, variable=variable, labels=labels:
+                                       shown.set(labels.get(variable.get(), variable.get())))
+                elif kind == 'choice':
                     entry = ttk.Combobox(line, textvariable=variable, values=field['choices'], state='readonly',
                                          width=18)
                 elif key in CAPTURE_KEYS:                     # typed, or chosen among the captures of the folder
@@ -399,12 +412,15 @@ class RadiometricFrame:
                         importer.pack(side='left', padx=(6, 0))
                         self.source_widgets['spectral_file'].extend([entry, browse, importer])
                 if key == 'INPUTS.image_captures':
-                    ttk.Button(line, text='Choose...', command=self.choose_captures).pack(side='left', padx=(6, 0))
+                    ttk.Button(line, text='Select...', command=self.choose_captures).pack(side='left', padx=(6, 0))
                 if key == 'INPUTS.file_pattern':
                     ttk.Button(line, text='Suggest from files', command=self.suggest_pattern).pack(side='left', padx=(6, 0))
                 variable.trace_add('write', lambda *_, key=key, variable=variable: self._changed(key, variable.get()))
                 self.variables[key], self.entries[key] = variable, entry
         ttk.Label(row, text=field['help'], style='Muted.TLabel', wraplength=760, justify='left').pack(anchor='w')
+        if key == 'INPUTS.image_captures':
+            self.captures_summary = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
+            self.captures_summary.pack(anchor='w', pady=(3, 0))
         if key == 'INPUTS.file_pattern':
             self.pattern_preview = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
             self.pattern_preview.pack(anchor='w', pady=(3, 0))
@@ -562,7 +578,7 @@ class RadiometricFrame:
             return
         chosen = pick_names(self.parent.winfo_toplevel(), names, wf.capture_names(self.model.get('INPUTS.image_captures')))
         if chosen is not None:
-            self.set_value('INPUTS.image_captures', '' if len(chosen) == len(names) else ', '.join(chosen))
+            self.set_value('INPUTS.image_captures', ', '.join(chosen))
 
     def suggest_pattern(self):
         folder = wf.resolve_path(self.root_folder, self.model.get('INPUTS.images_folder'))
@@ -577,9 +593,29 @@ class RadiometricFrame:
         self.set_value('INPUTS.file_pattern', pattern)
         self.log(f"File name pattern suggested from the files of the images folder: {pattern}")
 
+    def _update_captures_summary(self):
+        """ Say which captures will be corrected (the typed ones, or all but the panel captures when the field is empty) """
+        if not hasattr(self, 'captures_summary'):
+            return
+        typed = wf.capture_names(self.model.get('INPUTS.image_captures'))
+        available = self.capture_names()
+        panels = {self.model.get('INPUTS.reference_panel_capture').strip(),
+                  self.model.get('INPUTS.reference_panel_capture_after').strip()}
+        if typed:
+            missing = [name for name in typed if name not in available]
+            text = f"{len(typed)} capture(s) will be corrected: {', '.join(typed)}."
+            if missing:
+                text += f" Not found in the images folder: {', '.join(missing)}."
+        else:
+            others = [name for name in available if name not in panels]
+            text = (f"All the other captures of the folder will be corrected ({len(others)}): {', '.join(others)}."
+                    if others else 'There are no captures to correct in the images folder.')
+        self.captures_summary.configure(text=text, style='Muted.TLabel')
+
     def _update_pattern_preview(self):
         """ Show how the file name pattern reads the files of the images folder """
         self.preview_after = None
+        self._update_captures_summary()
         if not hasattr(self, 'pattern_preview'):
             return
         pattern = self.model.get('INPUTS.file_pattern')
@@ -606,7 +642,8 @@ class RadiometricFrame:
                                        style='Muted.TLabel' if info['matched'] else 'Error.TLabel')
 
     def _after_change(self, key):
-        if key in ('INPUTS.images_folder', 'INPUTS.file_pattern'):
+        if key in ('INPUTS.images_folder', 'INPUTS.file_pattern', 'INPUTS.image_captures', 'INPUTS.reference_panel_capture',
+                   'INPUTS.reference_panel_capture_after'):
             if getattr(self, 'preview_after', None) is not None:
                 self.parent.after_cancel(self.preview_after)
             self.preview_after = self.parent.after(400, self._update_pattern_preview)
@@ -953,8 +990,7 @@ class RadiometricFrame:
                                                             config['INPUTS.reference_panel_capture_after'].strip())
                                           if name))
             preloaded = {name: wf.read_capture_images(config, self.root_folder, name) for name in required}
-            names = rct.list_capture_names(wf.resolve_path(self.root_folder, config['INPUTS.images_folder']),
-                                           config['INPUTS.file_pattern'])
+            names = list(required)                                   # the regions are only needed for the panel captures
             path = self.regions_path(config)
             saved = wf.load_panel_regions(path) if path.is_file() else {}
             origins = wf.load_panel_origins(path) if path.is_file() else {}

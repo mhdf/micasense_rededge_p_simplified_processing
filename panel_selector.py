@@ -54,10 +54,9 @@ HINTS = {
               "above are the pixels, the saturated pixels and the variation (std / mean) inside the polygon: lower means "
               "a more uniform panel.",
     # --- both views
-    'capture': "Capture: choose which capture of the images folder to look at. The panel captures of the configuration (the "
-               "first one and the one after the flight, if there is one) come first and all their bands must be accepted "
-               "before saving; any other capture is saved only if all its bands are accepted. What you accepted is kept "
-               "for each capture while you switch.",
+    'capture': "Capture: choose which panel capture to look at (the first one and the one after the flight, if there is "
+               "one). All their bands must be accepted before saving. What you accepted is kept for each capture while "
+               "you switch.",
     # --- overview
     'accept_all': "Accept all automatic regions: for every band that is not accepted yet, accept the region found from the "
                   "QR code (yellow outline). Bands without one are left for you to draw with Edit. Look at the outlines "

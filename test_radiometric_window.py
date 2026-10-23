@@ -255,7 +255,7 @@ class WindowTests(unittest.TestCase):
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
         names, load, required, saved, origins, percent, saturation = selector.call_args[0]
-        self.assertEqual(names, ['IMG_0005', 'IMG_0010'])                         # the captures of the images folder
+        self.assertEqual(names, ['IMG_0005'])                                     # only the panel captures are listed
         self.assertEqual(required, ['IMG_0005'])
         self.assertEqual(saved, {'IMG_0005': {'Red': [[10, 10], [50, 10], [50, 50]]}})
         self.assertEqual(origins, {'IMG_0005': {'Red': 'edited'}})
@@ -677,6 +677,8 @@ class WindowTests(unittest.TestCase):
     def test_the_dls_correction_and_its_checks_are_one_page(self):
         titles = [self.frame.navigation.get(index).strip() for index in range(self.frame.navigation.size())]
         self.assertEqual(titles, ['Inputs', 'Reference panel', 'DLS', 'Run and results'])
+        self.assertEqual(self.frame.scroll_pages['CORRECTION'].body.winfo_children()[0].cget('text'),
+                         'DLS (Downwelling Light Sensor)')
         keys = ['CORRECTION.use_dls'] + [field['key'] for field in wf.FIELDS if field['key'].startswith('CHECKS.')]
         self.assertEqual(len(keys), 7)
         for key in keys:
@@ -708,7 +710,7 @@ class WindowTests(unittest.TestCase):
         headings = [child.cget('text') for child in self.frame.scroll_pages['INPUTS'].body.winfo_children()
                     if child.winfo_class() == 'TLabel']
         self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Reference panel regions',
-                                        'Captures to correct'])
+                                        'Images to correct'])
 
     def test_the_explanations_follow_the_width_of_the_page(self):
         self.root.attributes('-alpha', 0.0)
@@ -753,8 +755,8 @@ class WindowTests(unittest.TestCase):
 
     def test_each_part_of_the_dls_page_has_its_explanation_under_its_heading(self):
         labels = self.dls_labels()
-        for group, start in (('Correction with the DLS', 'The panel photo gives the scale'),
-                             ('Checks of the DLS data (limits)', 'These checks only raise flags')):
+        for group, start in (('Correction with the DLS', 'The panel photo sets the reflectance scale'),
+                             ('Checks of the DLS data (limits)', 'Flags only')):
             self.assertEqual(labels[labels.index(group) + 1][:len(start)], start)
 
     def test_the_limits_say_what_they_mean(self):
@@ -810,7 +812,7 @@ class CaptureChoiceTests(unittest.TestCase):
             self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
             self.frame.choose_captures()
         self.assertEqual(picker.call_args[0][1], ['IMG_0010'])             # the panel capture is not offered
-        self.assertEqual(self.frame.model.get('INPUTS.image_captures'), '')  # all the others: empty
+        self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')      # shown in the field, even if it is all
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0001')
         with mock.patch.object(rw, 'pick_names', return_value=['IMG_0010']):
             self.frame.choose_captures()
@@ -818,6 +820,16 @@ class CaptureChoiceTests(unittest.TestCase):
         with mock.patch.object(rw, 'pick_names', return_value=None):
             self.frame.choose_captures()
         self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')
+        self.frame._update_captures_summary()
+        self.assertEqual(self.frame.captures_summary.cget('text'), '1 capture(s) will be corrected: IMG_0010.')
+        self.frame.set_value('INPUTS.image_captures', 'IMG_0010, IMG_7')
+        self.frame._update_captures_summary()
+        self.assertIn('Not found in the images folder: IMG_7', self.frame.captures_summary.cget('text'))
+        self.frame.set_value('INPUTS.image_captures', '')
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
+        self.frame._update_captures_summary()
+        self.assertEqual(self.frame.captures_summary.cget('text'),
+                         'All the other captures of the folder will be corrected (1): IMG_0010.')
 
     def test_the_pattern_preview_and_the_suggestion(self):
         self.frame._update_pattern_preview()
@@ -833,6 +845,19 @@ class CaptureChoiceTests(unittest.TestCase):
         self.frame.set_value('INPUTS.file_pattern', '(unclosed')
         self.frame._update_pattern_preview()
         self.assertIn('not a valid regular expression', self.frame.pattern_preview.cget('text'))
+
+
+    def test_the_source_of_the_panel_reflectance_is_a_dropdown_of_descriptions(self):
+        box = self.frame.entries['PANEL.reflectance_source']
+        self.assertEqual(box.winfo_class(), 'TCombobox')
+        self.assertEqual(list(box.cget('values')), ['Values typed in the table of the bands', 'Spectral response file (.csv)'])
+        self.assertEqual(box.get(), 'Values typed in the table of the bands')
+        box.set('Spectral response file (.csv)')                                    # the stored name is what the program uses
+        self.assertEqual(self.frame.model.get('PANEL.reflectance_source'), 'spectral_file')
+        self.frame.set_value('PANEL.reflectance_source', 'values')
+        self.assertEqual(box.get(), 'Values typed in the table of the bands')
+        self.frame.variables['PANEL.reflectance_source'].set('spectral_file')
+        self.assertEqual(box.get(), 'Spectral response file (.csv)')
 
 
 if __name__ == '__main__':

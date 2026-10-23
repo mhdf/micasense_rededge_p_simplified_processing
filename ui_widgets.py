@@ -259,7 +259,7 @@ class BandTable:
                 widget.state(['disabled'] if disabled else ['!disabled'])
 
 
-def pick_names(parent, names, selected=(), title='Choose captures'):
+def pick_names(parent, names, selected=(), title='Select captures'):
     """
     A modal list in which several of the names can be selected (click, ctrl-click, shift-click)
     Inputs: the names to show and those that start selected
@@ -272,7 +272,7 @@ def pick_names(parent, names, selected=(), title='Choose captures'):
     window.configure(background=COLORS['background'])
     window.transient(parent)
     outcome = {'value': None}
-    ttk.Label(window, text='Select the captures to correct. Selecting all of them is the same as leaving the field empty.',
+    ttk.Label(window, text='Select the captures to correct (ctrl-click or shift-click for several).',
               style='Muted.TLabel').pack(anchor='w', padx=12, pady=(12, 6))
     holder = ttk.Frame(window)
     holder.pack(fill='both', expand=True, padx=12)

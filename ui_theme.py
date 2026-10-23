@@ -83,11 +83,12 @@ def apply_dark_theme(root):
     style.configure('Error.TLabel', foreground=c['error'])
     style.configure('Ok.TLabel', foreground=c['ok'])
     style.configure('TButton', background=c['input'], foreground=c['foreground'], bordercolor=c['border'],
-                    lightcolor=c['input'], darkcolor=c['input'], padding=(10, 4), font=FONT)
+                    lightcolor=c['input'], darkcolor=c['input'], padding=(10, 1), font=FONT)
     style.map('TButton', background=[('active', c['accent']), ('disabled', c['panel'])],
               foreground=[('disabled', c['disabled'])])
-    style.configure('TEntry', fieldbackground=c['input'], foreground=c['foreground'], bordercolor=c['border'],
-                    lightcolor=c['input'], darkcolor=c['input'], insertcolor=c['foreground'], padding=3)
+    style.configure('TEntry', background=c['background'], fieldbackground=c['input'], foreground=c['foreground'],
+                    bordercolor=c['border'],
+                    lightcolor=c['input'], darkcolor=c['input'], insertcolor=c['foreground'], padding=(3, 3, 3, 4))
     style.map('TEntry', fieldbackground=[('disabled', c['panel'])], foreground=[('disabled', c['disabled'])])
     style.configure('Invalid.TEntry', fieldbackground='#6b3f36')
     style.configure('TCheckbutton', background=c['background'], foreground=c['foreground'], font=FONT)
@@ -98,7 +99,7 @@ def apply_dark_theme(root):
                     arrowcolor=c['foreground'])
     style.configure('TCombobox', fieldbackground=c['input'], background=c['input'], foreground=c['foreground'],
                     arrowcolor=c['foreground'], bordercolor=c['border'], lightcolor=c['input'], darkcolor=c['input'],
-                    selectbackground=c['input'], selectforeground=c['foreground'], padding=3)
+                    selectbackground=c['input'], selectforeground=c['foreground'], padding=(3, 3, 3, 4))
     style.map('TCombobox', fieldbackground=[('readonly', c['input']), ('disabled', c['panel'])],
               foreground=[('disabled', c['disabled'])], selectbackground=[('readonly', c['input'])],
               selectforeground=[('readonly', c['foreground'])])

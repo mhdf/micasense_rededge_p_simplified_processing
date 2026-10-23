@@ -105,7 +105,7 @@ class ScrollablePage:
         self.widget = ttk.Frame(parent)
         self.canvas = tk.Canvas(self.widget, highlightthickness=0, borderwidth=0, background=COLORS['background'])
         self.scrollbar = ttk.Scrollbar(self.widget, orient='vertical', command=self.canvas.yview)
-        self.body = ttk.Frame(self.canvas)
+        self.body = ttk.Frame(self.canvas, padding=(0, 0, 18, 0))          # room before the scroll bar
         self.window_id = self.canvas.create_window((0, 0), window=self.body, anchor='nw')
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.pack(side='left', fill='both', expand=True)

@@ -238,11 +238,11 @@ class RadiometricFrame:
         tk, ttk = self.tk, self.ttk
         bottom = ttk.Frame(self.widget, padding=(12, 6, 12, 10))
         bottom.pack(side='bottom', fill='x')
-        self.status = ttk.Label(bottom, style='Muted.TLabel', text=f"Configuration file: {self.config_path}")
-        self.status.pack(side='left')
         ttk.Button(bottom, text='Save configuration', command=self.save).pack(side='right')
         ttk.Button(bottom, text='Save profile...', command=self.save_profile_as).pack(side='right', padx=(0, 6))
         ttk.Button(bottom, text='Load profile...', command=self.load_profile_from).pack(side='right', padx=(0, 6))
+        self.status = ttk.Label(bottom, style='Muted.TLabel', text=f"Configuration file: {self.config_path}")
+        self.status.pack(side='left')                       # packed last: a long path gives way to the buttons
 
         body = ttk.Frame(self.widget)
         body.pack(fill='both', expand=True)
@@ -286,8 +286,8 @@ class RadiometricFrame:
         ttk.Label(page, style='Muted.TLabel', wraplength=760, justify='left',
                   text="One row per band. The names must be those written by the camera (XMP:BandName). A band that is "
                        "not used is in the files but is left out of the processing, for example a thermal band. "
-                       "The panel reflectance is the value printed on the panel; it is typed only when the source of the "
-                       "reflectance (below) is 'values'.").pack(anchor='w', pady=(0, 6))
+                       "The panel reflectance is the value provided with the panel for each band (see the reflectance of "
+                       "the panel, below); it is typed here only when its source is 'values'.").pack(anchor='w', pady=(0, 6))
         self.band_table = BandTable(page, self._table_changed)
         self.band_table.widget.pack(anchor='w')
         tools = ttk.Frame(page)
@@ -302,7 +302,7 @@ class RadiometricFrame:
                                                                               key=lambda item: item[1]['label'])}
         self.preset_var = tk.StringVar()
         self.preset_box = ttk.Combobox(tools, textvariable=self.preset_var, values=list(self.preset_labels),
-                                       state='readonly', width=52)
+                                       state='readonly', width=34)
         self.preset_box.pack(side='left')
         self.band_buttons['preset'] = ttk.Button(tools, text='Apply preset', command=self.apply_selected_preset)
         self.band_buttons['preset'].pack(side='left', padx=(6, 0))

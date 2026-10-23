@@ -8,6 +8,8 @@ All functions are derived from the original [Micasense image processing reposito
 
 For processing, it is only required the path and metadata for the images and for the reference panel. Images metadata can be extracted for example using [ExifTool](https://exiftool.org/). The only caution needed here is to maintain the same field labels adopted in the original Exif information.
 
+**ExifTool must be installed before running.** The metadata (bands, panel QR code, DLS irradiance) is read with ExifTool, a separate program, through the Python package ```pyexiftool``` (```pip install pyexiftool```; both are needed). On Windows, download the "Windows Executable" from [exiftool.org](https://exiftool.org/), rename ```exiftool(-k).exe``` to ```exiftool.exe``` and keep it next to its ```exiftool_files``` folder. The program is found in this order: the ```INPUTS.exiftool_path``` field of the configuration (the "ExifTool executable" field of the window), the environment variable ```exiftoolpath```, the system PATH (it is enough that ```exiftool -ver``` works in a terminal). The field is only needed when it is not found by itself.
+
 An example of how the pre-processing would work in practice is presented below. It processes the example images in this repository (```images/raw```): the capture ```IMG_0005``` shows the reference panel and ```IMG_0010``` is the capture to be corrected.
 
 First, lets import the required libraries and module.

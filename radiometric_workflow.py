@@ -42,6 +42,14 @@ BAND_NAMES = ('Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR')
 # window and 'dialog' marks the keys that the window edits in a dialog instead of on the page
 # What the groups of fields of the window are about (the window shows them under the heading of the group)
 GROUP_NOTES = {
+    'Reflectance of the panel':
+        "The reference panel is a flat surface that reflects a known fraction of the light that reaches it, band by band "
+        "(for example 0.478 in the green band: it reflects 47.8 % of it). That known value is what turns the camera "
+        "readings into reflectance: the reflectance of a pixel is its radiance divided by the radiance of the panel, "
+        "multiplied by the reflectance of the panel in that band. It is provided by the manufacturer with each panel "
+        "(printed on it, and as a spectral curve file), and it changes a little between panels and with age. It can be "
+        "given as a value per band, in the table of the bands (above), or as the spectral curve of the panel, from which "
+        "the value of each band is computed.",
     'Correction with the DLS':
         "The DLS (downwelling light sensor) measures, for each band, the irradiance on a horizontal surface: the light that "
         "arrives from the sky. The DLS ratio of a band is E_panel / E_image: the irradiance that the DLS measured when the "
@@ -70,13 +78,19 @@ FIELDS = [
     {'key': 'INPUTS.results_folder', 'group': 'Folders and tools', 'kind': 'folder', 'default': 'results/reflectance',
      'label': 'Results folder', 'help': 'Folder for the reflectance images, the provenance records and the result file.'},
     {'key': 'INPUTS.exiftool_path', 'group': 'Folders and tools', 'kind': 'file', 'default': '',
-     'label': 'ExifTool executable', 'help': 'Empty: use the environment variable exiftoolpath or the system PATH.'},
+     'label': 'ExifTool executable',
+     'help': "ExifTool is a separate program (exiftool.org) that reads the metadata of the images: the bands, the panel "
+             "QR code, the DLS irradiance. It must be installed before the correction can run, but this field is only "
+             "needed if it is not found by itself. Empty: the environment variable exiftoolpath, else the system PATH "
+             "(so it is enough that 'exiftool' works in a terminal). On Windows download the 'Windows Executable', "
+             "rename exiftool(-k).exe to exiftool.exe and keep it with its exiftool_files folder, then choose it here "
+             "or add its folder to the PATH. The Python package pyexiftool must be installed as well."},
     {'key': 'INPUTS.reference_panel_capture', 'group': 'Reference panel', 'kind': 'text', 'default': 'IMG_0005',
      'label': 'Reference panel capture', 'help': 'Name of the capture that shows the reference panel, e.g. IMG_0005.'},
     {'key': 'INPUTS.reference_panel_capture_after', 'group': 'Reference panel', 'kind': 'text', 'default': '',
      'label': 'Second panel capture (optional)',
-     'help': 'Panel captured at the end of the flight. It is only compared with the first one; the first is used '
-             'for the correction.'},
+     'help': "Panel captured at the end of the flight. It is always compared with the first one; whether it also "
+             "calibrates the images is chosen in 'Panels used when there are two' (Reference panel page)."},
     {'key': 'PANEL.manual_regions_file', 'kind': 'file', 'default': '', 'group': 'Reference panel regions',
      'label': 'Panel regions drawn by hand (optional)',
      'help': "json file written by the Draw panel regions tool. A band with a region there uses it instead of the "
@@ -95,68 +109,68 @@ FIELDS = [
     {'key': 'PANEL.reflectance_source', 'kind': 'choice', 'choices': ['values', 'spectral_file'],
      'default': 'values', 'group': 'Reflectance of the panel',
      'label': 'Source of the panel reflectance',
-     'help': "values: the reflectance of each band typed below (printed on the panel). spectral_file: computed from "
-             "the spectral response file (.csv) of the panel, below."},
+     'help': "values: the 'Panel reflectance' column of the table of the bands (above), typed by hand from the values "
+             "provided with the panel; the file below is not used. spectral_file: computed from the spectral response "
+             "file (.csv) of the panel, below, as the mean of the curve over the spectral window of each band; the "
+             "reflectance column of the table is not used then."},
     {'key': 'PANEL.reflectance_by_band', 'kind': 'band_values', 'group': 'Reflectance of the panel', 'range': (0, 1),
      'default': {'Blue': 0.477, 'Green': 0.478, 'Panchro': 0.479, 'Red': 0.478, 'Red edge': 0.478, 'NIR': 0.477},
      'label': 'Panel reflectance by band', 'help': 'Values provided by Micasense with the reference panel. The band '
                                                     'names must be those written by the camera (XMP:BandName).'},
-    {'key': 'PANEL.spectral_file', 'kind': 'file', 'default': '', 'group': 'Spectral response file (.csv)',
+    {'key': 'PANEL.spectral_file', 'kind': 'file', 'default': '', 'group': 'Reflectance of the panel',
      'label': 'Spectral response file',
      'help': 'Reflectance of the panel by wavelength (.csv). Use Import / preview to choose how to read it.'},
     {'key': 'PANEL.spectral_delimiter', 'kind': 'choice', 'choices': list(panel_spectrum.DELIMITERS), 'dialog': True,
-     'default': 'auto', 'group': 'Spectral response file (.csv)', 'label': 'Delimiter',
+     'default': 'auto', 'group': 'Reflectance of the panel', 'label': 'Delimiter',
      'help': 'Character that separates the columns; auto detects it.'},
     {'key': 'PANEL.spectral_delimiter_char', 'kind': 'text', 'default': '', 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Custom delimiter',
+     'group': 'Reflectance of the panel', 'label': 'Custom delimiter',
      'help': "The separator when the delimiter is custom (one or more characters)."},
     {'key': 'PANEL.spectral_skip_rows', 'kind': 'text', 'default': 'auto', 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Header rows to skip',
+     'group': 'Reflectance of the panel', 'label': 'Header rows to skip',
      'help': "auto: the rows at the start that are not numbers; or the number of rows."},
     {'key': 'PANEL.spectral_skip_footer', 'kind': 'int', 'default': 0, 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Footer rows to skip',
+     'group': 'Reflectance of the panel', 'label': 'Footer rows to skip',
      'help': "Number of rows at the end of the file that are not data."},
     {'key': 'PANEL.spectral_comment_prefix', 'kind': 'text', 'default': '', 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Comment prefix',
+     'group': 'Reflectance of the panel', 'label': 'Comment prefix',
      'help': "Lines that start with this text are ignored, for example #."},
     {'key': 'PANEL.spectral_exclude_rows', 'kind': 'text', 'default': '', 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Lines to exclude',
+     'group': 'Reflectance of the panel', 'label': 'Lines to exclude',
      'help': "Line numbers of the file that are not used, for example 5, 10-12."},
     {'key': 'PANEL.spectral_wavelength_min', 'kind': 'text', 'default': '', 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Smallest wavelength used (nm)',
+     'group': 'Reflectance of the panel', 'label': 'Smallest wavelength used (nm)',
      'help': "Empty: no limit."},
     {'key': 'PANEL.spectral_wavelength_max', 'kind': 'text', 'default': '', 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Largest wavelength used (nm)',
+     'group': 'Reflectance of the panel', 'label': 'Largest wavelength used (nm)',
      'help': "Empty: no limit."},
     {'key': 'PANEL.spectral_reflectance_scale', 'kind': 'float', 'default': 1.0, 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Reflectance multiplier',
+     'group': 'Reflectance of the panel', 'label': 'Reflectance multiplier',
      'help': "Applied after the reflectance unit, for example 0.001 for per mille."},
     {'key': 'PANEL.spectral_wavelength_column', 'kind': 'int', 'default': 1, 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Wavelength column', 'help': 'Column number, from 1.'},
+     'group': 'Reflectance of the panel', 'label': 'Wavelength column', 'help': 'Column number, from 1.'},
     {'key': 'PANEL.spectral_reflectance_column', 'kind': 'int', 'default': 2, 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Reflectance column', 'help': 'Column number, from 1.'},
+     'group': 'Reflectance of the panel', 'label': 'Reflectance column', 'help': 'Column number, from 1.'},
     {'key': 'PANEL.spectral_wavelength_unit', 'kind': 'choice', 'choices': list(panel_spectrum.WAVELENGTH_UNITS),
-     'default': 'nm', 'dialog': True, 'group': 'Spectral response file (.csv)', 'label': 'Wavelength unit',
+     'default': 'nm', 'dialog': True, 'group': 'Reflectance of the panel', 'label': 'Wavelength unit',
      'help': 'nm or um (micrometers).'},
     {'key': 'PANEL.spectral_reflectance_unit', 'kind': 'choice', 'choices': list(panel_spectrum.REFLECTANCE_UNITS),
-     'default': 'fraction', 'dialog': True, 'group': 'Spectral response file (.csv)', 'label': 'Reflectance unit',
+     'default': 'fraction', 'dialog': True, 'group': 'Reflectance of the panel', 'label': 'Reflectance unit',
      'help': 'fraction (0 to 1) or percent.'},
     {'key': 'PANEL.spectral_decimal', 'kind': 'choice', 'choices': list(panel_spectrum.DECIMAL_MARKS), 'default': '.',
-     'dialog': True, 'group': 'Spectral response file (.csv)', 'label': 'Decimal mark', 'help': 'Point or comma.'},
+     'dialog': True, 'group': 'Reflectance of the panel', 'label': 'Decimal mark', 'help': 'Point or comma.'},
     {'key': 'PANEL.band_center_wavelengths', 'kind': 'band_values', 'range': (0, 5000), 'dialog': True,
      'default': {band: window[0] for band, window in panel_spectrum.REDEDGE_P_BANDS.items()},
-     'group': 'Spectral response file (.csv)', 'label': 'Center wavelength of each band (nm)',
+     'group': 'Reflectance of the panel', 'label': 'Center wavelength of each band (nm)',
      'help': 'Spectral window of each band: the reflectance of a band is the mean of the curve over '
              'center +/- bandwidth / 2.'},
     {'key': 'PANEL.band_bandwidths', 'kind': 'band_values', 'range': (0, 5000), 'dialog': True,
      'default': {band: window[1] for band, window in panel_spectrum.REDEDGE_P_BANDS.items()},
-     'group': 'Spectral response file (.csv)', 'label': 'Bandwidth of each band (nm)',
+     'group': 'Reflectance of the panel', 'label': 'Bandwidth of each band (nm)',
      'help': 'Width of the spectral window of each band.'},
     {'key': 'PANEL.spectral_min_coverage', 'kind': 'float', 'default': 0.5, 'dialog': True,
-     'group': 'Spectral response file (.csv)', 'label': 'Smallest covered part of a band window',
+     'group': 'Reflectance of the panel', 'label': 'Smallest covered part of a band window',
      'help': 'Fraction (0 to 1] of the window of a band that must have valid samples in the file.'},
-    {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
-     'label': 'Inner area of the panel', 'help': 'Fraction (0 to 1] of the panel used to measure its radiance.'},
     {'key': 'PANEL.panels_used', 'kind': 'choice', 'choices': list(rct.PANELS_USED), 'default': 'first',
      'group': 'Panel measurement', 'label': 'Panels used when there are two',
      'help': "With a second panel capture: first = only the first panel calibrates (the second is only compared with it); "
@@ -164,6 +178,8 @@ FIELDS = [
              "captures; nearest_time = the panel captured closest in time to each image (times from "
              "EXIF:DateTimeOriginal). With the DLS the combination is of factor x irradiance, which does not depend on "
              "the light, so no panel is the reference of the DLS: only the panels that are used matter."},
+    {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
+     'label': 'Inner area of the panel', 'help': 'Fraction (0 to 1] of the panel used to measure its radiance.'},
     {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000, 'group': 'Panel measurement',
      'label': 'Saturation threshold', 'help': 'Pixels above this value are left out of the panel radiance.'},
     {'key': 'CORRECTION.use_dls', 'group': 'Correction with the DLS', 'kind': 'bool', 'default': False,

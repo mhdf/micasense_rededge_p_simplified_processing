@@ -6,7 +6,7 @@ by radiometric_workflow.run() in a separate thread, so the window stays responsi
 widgets inside a ttk.Frame (its .widget): it can be placed in any window, for example as a page of the photogrammetric
 workflow window.
 
-    python radiometric_window.py [--config radiometric_inputs.json] [--root folder]
+    python -m radiometric_app.radiometric_window [--config config/radiometric_inputs.json] [--root folder]
 
 Only the values that differ from the defaults are saved in the configuration file.
 
@@ -24,14 +24,14 @@ import traceback
 from pathlib import Path
 
 # Local Imports
-import camera_presets
+from . import camera_presets
 import radiometric_correction_tools as rct
-import radiometric_workflow as wf
-from ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
-from capture_picker import pick_captures
-from ui_widgets import BandTable, HelpPanel, NavTiles, ScrollablePage, model_from_rows, rows_from_model
+from . import radiometric_workflow as wf
+from .ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
+from .capture_picker import pick_captures
+from .ui_widgets import BandTable, HelpPanel, NavTiles, ScrollablePage, model_from_rows, rows_from_model
 
-DEFAULT_CONFIG_NAME = 'radiometric_inputs.json'
+DEFAULT_CONFIG_NAME = wf.DEFAULT_CONFIG_NAME
 
 # The keys that the band table edits: the reflectance, center wavelength and bandwidth of each band that is used, and the
 # bands that are in the files but are left out
@@ -112,7 +112,7 @@ PROFILE_NOTES = {
     'save': ("Save configuration", "Writes the values that differ from the defaults in the configuration file shown at the "
                                    "left."),
     'profile': ("Profiles", "A profile is a named copy of the configuration, for a camera or a flight.\n"
-                            "- Save profile...: writes one in the profiles folder.\n"
+                            "- Save profile...: writes one in the config/profiles folder.\n"
                             "- Load profile...: replaces the values in the window with those of a profile."),
 }
 
@@ -238,6 +238,7 @@ class ConfigModel:
 
     def save(self, path):
         path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + '.tmp')
         temporary.write_text(json.dumps(self.overrides(), indent=2), encoding='utf-8')
         os.replace(temporary, path)
@@ -260,7 +261,7 @@ class RadiometricFrame:
         self.tk, self.ttk = tk, ttk
         self.parent = parent
         self.root_folder = Path(root).resolve()
-        self.config_path = Path(config_path) if config_path else self.root_folder / DEFAULT_CONFIG_NAME
+        self.config_path = Path(config_path) if config_path else wf.default_config_path(self.root_folder)
         self.load_message = None
         try:
             self.model = ConfigModel.load(self.config_path) if self.config_path.is_file() else ConfigModel()
@@ -886,7 +887,7 @@ class RadiometricFrame:
 
     def import_spectrum(self):
         """ Open the dialog to choose and preview the spectral response file, and apply what the user accepts """
-        from panel_spectrum_dialog import import_spectrum
+        from .panel_spectrum_dialog import import_spectrum
         config, errors = self.model.config()
         try:
             fmt = wf.spectral_format(config)
@@ -1047,7 +1048,7 @@ class RadiometricFrame:
 
     @property
     def profiles_folder(self):
-        return self.root_folder / 'profiles'
+        return self.root_folder / wf.CONFIG_FOLDER / 'profiles'
 
     def save_profile(self, path):
         """ Save every value (not only the changes) in a json file, so that the profile does not depend on the defaults """
@@ -1195,7 +1196,7 @@ class RadiometricFrame:
             self.events.put(('regions_failed', f"{type(error).__name__}: {error}"))
 
     def _open_selector(self, payload):
-        from panel_selector import select_panel_regions
+        from .panel_selector import select_panel_regions
         config, names, required, preloaded, saved, origins, path = payload
         try:
             selected = select_panel_regions(
@@ -1299,7 +1300,7 @@ class RadiometricFrame:
 def main(argv=None):
     import tkinter as tk
     parser = argparse.ArgumentParser(description="Window for the radiometric correction workflow")
-    parser.add_argument('--config', help=f"configuration json file (default: {DEFAULT_CONFIG_NAME} in --root)")
+    parser.add_argument('--config', help=f"configuration json file (default: {wf.CONFIG_FOLDER}/{DEFAULT_CONFIG_NAME} in --root)")
     parser.add_argument('--root', default='.', help="folder from which the relative paths are resolved")
     arguments = parser.parse_args(argv)
     window = tk.Tk()

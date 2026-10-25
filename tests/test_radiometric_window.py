@@ -2,7 +2,7 @@
 Tests for radiometric_window.py: the values being edited are tested without a display; the window with a hidden Tk
 root (skipped if Tk cannot open one)
 
-Run from this folder with:  python -m unittest test_radiometric_window -v
+Run from the project folder with:  python -m unittest tests.test_radiometric_window -v
 """
 
 import json
@@ -12,11 +12,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import panel_spectrum as ps
-import radiometric_window as rw
-import radiometric_workflow as wf
+from radiometric_app import panel_spectrum as ps
+from radiometric_app import radiometric_window as rw
+from radiometric_app import radiometric_workflow as wf
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def rct_pattern():
@@ -212,7 +212,7 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(any('must be an integer' in line for line in self.frame.log_lines()))
 
     def accepted(self, polygons, origins):
-        import panel_selector
+        from radiometric_app import panel_selector
         return panel_selector.SelectionResult(polygons, origins)
 
     def test_the_accepted_regions_are_saved_with_their_origin_and_the_regions_file_is_set(self):
@@ -222,7 +222,7 @@ class WindowTests(unittest.TestCase):
         selection = {'IMG_0005': self.accepted({band: polygon for band in bands},
                                                {band: ('accepted_automatic' if band != 'Blue' else 'edited')
                                                 for band in bands})}
-        with mock.patch('panel_selector.select_panel_regions', return_value=selection) as selector:
+        with mock.patch('radiometric_app.panel_selector.select_panel_regions', return_value=selection) as selector:
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
         path = Path(self.results('regions')) / 'panel_regions.json'
@@ -238,7 +238,7 @@ class WindowTests(unittest.TestCase):
 
     def test_cancelling_the_dialog_saves_nothing(self):
         self.frame.set_value('INPUTS.results_folder', self.results('cancel'))
-        with mock.patch('panel_selector.select_panel_regions', return_value=None) as selector:
+        with mock.patch('radiometric_app.panel_selector.select_panel_regions', return_value=None) as selector:
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
         self.assertFalse((Path(self.results('cancel')) / 'panel_regions.json').exists())
@@ -251,7 +251,7 @@ class WindowTests(unittest.TestCase):
         path = Path(self.results('again')) / 'panel_regions.json'
         path.parent.mkdir(parents=True)
         wf.save_panel_regions(path, 'IMG_0005', {'Red': [[10, 10], [50, 10], [50, 50]]}, {'Red': 'edited'})
-        with mock.patch('panel_selector.select_panel_regions', return_value=None) as selector:
+        with mock.patch('radiometric_app.panel_selector.select_panel_regions', return_value=None) as selector:
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
         names, load, required, saved, origins, percent, saturation = selector.call_args[0]
@@ -273,7 +273,7 @@ class WindowTests(unittest.TestCase):
         bands = list(wf.default_config()['PANEL.reflectance_by_band'])
         selection = {name: self.accepted({band: polygon for band in bands}, {band: 'edited' for band in bands})
                      for name in ('IMG_0005', 'IMG_0010')}
-        with mock.patch('panel_selector.select_panel_regions', return_value=selection) as selector:
+        with mock.patch('radiometric_app.panel_selector.select_panel_regions', return_value=selection) as selector:
             self.frame.draw_regions()
             self.pump(lambda: selector.called and not self.frame.running)
         self.assertEqual(selector.call_args[0][2], ['IMG_0005'])                   # the same capture twice is one
@@ -304,7 +304,7 @@ class WindowTests(unittest.TestCase):
 
     def test_the_tool_is_not_opened_when_the_inputs_have_problems(self):
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_9999')
-        with mock.patch('panel_selector.select_panel_regions') as selector:
+        with mock.patch('radiometric_app.panel_selector.select_panel_regions') as selector:
             self.frame.draw_regions()
         self.assertFalse(self.frame.running)
         self.assertFalse(selector.called)
@@ -376,7 +376,7 @@ class WindowTests(unittest.TestCase):
         self.pump(lambda: self.frame.spectral_summary.cget('text') == '', 5)
 
     def result_of_the_dialog(self, action, **kwargs):
-        import panel_spectrum_dialog as psd
+        from radiometric_app import panel_spectrum_dialog as psd
         path = kwargs.pop('path', None) or self.write_spectrum(level=0.48)
         return psd.ImportSession(path, **kwargs).result(action)
 
@@ -436,7 +436,7 @@ class WindowTests(unittest.TestCase):
         self.frame.set_value('PANEL.spectral_delimiter', 'comma')
         self.frame.set_value('PANEL.band_bandwidths', {'Red': '20'})
         answer = self.result_of_the_dialog('use_file')
-        with mock.patch('panel_spectrum_dialog.import_spectrum', return_value=answer) as dialog:
+        with mock.patch('radiometric_app.panel_spectrum_dialog.import_spectrum', return_value=answer) as dialog:
             self.frame.import_spectrum()
         _, path, fmt, windows, coverage = dialog.call_args[0]
         self.assertEqual(path, '')
@@ -444,7 +444,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(windows['Red'], (668.0, 20.0))
         self.assertEqual(coverage, 0.5)
         self.assertEqual(self.frame.model.config()[0]['PANEL.reflectance_source'], 'spectral_file')
-        with mock.patch('panel_spectrum_dialog.import_spectrum', return_value=None):
+        with mock.patch('radiometric_app.panel_spectrum_dialog.import_spectrum', return_value=None):
             self.frame.import_spectrum()                                   # cancelled: nothing changes
         self.assertEqual(self.frame.model.config()[0]['PANEL.reflectance_source'], 'spectral_file')
 

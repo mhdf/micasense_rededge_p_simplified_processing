@@ -27,12 +27,12 @@ from pathlib import Path
 # Local Imports
 import radiometric_correction_tools as rct
 
-BUILTIN_FOLDER = Path(__file__).resolve().parent / 'camera_presets'
+BUILTIN_FOLDER = Path(__file__).resolve().parent / 'presets'
 
 
 def preset_folders(root='.'):
     """ The folders that are searched: the one that comes with the program, then the one of the project """
-    folders = [BUILTIN_FOLDER, Path(root).resolve() / 'camera_presets']
+    folders = [BUILTIN_FOLDER, Path(root).resolve() / 'config' / 'presets']
     unique = []
     for folder in folders:
         if folder not in unique:

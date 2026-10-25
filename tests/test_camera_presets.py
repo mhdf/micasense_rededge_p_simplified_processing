@@ -1,7 +1,7 @@
 """
 Tests for camera_presets.py (no display needed)
 
-Run from this folder with:  python -m unittest test_camera_presets -v
+Run from the project folder with:  python -m unittest tests.test_camera_presets -v
 """
 
 import json
@@ -10,10 +10,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import camera_presets as cp
+from radiometric_app import camera_presets as cp
 import radiometric_correction_tools as rct
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / 'images' / 'raw'
 
 
@@ -92,8 +92,8 @@ class LoadPresetsTests(unittest.TestCase):
     def test_the_folders_are_the_program_and_the_project(self):
         folders = cp.preset_folders(self.folder.name)
         self.assertEqual(folders[0], cp.BUILTIN_FOLDER)
-        self.assertEqual(folders[1], Path(self.folder.name).resolve() / 'camera_presets')
-        self.assertEqual(len(cp.preset_folders(ROOT)), 1)                  # the same folder is not searched twice
+        self.assertEqual(folders[1], Path(self.folder.name).resolve() / 'config' / 'presets')
+        self.assertEqual(cp.preset_folders(ROOT), [cp.BUILTIN_FOLDER, ROOT / 'config' / 'presets'])    # the user's own
 
 
 class BandRowsTests(unittest.TestCase):

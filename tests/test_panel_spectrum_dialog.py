@@ -2,7 +2,7 @@
 Tests for panel_spectrum_dialog.py: the session (what was read, the bands, the messages) without a display and the
 dialog with a hidden Tk root (skipped if Tk cannot open one)
 
-Run from this folder with:  python -m unittest test_panel_spectrum_dialog -v
+Run from the project folder with:  python -m unittest tests.test_panel_spectrum_dialog -v
 """
 
 import tempfile
@@ -10,8 +10,8 @@ import time
 import unittest
 from pathlib import Path
 
-import panel_spectrum as ps
-import panel_spectrum_dialog as psd
+from radiometric_app import panel_spectrum as ps
+from radiometric_app import panel_spectrum_dialog as psd
 
 
 def write_curve(folder, name='panel.csv', level=0.5, start=400, stop=900, header=False, separator=',', decimal='.'):
@@ -148,7 +148,7 @@ class DialogTests(unittest.TestCase):
         except tk.TclError as error:
             self.skipTest(f"no display for Tk: {error}")
         self.root.withdraw()
-        from ui_theme import apply_dark_theme
+        from radiometric_app.ui_theme import apply_dark_theme
         apply_dark_theme(self.root)
         self.folder = tempfile.TemporaryDirectory()
         self.window = None

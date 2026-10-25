@@ -2,7 +2,7 @@
 Tests for capture_picker.py: the reading of a picture without a display, the window with a hidden Tk root
 (skipped if Tk cannot open one)
 
-Run from this folder with:  python -m unittest test_capture_picker -v
+Run from the project folder with:  python -m unittest tests.test_capture_picker -v
 """
 
 import time
@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest import mock
 
 import radiometric_correction_tools as rct
-import capture_picker as cp
+from radiometric_app import capture_picker as cp
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / 'images' / 'raw'
 
 

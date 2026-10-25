@@ -2,7 +2,7 @@
 Tests for panel_selector.py: the logic is tested without a display; the window is tested with a hidden Tk root
 (skipped if Tk cannot open one)
 
-Run from this folder with:  python -m unittest test_panel_selector -v
+Run from the project folder with:  python -m unittest tests.test_panel_selector -v
 """
 
 import json
@@ -13,9 +13,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import radiometric_correction_tools as rct
-import panel_selector as ps
+from radiometric_app import panel_selector as ps
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / 'images' / 'raw'
 BANDS = ['Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR']
 
@@ -365,7 +365,7 @@ class SelectionSessionTests(PanelImagesMixin, unittest.TestCase):
         self.assertEqual(session.band, 'NIR')
 
     def test_a_region_accepted_here_gives_the_same_calibration_in_the_workflow(self):
-        import radiometric_workflow as wf
+        from radiometric_app import radiometric_workflow as wf
         session = self.session()
         session.accept_all_automatic()
         result = session.result()

@@ -1,7 +1,7 @@
 """
 Tests for radiometric_workflow.py (configuration, validation and runner), using the example images
 
-Run from this folder with:  python -m unittest test_radiometric_workflow -v
+Run from the project folder with:  python -m unittest tests.test_radiometric_workflow -v
 """
 
 import contextlib
@@ -17,9 +17,9 @@ import numpy as np
 import tifffile
 
 import radiometric_correction_tools as rct
-import radiometric_workflow as wf
+from radiometric_app import radiometric_workflow as wf
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / 'images' / 'raw'
 
 

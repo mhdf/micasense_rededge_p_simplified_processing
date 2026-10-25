@@ -1,7 +1,7 @@
 """
 Tests for panel_spectrum.py (spectral response of the reference panel, no display needed)
 
-Run from this folder with:  python -m unittest test_panel_spectrum -v
+Run from the project folder with:  python -m unittest tests.test_panel_spectrum -v
 The file of the example panel (outside this repository) is used only if it exists.
 """
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-import panel_spectrum as ps
+from radiometric_app import panel_spectrum as ps
 
 REAL_FILE = Path(r'C:\path\to\your\files'
                  r'\reference_panel_spectral_response\RP06-2201497-OB.csv')

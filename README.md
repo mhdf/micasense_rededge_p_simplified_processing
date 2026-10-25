@@ -165,14 +165,28 @@ With the DLS the choice of "the reference panel" does not exist as such: the pro
 
 How Metashape combines several panel images, and what its sun sensor option is referenced to, is not described in its manual (2.1) or in the forum threads of Agisoft that were read for this project; the photogrammetric workflow gives all the panel captures of the chunk to ```chunk.calibrateReflectance(use_reflectance_panels, use_sun_sensor)``` and cannot choose among them. Do not assume that it averages or follows the time: test it with panels of known different factors before relying on one behaviour.
 
-## Workflow runner (no user interface)
-
-```radiometric_workflow.py``` runs the whole example above, for all the captures of a folder, from a configuration with fixed keys. It has no user interface, so a window can be built on top of it (```FIELDS``` describes each key: default, kind of value, label and description).
+## Project layout
 
 ```
-python radiometric_workflow.py --write-default-config radiometric_inputs.json   # write the defaults, then edit them
-python radiometric_workflow.py --config radiometric_inputs.json                   # run
-python radiometric_workflow.py --request-json request.json                        # run from a request (see below)
+radiometric_correction_tools.py   the library (it keeps its name and its place: other programs import it)
+radiometric_app/                  the program: configuration and runner, window, panel regions tool, capture picker, ...
+    presets/                      the camera presets that come with the program
+tests/                            the tests
+launchers/                        launchers for Windows (double-click)
+config/                           your configuration, profiles and presets (not kept in git)
+images/raw/, results/reflectance/ the example images and their results
+```
+
+The commands in this file are run from the project folder (the one with ```radiometric_correction_tools.py```), for example ```python -m radiometric_app.radiometric_window```. ```radiometric_app``` can be copied into another program together with ```radiometric_correction_tools.py``` (the modules of the folder import each other with relative imports).
+
+## Workflow runner (no user interface)
+
+```radiometric_app/radiometric_workflow.py``` runs the whole example above, for all the captures of a folder, from a configuration with fixed keys. It has no user interface, so a window can be built on top of it (```FIELDS``` describes each key: default, kind of value, label and description).
+
+```
+python -m radiometric_app.radiometric_workflow --write-default-config config/radiometric_inputs.json   # write the defaults, then edit them
+python -m radiometric_app.radiometric_workflow --config config/radiometric_inputs.json                   # run
+python -m radiometric_app.radiometric_workflow --request-json request.json                               # run from a request (see below)
 ```
 
 - The configuration is a flat json file with the keys of ```FIELDS``` (```INPUTS.*``` folders and captures, ```PANEL.*``` reflectance levels and panel measurement, ```CORRECTION.use_dls```, ```CHECKS.*``` limits). Only the keys to change are needed; unknown keys are an error. Relative paths are resolved from ```--root``` (default: the current folder). Labels and descriptions may change in future versions, the keys will not.
@@ -190,7 +204,7 @@ Nothing in the processing depends on there being six bands: the bands are a tabl
 
 - **Band table** (Reference panel page of the window; ```PANEL.reflectance_by_band```, ```PANEL.band_center_wavelengths```, ```PANEL.band_bandwidths``` and ```INPUTS.ignored_bands``` in the configuration). One row per band; rows can be added, renamed and removed. The names must be those written by the camera in ```XMP:BandName```. Un-ticking *Use* keeps a band that is in the files out of the processing (it is written in ```INPUTS.ignored_bands```): without that, a file with a band that is not in the table is an error, so that a missing or extra band is never silently ignored. The panel reflectance of a band is only needed when the source of the reflectance is ```values```.
 - **Detect from capture** reads the table from the images themselves: the name, central wavelength and bandwidth of each band (```XMP:BandName```, ```XMP:CentralWavelength```, ```XMP:WavelengthFWHM```) in the order of the rig, and the name of the camera and its serial number. A band that looks thermal (a center above 2500 nm, or a name such as LWIR) is left out. The panel reflectances that were typed are kept for bands with the same name. This is the most reliable way to get the windows of your own camera: for the example images it gives Red 668 / 14 nm, and the units of one model differ from another (the RedEdge-MX bandwidths of the older RX01 units are 20, 20, 10, 10 and 40 nm). From the command line: ```python radiometric_workflow.py --detect-bands IMG_0005```.
-- **Camera presets** are JSON files in the ```camera_presets``` folder (next to the program, and in the project folder). They fill the table and the file pattern; the reflectance of the panel belongs to the panel, not to the camera, so a preset does not contain it. The folder has the RedEdge-P (the bands of the example images, checked against them by a test), the RedEdge-M/MX (5 bands, the current windows of the MicaSense documentation) and the Altum (5 bands and the thermal band left out); the last two were not checked on images, so use *Detect from capture* to confirm them. Add a file to add a camera (the format is at the top of ```camera_presets.py```).
+- **Camera presets** are JSON files in the ```radiometric_app/presets``` folder (those that come with the program) and in ```config/presets``` (your own). They fill the table and the file pattern; the reflectance of the panel belongs to the panel, not to the camera, so a preset does not contain it. The folder has the RedEdge-P (the bands of the example images, checked against them by a test), the RedEdge-M/MX (5 bands, the current windows of the MicaSense documentation) and the Altum (5 bands and the thermal band left out); the last two were not checked on images, so use *Detect from capture* to confirm them. Add a file to add a camera (the format is at the top of ```radiometric_app/camera_presets.py```).
 - **File names** (```INPUTS.file_pattern```). The files of a capture are found with a name template (not case sensitive): ```{capture}``` stands for the name of the capture (the part shared by the files of its bands), ```{index}``` for the number of the file (optional; the files are ordered by it) and ```*``` for any other text. The default, ```{capture}_{index}.tif```, is the MicaSense naming (```IMG_0010_1.tif```). Another naming scheme only needs another template, for example ```{capture}_MS_*.tif``` for ```DJI_0010_MS_G.tif```. A regular expression with a group named ```capture``` (and, optionally, ```index```) is also accepted when the template cannot describe the names, for example ```(?P<capture>DJI_\d+)_MS_(?P<band>[A-Z]+)\.tif$```. The band of a file always comes from its metadata, never from its name.
 - **What the program assumes.** The conversion to radiance is the MicaSense model (vignetting polynomial, black level, row gradient and the three radiometric calibration coefficients, exposure and ISO), and the panel is found from the QR code of a MicaSense panel. A camera that writes the same metadata works with the table above (RedEdge-M/MX/P, Altum and Altum-PT should; only RedEdge-P images were available to test, and a dual-camera 10-band set, whose two cameras may write different capture ids, was not tried). A camera with another radiometric model needs its own version of ```rct.Image``` (the method that gives the radiance and the one that finds the panel); everything else (the band table, the DLS ratios and checks, the panel regions, the provenance and the window) is independent of the camera.
 
@@ -206,14 +220,14 @@ Instead of typing the reflectance of each band, it can be computed from the spec
 
 ## Where things are saved
 
-- **Configuration** (```radiometric_inputs.json```): the values that differ from the defaults, in the project folder (or the file given with ```--config```). "Save configuration" in the window, and "Run", write it.
-- **Profiles** (```profiles/*.json```): "Save profile..." writes every value of the window to a file in the ```profiles``` folder of the project (it can be saved anywhere); "Load profile..." replaces all the values with those of a file. A profile is complete, so it does not depend on the defaults. This follows the profiles of the photogrammetric workflow window, which uses a ```profiles``` folder next to its code and keeps the working values in ```config_user_inputs.json```.
+- **Configuration** (```config/radiometric_inputs.json```): the values that differ from the defaults, in the ```config``` folder of the project (or the file given with ```--config```; a file ```radiometric_inputs.json``` in the project folder, where earlier versions kept it, is still used while the new one does not exist). "Save configuration" in the window, and "Run", write it.
+- **Profiles** (```config/profiles/*.json```): "Save profile..." writes every value of the window to a file in the ```config/profiles``` folder of the project (it can be saved anywhere); "Load profile..." replaces all the values with those of a file. A profile is complete, so it does not depend on the defaults. This follows the profiles of the photogrammetric workflow window, which uses a ```profiles``` folder next to its code and keeps the working values in ```config_user_inputs.json```.
 - **Panel regions drawn by hand**: ```panel_regions.json``` in the results folder, or the file in ```PANEL.manual_regions_file```.
 - **Results**: the reflectance images, ```<capture>_provenance.json``` and ```radiometric_result.json``` in the results folder.
 
 ## Checking, accepting and drawing the panel regions
 
-The panel region of each band can be checked, accepted and, when it is wrong or the QR code cannot be read, drawn with ```panel_selector.py```. It is opened with "Check / draw panel regions..." on the Inputs page (next to the panel captures and the file where the regions are kept), or with ```open_panel_selector.cmd``` (```python panel_selector.py --config radiometric_inputs.json --root <folder>```). The "Check inputs" button next to it checks the folders, the panel capture and the bands first, without leaving the page, and the tool is not opened while there are problems.
+The panel region of each band can be checked, accepted and, when it is wrong or the QR code cannot be read, drawn with ```radiometric_app/panel_selector.py```. It is opened with "Check / draw panel regions..." on the Inputs page (next to the panel captures and the file where the regions are kept), or with ```open_panel_selector.cmd``` (```python -m radiometric_app.panel_selector --config config/radiometric_inputs.json --root <folder>```). The "Check inputs" button next to it checks the folders, the panel capture and the bands first, without leaving the page, and the tool is not opened while there are problems.
 
 - **One band at a time.** The bands are in a list at the left (so that any number fits, for example the ten bands of a dual camera; each shows whether it is accepted, to accept or has no region) and the image of the selected band is shown close up around the panel ("Whole image" shows all of it): the region found from the QR code (yellow, dashed), the region that is accepted or saved (green) or proposed (cyan), and below it the pixels, the saturated pixels and the variation (std / mean; lower is more uniform) inside the region. "Accept" (Enter) takes the region as it is shown and goes to the next band that is not accepted, without entering the drawing; pressing it again on an accepted band takes the acceptance back. "Accept all automatic regions" accepts the regions found from the QR code of all the bands that are not accepted yet, so nothing has to be drawn when they are right. The regions saved before are shown as accepted, so the window is also the way to look at the regions that are in the file.
 - **One kind of acceptance.** Every band has to be accepted, so the region used for the reference panel is always one that you saw and confirmed: a region found from the QR code is not used silently. "Save and close" is available when all the bands are accepted, and writes the polygon of every band (vertices in pixels of the undistorted image) with where it came from (```accepted_automatic``` if it is the region found from the QR code, ```edited``` if it was moved or drawn) in ```PANEL.manual_regions_file```, or, if it is empty, in ```panel_regions.json``` in the results folder. Nothing is saved if the window is cancelled.
@@ -225,18 +239,18 @@ The panel region of each band can be checked, accepted and, when it is wrong or 
 
 ## Launchers (Windows)
 
-Double-click one of these files in the project folder. They use the Python 3.10 environment at the top of each file (```PYTHON_DIR```; edit it if yours is elsewhere), and the project folder as ```--root```, so the relative paths of the configuration (for example ```images/raw```) are resolved from there.
+Double-click one of these files in the ```launchers``` folder. They use the Python 3.10 environment at the top of each file (```PYTHON_DIR```; edit it if yours is elsewhere), and the project folder as ```--root```, so the relative paths of the configuration (for example ```images/raw```) are resolved from there.
 
-- ```open_radiometric_window.cmd```: the window, without a console (like the launcher of the photogrammetric workflow).
-- ```open_radiometric_window_debug.cmd```: the same window with the console kept open, to see messages and error traces while testing.
-- ```open_panel_selector.cmd```: only the dialog to draw the panel regions, using ```radiometric_inputs.json``` in the project folder if it exists, otherwise the defaults. Extra arguments are passed on (for example ```--capture IMG_0005```).
+- ```launchers/open_radiometric_window.cmd```: the window, without a console (like the launcher of the photogrammetric workflow).
+- ```launchers/open_radiometric_window_debug.cmd```: the same window with the console kept open, to see messages and error traces while testing.
+- ```launchers/open_panel_selector.cmd```: only the dialog to draw the panel regions, using ```config/radiometric_inputs.json``` in the project folder if it exists, otherwise the defaults. Extra arguments are passed on (for example ```--capture IMG_0005```).
 
 ## Window
 
 **Choosing captures and reading the file names.** "Select..." next to the reference panel capture, the second panel capture and "Select captures" opens a window with one picture for each capture of the images folder, so that the capture that shows the panel can be recognised by looking at it (the second panel capture can also be left empty there). A box chooses the band shown (the bands of the table; the position of each band among the files is read from the metadata of the first capture) and the pictures are read in the background, so the window opens at once; the captures to correct are chosen by clicking (several), with "Select all" and "Clear". The names can still be typed. The panel captures are not offered among the captures to correct; the field shows the names chosen, and when it is empty all the other captures of the folder are corrected (the help column says which). The file name pattern is explained in the help column with how it reads the images folder: how many files match, in how many captures, and an example of how the first files are read; "Suggest from files" writes a pattern from the names of the files in the folder (names such as ```IMG_0005_1.tif```: capture name, a separator, the number of the file, the extension). The pattern is a library function too (```suggest_file_pattern```, ```preview_file_pattern```, ```pattern_template```).
 
 ```
-python radiometric_window.py [--config radiometric_inputs.json] [--root <folder>]
+python -m radiometric_app.radiometric_window [--config config/radiometric_inputs.json] [--root <folder>]
 ```
 
 **Layout.** Tiles on the left choose the page (Inputs, Reference panel, DLS, Run and results), the fields are in the centre and a column on the right explains them. The column shows the explanation of the field under the mouse pointer or, when the pointer is elsewhere, of the field that has the keyboard focus (Tab moves between fields), and the explanation of the page when there is neither; while the pointer is over the column the explanation stays, so that it can be read and scrolled. The line between the fields and the column can be dragged to change their widths, and the text follows the width of the column. A field that belongs to a part with its own note (for example the limits of the DLS checks) shows that note under its own explanation, and so do the headings. Information that depends on the data is also shown there, under the explanation: how the file name pattern reads the images folder, which captures will be corrected and what the spectral file gives in each band. What is wrong (a pattern that matches nothing, a capture that is not in the folder, a spectral file that cannot be read) is written under the field, in red, and only while it is wrong; the state of the inputs stays next to the buttons that check them. The explanations are the ```label``` and ```help``` of each entry of ```FIELDS``` and ```GROUP_NOTES```, written with a few marks (a line that starts with ```# ``` is a sub-heading, one that starts with ```- ``` is an item of a list, any other line is a paragraph) that the column turns into paragraphs (the lines after the first are indented), lists and sections.
@@ -245,13 +259,13 @@ The pages (Inputs, Reference panel, DLS) are built from ```radiometric_workflow.
 
 The last page runs the workflow in a separate thread, so the window stays responsive: "Check inputs" lists every problem, "Check / draw panel regions..." (on the Inputs page, next to the panel captures and a "Check inputs" button) opens the tool above (and sets ```PANEL.manual_regions_file``` if it was empty), "Run" saves the configuration and shows the progress, the flags of the checks, the errors and the result file, and "Open results folder" opens the folder in the file explorer.
 
-- Load and Save profile (see above) are in the bottom bar. ```radiometric_window.RadiometricFrame``` builds its widgets in a ```ttk.Frame``` (```.widget```), so it can be placed in any window, for example as a page of another program's window. ```ui_theme.py``` holds the colors and styles, which follow the dark window of the photogrammetric workflow.
+- Load and Save profile (see above) are in the bottom bar. ```radiometric_window.RadiometricFrame``` builds its widgets in a ```ttk.Frame``` (```.widget```), so it can be placed in any window, for example as a page of another program's window. ```radiometric_app/ui_theme.py``` holds the colors and styles, which follow the dark window of the photogrammetric workflow.
 - ```ConfigModel``` (the text typed in each field, its conversion and the file) has no window and is tested without a display.
 
 ## Tests
 
 ```
-python -m unittest test_radiometric_correction_tools test_radiometric_workflow test_panel_selector test_panel_spectrum test_panel_spectrum_dialog test_camera_presets test_ui_widgets test_capture_picker test_radiometric_window -v
+python -m unittest discover -s tests -t . -v
 ```
 
 The tests use the example images and need ExifTool (set the environment variable ```exiftoolpath``` if it is not in the PATH).

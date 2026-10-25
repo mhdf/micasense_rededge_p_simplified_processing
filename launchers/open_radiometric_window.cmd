@@ -8,4 +8,6 @@ if not exist "%PYTHON_DIR%\pythonw.exe" (
     pause
     exit /b 1
 )
-start "Radiometric correction" "%PYTHON_DIR%\pythonw.exe" "%~dp0radiometric_window.py" --root "%~dp0."
+rem The project folder (the one above this launchers folder) is where the program runs and where the relative paths start
+cd /d "%~dp0.."
+start "Radiometric correction" "%PYTHON_DIR%\pythonw.exe" -m radiometric_app.radiometric_window --root .

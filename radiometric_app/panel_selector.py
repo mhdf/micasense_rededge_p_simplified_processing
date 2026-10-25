@@ -9,9 +9,9 @@ window, where the polygon can be moved, extended or drawn, and "Confirm edit" ac
 before are shown as accepted. The vertices are pixels of the undistorted image and are saved in the file used by the
 workflow (PANEL.manual_regions_file), with the origin of each region (accepted as found, or edited).
 
-    python panel_selector.py [--config radiometric_inputs.json] [--root folder] [--capture IMG_0005]
+    python -m radiometric_app.panel_selector [--config config/radiometric_inputs.json] [--root folder] [--capture IMG_0005]
 
-Without --config, radiometric_inputs.json in the root folder is used if it exists, otherwise the defaults.
+Without --config, config/radiometric_inputs.json in the root folder is used if it exists, otherwise the defaults.
 
 What every element does is shown at the bottom of the window when the mouse is over it.
 
@@ -29,7 +29,7 @@ import numpy as np
 
 # Local Imports
 import radiometric_correction_tools as rct
-from ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
+from .ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
 
 DEFAULT_HINT = "Point at a button or at an image to see what it does."
 
@@ -1003,16 +1003,16 @@ def select_panel_regions(captures, load, required=None, saved=None, saved_origin
 
 
 def main(argv=None):
-    import radiometric_workflow as wf
+    from . import radiometric_workflow as wf
     parser = argparse.ArgumentParser(description="Check, accept and draw the reference panel region of each band")
-    parser.add_argument('--config', help="configuration json file of the workflow (default: radiometric_inputs.json "
+    parser.add_argument('--config', help="configuration json file of the workflow (default: config/radiometric_inputs.json "
                                          "in --root if it exists, otherwise the defaults)")
     parser.add_argument('--root', default='.', help="folder from which the relative paths are resolved")
     parser.add_argument('--capture', help="capture to show first; it is added to the panel captures if it is not one "
                                           "(default: INPUTS.reference_panel_capture)")
     arguments = parser.parse_args(argv)
 
-    config_file = Path(arguments.config) if arguments.config else Path(arguments.root) / 'radiometric_inputs.json'
+    config_file = Path(arguments.config) if arguments.config else wf.default_config_path(arguments.root)
     if arguments.config and not config_file.is_file():
         print(f"ERROR: configuration file not found: {config_file}", file=sys.stderr)
         return 2

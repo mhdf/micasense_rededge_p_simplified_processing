@@ -14,8 +14,8 @@ The result is a dictionary: {'action': 'use_file' or 'copy_values', 'file', 'for
 from pathlib import Path
 
 # Local Imports
-import panel_spectrum as ps
-from ui_theme import COLORS, hide_title_icon
+from . import panel_spectrum as ps
+from .ui_theme import COLORS, hide_title_icon
 
 PREVIEW_ROWS = 300
 
@@ -544,7 +544,7 @@ def import_spectrum(parent, path='', fmt=None, windows=None, min_coverage=0.5):
     Outputs: the dictionary described at the top of this file, or None if the user cancelled
     """
     import tkinter as tk
-    from ui_theme import apply_dark_theme
+    from .ui_theme import apply_dark_theme
     window = tk.Toplevel(parent)
     window.transient(parent)
     apply_dark_theme(window)

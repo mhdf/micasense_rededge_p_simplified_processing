@@ -2,7 +2,7 @@
 Tests for ui_widgets.py: the rows of the band table without a display, the widgets with a hidden Tk root (skipped if
 Tk cannot open one)
 
-Run from this folder with:  python -m unittest test_ui_widgets -v
+Run from the project folder with:  python -m unittest tests.test_ui_widgets -v
 """
 
 import sys
@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import ui_widgets as uw
+from radiometric_app import ui_widgets as uw
 
 
 def row(name, center='475', width='32', reflectance='0.477', process=True):
@@ -93,7 +93,7 @@ class WidgetTests(unittest.TestCase):
         except tk.TclError as error:
             self.skipTest(f"no display for Tk: {error}")
         self.root.withdraw()
-        from ui_theme import apply_dark_theme
+        from radiometric_app.ui_theme import apply_dark_theme
         apply_dark_theme(self.root)
 
     def tearDown(self):
@@ -263,7 +263,7 @@ class TitleIconTests(unittest.TestCase):
 
     def test_the_icon_of_the_title_bar_is_hidden_in_a_window_and_in_a_dialog(self):
         import tkinter as tk
-        from ui_theme import hide_title_icon
+        from radiometric_app.ui_theme import hide_title_icon
         self.assertFalse(self.frame_state(self.root)[1])                         # the normal frame at the start
         self.assertTrue(hide_title_icon(self.root))
         self.assertEqual(self.frame_state(self.root), (False, True))            # no icon, frame without the icon slot
@@ -272,21 +272,21 @@ class TitleIconTests(unittest.TestCase):
         self.assertEqual(self.frame_state(dialog), (False, True))
 
     def test_it_can_be_repeated_and_never_raises(self):
-        from ui_theme import hide_title_icon
+        from radiometric_app.ui_theme import hide_title_icon
         self.assertTrue(hide_title_icon(self.root))
         self.assertTrue(hide_title_icon(self.root))
         self.root.destroy()
         self.assertFalse(hide_title_icon(self.root))                             # a window that is gone: no error
 
     def test_the_windows_of_the_program_hide_it(self):
-        import radiometric_window as rw
+        from radiometric_app import radiometric_window as rw
         import tempfile
-        from ui_theme import apply_dark_theme
+        from radiometric_app.ui_theme import apply_dark_theme
         apply_dark_theme(self.root)
         with tempfile.TemporaryDirectory() as folder:
             frame = rw.RadiometricFrame(self.root, Path(folder) / 'inputs.json', folder)
             frame.widget.pack()
-            import panel_spectrum_dialog as psd
+            from radiometric_app import panel_spectrum_dialog as psd
             import tkinter as tk
             dialog_window = tk.Toplevel(self.root)
             psd.ImportDialog(dialog_window, psd.ImportSession())

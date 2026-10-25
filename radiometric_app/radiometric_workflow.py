@@ -5,9 +5,9 @@ This module has no user interface. Everything the workflow needs is in a flat co
 (FIELDS describes each key, so that a window can be built from it) and the result is a dictionary that is also saved
 as json. It can be used from Python or from the command line:
 
-    python radiometric_workflow.py --write-default-config radiometric_inputs.json
-    python radiometric_workflow.py --config radiometric_inputs.json
-    python radiometric_workflow.py --request-json request.json
+    python -m radiometric_app.radiometric_workflow --write-default-config config/radiometric_inputs.json
+    python -m radiometric_app.radiometric_workflow --config config/radiometric_inputs.json
+    python -m radiometric_app.radiometric_workflow --request-json request.json
 
 The configuration keys and the stage identifiers in STAGES are stable: labels and descriptions may change, the keys
 and identifiers may not, because saved inputs and results refer to them.
@@ -29,7 +29,7 @@ from pathlib import Path
 import tifffile
 
 # Local Imports
-import panel_spectrum
+from . import panel_spectrum
 import radiometric_correction_tools as rct
 
 REQUEST_VERSION = 1
@@ -319,6 +319,21 @@ def _is_number(value):
 def resolve_path(root, value):
     path = Path(value)
     return path if path.is_absolute() else Path(root) / path
+
+
+CONFIG_FOLDER = 'config'                                   # in the project folder: the configuration, the profiles, the own presets
+DEFAULT_CONFIG_NAME = 'radiometric_inputs.json'
+
+
+def default_config_path(root='.'):
+    """
+    The configuration file that the window and the tools use when none is given: config/radiometric_inputs.json in the
+    project folder; the file that earlier versions kept in the project folder itself is used while the new one does not exist
+    """
+    root = Path(root)
+    path = root / CONFIG_FOLDER / DEFAULT_CONFIG_NAME
+    legacy = root / DEFAULT_CONFIG_NAME
+    return legacy if not path.is_file() and legacy.is_file() else path
 
 
 def exiftool_executable(config, root='.'):

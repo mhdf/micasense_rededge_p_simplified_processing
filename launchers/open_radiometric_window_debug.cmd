@@ -8,8 +8,8 @@ if not exist "%PYTHON_DIR%\python.exe" (
     pause
     exit /b 1
 )
-cd /d "%~dp0"
-"%PYTHON_DIR%\python.exe" -X faulthandler "%~dp0radiometric_window.py" --root "%~dp0."
+cd /d "%~dp0.."
+"%PYTHON_DIR%\python.exe" -X faulthandler -m radiometric_app.radiometric_window --root .
 echo.
 echo The window was closed (exit code %ERRORLEVEL%).
 pause

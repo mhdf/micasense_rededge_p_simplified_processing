@@ -14,7 +14,7 @@ validation of the rows (validate_rows) are plain functions, tested without a dis
 import math
 
 # Local Imports
-from ui_theme import COLORS, FONT, FONT_BOLD
+from .ui_theme import COLORS, FONT, FONT_BOLD
 
 # ======================================================================================
 # THE ROWS OF THE BAND TABLE (NO USER INTERFACE)

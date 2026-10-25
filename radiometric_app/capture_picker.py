@@ -15,8 +15,8 @@ import queue
 import threading
 
 # Local Imports
-from ui_theme import COLORS, FONT, FONT_BOLD, hide_title_icon
-from ui_widgets import ScrollablePage
+from .ui_theme import COLORS, FONT, FONT_BOLD, hide_title_icon
+from .ui_widgets import ScrollablePage
 
 THUMBNAIL_SIZE = (168, 126)
 COLUMNS = 5

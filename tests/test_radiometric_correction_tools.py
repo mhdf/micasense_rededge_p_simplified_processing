@@ -1,7 +1,7 @@
 """
 Tests for the metadata validation and band-file mapping in radiometric_correction_tools.py
 
-Run from this folder with:  python -m unittest test_radiometric_correction_tools -v
+Run from the project folder with:  python -m unittest tests.test_radiometric_correction_tools -v
 The tests that read the example images need ExifTool; set the environment variable
 'exiftoolpath' if it is not on the PATH.
 """
@@ -18,7 +18,7 @@ from unittest import mock
 
 import radiometric_correction_tools as rct
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / 'images' / 'raw'
 BANDS = ['Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR']
 REFLECTANCE_LEVELS = { "Blue": 0.477, "Green": 0.478, "Panchro": 0.479,

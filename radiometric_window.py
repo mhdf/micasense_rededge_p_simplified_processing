@@ -28,7 +28,7 @@ import camera_presets
 import radiometric_correction_tools as rct
 import radiometric_workflow as wf
 from ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
-from ui_widgets import BandTable, ScrollablePage, model_from_rows, pick_names, rows_from_model
+from ui_widgets import BandTable, HelpPanel, NavTiles, ScrollablePage, model_from_rows, pick_names, rows_from_model
 
 DEFAULT_CONFIG_NAME = 'radiometric_inputs.json'
 
@@ -50,6 +50,52 @@ FIELD_PAGE = {'PANEL.manual_regions_file': 'INPUTS'}
 # The keys that hold the name of a capture, chosen from the captures of the images folder (or typed): whether an empty
 # name is one of the choices
 CAPTURE_KEYS = {'INPUTS.reference_panel_capture': False, 'INPUTS.reference_panel_capture_after': True}
+
+
+# What the help column says when the pointer and the keyboard focus are not on a field: title and text of each page
+PAGE_HELP = {
+    'INPUTS': ("Inputs", "Where the images are, which captures show the reference panel and which captures are corrected. "
+                         "Point at a field, or move to it with the keyboard, to read what it does."),
+    'PANEL': ("Reference panel", "The bands of the camera, the known reflectance of the reference panel and how the panel "
+                                 "is measured in its image. Point at a field, or move to it with the keyboard, to read what "
+                                 "it does."),
+    'CORRECTION': ("DLS (Downwelling Light Sensor)", wf.GROUP_NOTES['Correction with the DLS']),
+    'RUN': ("Run and results", "Check the inputs, run the correction and follow it in the log. The configuration is saved "
+                               "when the run starts."),
+}
+
+# Explanations of the parts of the pages that are not fields of the configuration
+BAND_NOTE = ("One row per band. The names must be those written by the camera (XMP:BandName). A band that is not used is in "
+             "the files but is left out of the processing, for example a thermal band. The panel reflectance is the value "
+             "provided with the panel for each band; it is typed here only when its source is 'Values typed in the table "
+             "of the bands'. The center and the bandwidth give the spectral window of the band, used to compute the "
+             "reflectance of the panel from its spectral response file.")
+BAND_TOOLS_NOTE = ("Add band: a new row. Detect from capture: reads the names and spectral windows of the bands from the "
+                   "metadata of the reference panel capture (the typed panel reflectances are kept). Remove: deletes the "
+                   "row of the band.")
+PRESET_NOTE = ("A camera preset fills the table of the bands (and the file name pattern) for a camera model. The presets "
+               "come from the documentation of the manufacturer, not from images: only the MicaSense RedEdge-P was tested. "
+               "Check the result against your own data, for example with Detect from capture.")
+REGIONS_NOTE = ("Check inputs tells whether the folders, the panel capture and the bands are right, before anything is "
+                "opened. Check / draw panel regions opens an overview of the reference panel capture with the region found "
+                "from the QR code in each band (and the regions saved before): accept them there, or edit or draw a band "
+                "when the region is wrong or the QR code cannot be read. Every band has to be accepted. The regions are "
+                "saved in the file above (if it is empty, in panel_regions.json in the results folder, which is then "
+                "filled in above).")
+RUN_NOTES = {
+    'buttons': ("Check inputs, Run, Open results folder",
+                "Check inputs tells whether everything the correction needs is in place, without running it. Run saves "
+                "the configuration and corrects the captures in the background. Open results folder shows the corrected "
+                "images and the provenance records."),
+    'log': ("Log", "What the correction did: errors, flags raised by the checks of the DLS data, and the files written."),
+}
+PROFILE_NOTES = {
+    'save': ("Save configuration", "Writes the values that differ from the defaults in the configuration file shown at the "
+                                   "left."),
+    'profile': ("Profiles", "A profile is a named copy of the configuration, for a camera or a flight. Save profile... writes "
+                            "one in the profiles folder; Load profile... replaces the values in the window with those of a "
+                            "profile."),
+}
 
 
 def page_of(key):
@@ -251,22 +297,21 @@ class RadiometricFrame:
         tk, ttk = self.tk, self.ttk
         bottom = ttk.Frame(self.widget, padding=(12, 6, 12, 10))
         bottom.pack(side='bottom', fill='x')
-        ttk.Button(bottom, text='Save configuration', command=self.save).pack(side='right')
-        ttk.Button(bottom, text='Save profile...', command=self.save_profile_as).pack(side='right', padx=(0, 6))
-        ttk.Button(bottom, text='Load profile...', command=self.load_profile_from).pack(side='right', padx=(0, 6))
+        save_button = ttk.Button(bottom, text='Save configuration', command=self.save)
+        save_button.pack(side='right')
+        save_profile = ttk.Button(bottom, text='Save profile...', command=self.save_profile_as)
+        save_profile.pack(side='right', padx=(0, 6))
+        load_profile = ttk.Button(bottom, text='Load profile...', command=self.load_profile_from)
+        load_profile.pack(side='right', padx=(0, 6))
         self.status = ttk.Label(bottom, style='Muted.TLabel', text=f"Configuration file: {self.config_path}")
         self.status.pack(side='left')                       # packed last: a long path gives way to the buttons
 
         body = ttk.Frame(self.widget)
         body.pack(fill='both', expand=True)
-        self.navigation = tk.Listbox(body, exportselection=False, activestyle='none', borderwidth=0,
-                                     highlightthickness=0, width=22, font=FONT, background=COLORS['panel'],
-                                     foreground=COLORS['foreground'], selectbackground=COLORS['accent'],
-                                     selectforeground=COLORS['foreground'])
-        self.navigation.pack(side='left', fill='y', padx=(12, 0), pady=(12, 0))
-        for _, title in SECTIONS:
-            self.navigation.insert('end', '  ' + title)
-        self.navigation.bind('<<ListboxSelect>>', self._on_navigate)
+        self.navigation = NavTiles(body, [title for _, title in SECTIONS], self._on_navigate)
+        self.navigation.widget.pack(side='left', fill='y', padx=(12, 0), pady=(12, 6))
+        self.help_panel = HelpPanel(body)
+        self.help_panel.widget.pack(side='right', fill='y', padx=(0, 12), pady=(12, 6))
         self.content = ttk.Frame(body, padding=(16, 10, 12, 0))
         self.content.pack(side='left', fill='both', expand=True)
 
@@ -291,19 +336,22 @@ class RadiometricFrame:
                         self._build_field(page, field)
         for key in BAND_KEYS:                                     # these keys live in the band table
             self.variables[key] = self.band_table
+        self.help_panel.describe(save_button, *PROFILE_NOTES['save'])
+        self.help_panel.describe(save_profile, *PROFILE_NOTES['profile'])
+        self.help_panel.describe(load_profile, *PROFILE_NOTES['profile'])
+        self.help_panel.follow(self.parent.winfo_toplevel())
 
     def _build_band_section(self, page):
         tk, ttk = self.tk, self.ttk
-        ttk.Label(page, text='Bands of the camera', style='Heading.TLabel').pack(anchor='w', pady=(6, 2))
+        heading = ttk.Label(page, text='Bands of the camera', style='Heading.TLabel')
+        heading.pack(anchor='w', pady=(6, 2))
         ttk.Separator(page).pack(fill='x', pady=(0, 8))
-        ttk.Label(page, style='Muted.TLabel', wraplength=760, justify='left',
-                  text="One row per band. The names must be those written by the camera (XMP:BandName). A band that is "
-                       "not used is in the files but is left out of the processing, for example a thermal band. "
-                       "The panel reflectance is the value provided with the panel for each band (see the reflectance of "
-                       "the panel, below); it is typed here only when its source is 'values'.").pack(anchor='w', pady=(0, 6))
         self.band_table = BandTable(page, self._table_changed)
         self.band_table.widget.pack(anchor='w')
+        self.help_panel.describe(heading, 'Bands of the camera', BAND_NOTE)
+        self.help_panel.describe(self.band_table.widget, 'Bands of the camera', BAND_NOTE)
         tools = ttk.Frame(page)
+        self.help_panel.describe(tools, 'Add band, Detect from capture', BAND_TOOLS_NOTE)
         tools.pack(fill='x', pady=(8, 0))
         self.band_buttons = {}
         self.band_buttons['add'] = ttk.Button(tools, text='Add band', command=lambda: self.band_table.add_row())
@@ -312,6 +360,7 @@ class RadiometricFrame:
         self.band_buttons['detect'].pack(side='left', padx=(6, 0))
         preset_line = ttk.Frame(page)                         # its own line: the descriptions of the presets are long
         preset_line.pack(fill='x', pady=(8, 0))
+        self.help_panel.describe(preset_line, 'Camera preset', PRESET_NOTE)
         ttk.Label(preset_line, text='Camera preset', style='Muted.TLabel').pack(side='left', padx=(0, 6))
         self.preset_labels = {preset['label']: key for key, preset in sorted(self.presets.items(),
                                                                               key=lambda item: item[1]['label'])}
@@ -350,16 +399,18 @@ class RadiometricFrame:
         group = field.get('group')
         if group and group != self.groups.get(page):
             self.groups[page] = group
-            ttk.Label(page, text=group, style='Heading.TLabel').pack(anchor='w', pady=(10, 2))
+            heading = ttk.Label(page, text=group, style='Heading.TLabel')
+            heading.pack(anchor='w', pady=(10, 2))
             ttk.Separator(page).pack(fill='x', pady=(0, 8))
             if wf.GROUP_NOTES.get(group):
-                ttk.Label(page, text=wf.GROUP_NOTES[group], style='Muted.TLabel', wraplength=760,
-                          justify='left').pack(anchor='w', pady=(0, 10))
+                self.help_panel.describe(heading, group, wf.GROUP_NOTES[group])
         if field.get('dialog'):
             self._build_hidden(field)
             return
         row = ttk.Frame(page)
         row.pack(fill='x', pady=(0, 9))
+        note = wf.GROUP_NOTES.get(group or self.groups.get(page))
+        self.help_panel.describe(row, field['label'], field['help'], *((group or self.groups.get(page), note) if note else ()))
         if kind == 'bool':
             variable = tk.BooleanVar(value=self.model.get(key))
             ttk.Checkbutton(row, text=field['label'], variable=variable).pack(anchor='w')
@@ -408,7 +459,7 @@ class RadiometricFrame:
                     browse = ttk.Button(line, text='Browse...', command=lambda key=key, kind=kind: self._browse(key, kind))
                     browse.pack(side='left', padx=(6, 0))
                     if key == 'PANEL.spectral_file':
-                        importer = ttk.Button(line, text='Import / preview...', command=self.import_spectrum)
+                        importer = ttk.Button(line, text='Import...', command=self.import_spectrum)
                         importer.pack(side='left', padx=(6, 0))
                         self.source_widgets['spectral_file'].extend([entry, browse, importer])
                 if key == 'INPUTS.image_captures':
@@ -417,7 +468,6 @@ class RadiometricFrame:
                     ttk.Button(line, text='Suggest from files', command=self.suggest_pattern).pack(side='left', padx=(6, 0))
                 variable.trace_add('write', lambda *_, key=key, variable=variable: self._changed(key, variable.get()))
                 self.variables[key], self.entries[key] = variable, entry
-        ttk.Label(row, text=field['help'], style='Muted.TLabel', wraplength=760, justify='left').pack(anchor='w')
         if key == 'INPUTS.image_captures':
             self.captures_summary = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
             self.captures_summary.pack(anchor='w', pady=(3, 0))
@@ -435,6 +485,7 @@ class RadiometricFrame:
         ttk = self.ttk
         holder = ttk.Frame(page)
         holder.pack(fill='x', pady=(0, 9))
+        self.help_panel.describe(holder, 'Check inputs, Check / draw panel regions', REGIONS_NOTE)
         line = ttk.Frame(holder)
         line.pack(anchor='w')
         self.buttons['check_here'] = ttk.Button(line, text='Check inputs', command=self.check_inputs_here)
@@ -443,18 +494,12 @@ class RadiometricFrame:
         self.buttons['regions'].pack(side='left', padx=(6, 0))
         self.inputs_status = ttk.Label(holder, text='', style='Muted.TLabel', wraplength=760, justify='left')
         self.inputs_status.pack(anchor='w', pady=(6, 0))
-        ttk.Label(holder, style='Muted.TLabel', wraplength=760, justify='left',
-                  text="Check inputs tells whether the folders, the panel capture and the bands are right, before anything "
-                       "is opened. The second button opens an overview of the reference panel capture with the region "
-                       "found from the QR code in each band (and the regions saved before): accept them there, or edit or "
-                       "draw a band when the region is wrong or the QR code cannot be read. Every band has to be accepted. "
-                       "The regions are saved in the file above (if it is empty, in panel_regions.json in the results "
-                       "folder, which is then filled in above).").pack(anchor='w', pady=(4, 0))
 
     def _build_run_page(self, page):
         tk, ttk = self.tk, self.ttk
         buttons = ttk.Frame(page)
         buttons.pack(fill='x')
+        self.help_panel.describe(buttons, *RUN_NOTES['buttons'])
         for name, text, command in (('check', 'Check inputs', self.check_inputs),
                                     ('run', 'Run', self.start_run),
                                     ('open', 'Open results folder', self.open_results)):
@@ -466,6 +511,7 @@ class RadiometricFrame:
         self.summary.pack(anchor='w', pady=(0, 6))
         frame = ttk.Frame(page)
         frame.pack(fill='both', expand=True, pady=(0, 6))
+        self.help_panel.describe(frame, *RUN_NOTES['log'])
         self.log_text = tk.Text(frame, height=14, wrap='word', state='disabled', borderwidth=0, highlightthickness=0,
                                 background=COLORS['panel'], foreground=COLORS['foreground'], font=('Consolas', 10),
                                 insertbackground=COLORS['foreground'])
@@ -491,17 +537,15 @@ class RadiometricFrame:
         for label in self.wrapped_labels:
             label.configure(wraplength=width)
 
-    def _on_navigate(self, event):
-        selection = self.navigation.curselection()
-        if selection:
-            self._show_page(SECTIONS[selection[0]][0])
+    def _on_navigate(self, index):
+        self._show_page(SECTIONS[index][0])
 
     def _show_page(self, prefix):
         for page in self.pages.values():
             page.pack_forget()
         self.pages[prefix].pack(fill='both', expand=True)
-        self.navigation.selection_clear(0, 'end')
-        self.navigation.selection_set([name for name, _ in SECTIONS].index(prefix))
+        self.navigation.select([name for name, _ in SECTIONS].index(prefix))
+        self.help_panel.set_default(*PAGE_HELP[prefix])
 
     def show_page(self, prefix):
         self._show_page(prefix)
@@ -1100,8 +1144,8 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     window = tk.Tk()
     window.title("Radiometric correction - Micasense RedEdge-P")
-    window.geometry("1100x760")
-    window.minsize(980, 620)
+    window.geometry("1360x800")
+    window.minsize(1100, 620)
     apply_dark_theme(window)
     frame = RadiometricFrame(window, arguments.config, arguments.root)
     frame.widget.pack(fill='both', expand=True)

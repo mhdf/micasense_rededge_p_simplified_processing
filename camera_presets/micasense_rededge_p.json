@@ -1,7 +1,7 @@
 {
   "label": "MicaSense RedEdge-P (5 multispectral bands + panchromatic)",
   "notes": "Bands as written in the metadata of RedEdge-P images (XMP:BandName, XMP:CentralWavelength, XMP:WavelengthFWHM). Use 'Detect from capture' to read the exact values of your camera.",
-  "file_pattern": "(?P<capture>.+)_(?P<index>\\d+)\\.tif$",
+  "file_pattern": "{capture}_{index}.tif",
   "bands": [
     {
       "name": "Blue",

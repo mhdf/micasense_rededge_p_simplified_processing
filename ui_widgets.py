@@ -3,6 +3,8 @@ Widgets shared by the windows of this project
 
     ScrollablePage   a frame whose content scrolls (mouse wheel and scroll bar) when it is taller than the window
     BandTable        the bands of the camera: use, name, spectral window and panel reflectance, one row per band
+    NavTiles         large tiles, one above the other, to choose the page of a window
+    HelpPanel        a column that explains the field under the mouse pointer or with the keyboard focus
 
 The conversion between the rows of the table and the configuration (rows_from_model, model_from_rows) and the
 validation of the rows (validate_rows) are plain functions, tested without a display.
@@ -12,7 +14,7 @@ validation of the rows (validate_rows) are plain functions, tested without a dis
 import math
 
 # Local Imports
-from ui_theme import COLORS, FONT
+from ui_theme import COLORS, FONT, FONT_BOLD
 
 # ======================================================================================
 # THE ROWS OF THE BAND TABLE (NO USER INTERFACE)
@@ -302,3 +304,184 @@ def pick_names(parent, names, selected=(), title='Select captures'):
     window.grab_set()
     window.wait_window()
     return outcome['value']
+
+
+class NavTiles:
+    """
+    Large tiles in a column to choose a page (the pages of the photogrammetric workflow window look like this). The
+    selected tile is highlighted; click, Enter/Space (focused tile) and Up/Down choose one. on_select(index) is called
+    after the choice; get, size, select and curselection follow the interface of a Listbox
+    """
+
+    def __init__(self, parent, titles, on_select=None, width=190):
+        import tkinter as tk
+        self.tk = tk
+        self.titles = list(titles)
+        self.on_select = on_select
+        self.selected = None
+        self.widget = tk.Frame(parent, background=COLORS['background'], width=width)
+        self.widget.pack_propagate(False)
+        self.widget.grid_propagate(False)
+        self.widget.grid_columnconfigure(0, weight=1)
+        self.tiles = []
+        for index, title in enumerate(self.titles):
+            self.widget.grid_rowconfigure(index, weight=1, uniform='tile')
+            tile = tk.Label(self.widget, text=title, anchor='w', padx=22, font=('Segoe UI', 11, 'bold'),
+                            background=COLORS['tile'], foreground=COLORS['foreground'], takefocus=True,
+                            highlightthickness=1, highlightbackground=COLORS['border'], highlightcolor=COLORS['tile_border'],
+                            cursor='hand2')
+            tile.grid(row=index, column=0, sticky='nsew', pady=(0, 6))
+            tile.bind('<Button-1>', lambda event, index=index: self._choose(index))
+            tile.bind('<Return>', lambda event, index=index: self._choose(index))
+            tile.bind('<space>', lambda event, index=index: self._choose(index))
+            tile.bind('<Up>', lambda event, index=index: self._choose(max(index - 1, 0), focus=True))
+            tile.bind('<Down>', lambda event, index=index: self._choose(min(index + 1, len(self.titles) - 1), focus=True))
+            tile.bind('<Enter>', lambda event, index=index: self._paint(index, hover=True))
+            tile.bind('<Leave>', lambda event, index=index: self._paint(index))
+            self.tiles.append(tile)
+
+    def _paint(self, index, hover=False):
+        if index == self.selected:
+            background, border = COLORS['tile_selected'], COLORS['tile_border']
+        else:
+            background, border = (COLORS['tile_hover'] if hover else COLORS['tile']), COLORS['border']
+        self.tiles[index].configure(background=background, highlightbackground=border)
+
+    def _choose(self, index, focus=False):
+        self.select(index)
+        if focus:
+            self.tiles[index].focus_set()
+        if self.on_select is not None:
+            self.on_select(index)
+
+    def select(self, index):
+        previous, self.selected = self.selected, index
+        for number in {previous, index} - {None}:
+            self._paint(number)
+
+    def curselection(self):
+        return () if self.selected is None else (self.selected,)
+
+    def size(self):
+        return len(self.titles)
+
+    def get(self, index):
+        return self.titles[index]
+
+
+class HelpPanel:
+    """
+    A column with the explanation of a field. What it shows, in this order of preference: the field under the mouse
+    pointer, the field that has the keyboard focus, and the explanation of the page (set_default). A widget is described
+    with describe(widget, title, text, extra_title, extra_text): everything inside it (also what is added later, like the
+    rows of a table) shows that explanation. The pointer and the focus are followed from the toplevel window, so nothing
+    has to be bound to each widget; follow(toplevel) starts it
+    """
+
+    def __init__(self, parent, width=340):
+        import tkinter as tk
+        self.tk = tk
+        self.width = width
+        self.widget = tk.Frame(parent, background=COLORS['panel'], width=width)
+        self.widget.pack_propagate(False)
+        wrap = width - 36
+        self.title_label = tk.Label(self.widget, text='', font=FONT_BOLD, anchor='nw', justify='left', wraplength=wrap,
+                                    background=COLORS['panel'], foreground=COLORS['foreground'])
+        self.text_label = tk.Label(self.widget, text='', font=FONT, anchor='nw', justify='left', wraplength=wrap,
+                                   background=COLORS['panel'], foreground=COLORS['foreground'])
+        self.extra_title_label = tk.Label(self.widget, text='', font=FONT_BOLD, anchor='nw', justify='left', wraplength=wrap,
+                                          background=COLORS['panel'], foreground=COLORS['foreground'])
+        self.extra_text_label = tk.Label(self.widget, text='', font=FONT, anchor='nw', justify='left', wraplength=wrap,
+                                         background=COLORS['panel'], foreground=COLORS['muted'])
+        self.title_label.pack(fill='x', padx=18, pady=(16, 6))
+        self.text_label.pack(fill='x', padx=18)
+        self.described = {}                          # str(widget) -> (title, text, extra title, extra text)
+        self.default = ('', '', '', '')
+        self.hover = None
+        self.focus = None
+        self.shown = self.default
+        self.revert_job = None
+        self.root = None
+
+    # --- what is shown --------------------------------------------------------------------------------------
+
+    def describe(self, widget, title, text, extra_title='', extra_text=''):
+        self.described[str(widget)] = (title, text, extra_title, extra_text)
+
+    def set_default(self, title, text, extra_title='', extra_text=''):
+        """ The explanation of the page; the pointer and the focus are forgotten (a new page was opened) """
+        self.default = (title, text, extra_title, extra_text)
+        self.hover = self.focus = None
+        self._refresh()
+
+    def _refresh(self):
+        self.shown = self.hover or self.focus or self.default
+        title, text, extra_title, extra_text = self.shown
+        for label, content in ((self.title_label, title), (self.text_label, text),
+                               (self.extra_title_label, extra_title), (self.extra_text_label, extra_text)):
+            if label.cget('text') != content:
+                label.configure(text=content)
+        if not extra_title:
+            self.extra_title_label.pack_forget()
+            self.extra_text_label.pack_forget()
+        elif not self.extra_title_label.winfo_manager():
+            self.extra_title_label.pack(fill='x', padx=18, pady=(18, 6))
+            self.extra_text_label.pack(fill='x', padx=18)
+
+    def explanation_of(self, widget):
+        """ The explanation of the widget or of the nearest widget around it that has one, or None """
+        while widget is not None:
+            found = self.described.get(str(widget))
+            if found:
+                return found
+            widget = widget.master
+        return None
+
+    # --- the pointer and the focus --------------------------------------------------------------------------
+
+    def point_at(self, widget):
+        """ The mouse pointer is over widget (None: over nothing). Leaving a field goes back to the page a moment later """
+        found = self.explanation_of(widget)
+        if self.revert_job is not None:
+            self.widget.after_cancel(self.revert_job)
+            self.revert_job = None
+        if found:
+            if found is not self.hover:
+                self.hover = found
+                self._refresh()
+        elif self.hover is not None:
+            self.revert_job = self.widget.after(120, self._forget_hover)
+
+    def _forget_hover(self):
+        self.revert_job = None
+        self.hover = None
+        self._refresh()
+
+    def focus_on(self, widget):
+        """ The keyboard focus moved to widget """
+        self.focus = self.explanation_of(widget)
+        self._refresh()
+
+    def follow(self, toplevel):
+        """ Follow the pointer and the focus in a window (the events of the widgets inside it reach it) """
+        self.root = toplevel
+
+        def inside(widget):
+            return widget is not None and str(widget).startswith(str(self.widget.master))
+
+        def on_motion(event):
+            try:
+                if self.widget.winfo_exists() and inside(event.widget):
+                    self.point_at(event.widget)
+            except self.tk.TclError:
+                pass
+
+        def on_focus(event):
+            try:
+                if self.widget.winfo_exists() and inside(event.widget):
+                    self.focus_on(event.widget)
+            except self.tk.TclError:
+                pass
+
+        toplevel.bind('<Motion>', on_motion, add='+')
+        toplevel.bind('<FocusIn>', on_focus, add='+')

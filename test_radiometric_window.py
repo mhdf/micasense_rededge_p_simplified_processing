@@ -712,40 +712,43 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Reference panel regions',
                                         'Images to correct'])
 
-    def test_the_explanations_follow_the_width_of_the_page(self):
+    def test_the_messages_follow_the_width_of_the_page_and_the_help_column_keeps_its_width(self):
         self.root.attributes('-alpha', 0.0)
         self.root.deiconify()
-        self.root.geometry('1000x760')
+        self.root.geometry('1300x760')
         self.root.update()
-        self.assertGreater(len(self.frame.wrapped_labels), 20)
+        self.assertGreater(len(self.frame.wrapped_labels), 3)
         narrow = {int(label.cget('wraplength')) for label in self.frame.wrapped_labels}
+        panel_width = self.frame.help_panel.widget.winfo_width()
         self.assertEqual(len(narrow), 1)
-        self.root.geometry('1600x760')
+        self.root.geometry('1800x760')
         self.root.update()
         wide = {int(label.cget('wraplength')) for label in self.frame.wrapped_labels}
         self.assertEqual(len(wide), 1)
-        self.assertGreater(wide.pop(), narrow.pop() + 400)
-        self.assertGreater(max(int(label.cget('wraplength')) for label in self.frame.wrapped_labels), 1200)
+        self.assertGreater(wide.pop(), narrow.pop() + 300)
+        self.assertEqual(self.frame.help_panel.widget.winfo_width(), panel_width)          # the help column does not grow
 
-    def test_the_help_of_a_field_uses_the_width_of_the_page_on_every_page(self):
-        self.root.attributes('-alpha', 0.0)
-        self.root.deiconify()
-        self.root.geometry('1500x760')
-        self.root.update()
-        width = self.frame.content.winfo_width() - 100
-        for key in ('INPUTS.images_folder', 'CHECKS.jump_threshold', 'PANEL.panels_used'):
-            page = rw.page_of(key)
-            helps = [label for label in self.frame.wrapped_labels
-                     if label.cget('text') == next(f for f in wf.FIELDS if f['key'] == key)['help']]
-            self.assertEqual(len(helps), 1, key)
-            self.assertEqual(int(helps[0].cget('wraplength')), width, key)
+    def test_every_field_of_a_page_is_explained_in_the_help_column(self):
+        for field in wf.FIELDS:
+            key = field['key']
+            if field.get('dialog') or key in rw.BAND_KEYS:
+                continue
+            if key not in self.frame.entries:
+                continue                                                      # a check box has no entry
+            widget = self.frame.entries[key]
+            found = self.frame.help_panel.explanation_of(next(iter(widget.values())) if isinstance(widget, dict) else widget)
+            self.assertEqual((found[0], found[1]), (field['label'], field['help']), key)
 
     def dls_labels(self):
         return [child.cget('text') for child in self.frame.scroll_pages['CORRECTION'].body.winfo_children()
                 if child.winfo_class() == 'TLabel']
 
     def test_the_dls_page_explains_the_ratio_and_where_the_zenith_comes_from(self):
-        texts = ' '.join(self.dls_labels())
+        self.frame.show_page('CORRECTION')
+        body = self.frame.scroll_pages['CORRECTION'].body
+        notes = [self.frame.help_panel.explanation_of(child)[1] for child in body.winfo_children()
+                 if child.winfo_class() == 'TLabel' and self.frame.help_panel.explanation_of(child)]
+        texts = ' '.join([self.frame.help_panel.default[1]] + notes)
         for phrase in ('E_panel / E_image', 'XMP:HorizontalIrradiance', 'Example: 0.885 means that the light was 13 % stronger',
                        'the reflectance is multiplied by 0.885', 'XMP:EstimatedDirectLightVector',
                        'the solar zenith, 90 degrees minus XMP:SolarElevation', 'tilted DLS or inconsistent data',
@@ -753,11 +756,16 @@ class WindowTests(unittest.TestCase):
             self.assertIn(phrase, texts)
         self.assertIn('Checks of the DLS data (limits)', self.dls_labels())
 
-    def test_each_part_of_the_dls_page_has_its_explanation_under_its_heading(self):
-        labels = self.dls_labels()
+    def test_each_part_of_the_dls_page_is_explained_by_its_heading(self):
+        body = self.frame.scroll_pages['CORRECTION'].body
+        headings = {child.cget('text'): child for child in body.winfo_children() if child.winfo_class() == 'TLabel'}
         for group, start in (('Correction with the DLS', 'The panel photo sets the reflectance scale'),
                              ('Checks of the DLS data (limits)', 'Flags only')):
-            self.assertEqual(labels[labels.index(group) + 1][:len(start)], start)
+            found = self.frame.help_panel.explanation_of(headings[group])
+            self.assertEqual(found[0], group)
+            self.assertTrue(found[1].startswith(start), group)
+        use = self.frame.help_panel.explanation_of(self.frame.entries['CHECKS.jump_threshold'])
+        self.assertEqual(use[2], 'Checks of the DLS data (limits)')                 # a field also shows the note of its part
 
     def test_the_limits_say_what_they_mean(self):
         helps = {field['key']: field['help'] for field in wf.FIELDS if field['key'].startswith(('CHECKS.', 'CORRECTION.'))}
@@ -858,6 +866,86 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertEqual(box.get(), 'Values typed in the table of the bands')
         self.frame.variables['PANEL.reflectance_source'].set('spectral_file')
         self.assertEqual(box.get(), 'Spectral response file (.csv)')
+
+
+class HelpColumnTests(unittest.TestCase):
+    setUp = WindowTests.setUp
+    tearDown = WindowTests.tearDown
+
+    def test_the_page_is_explained_when_no_field_is_pointed_at(self):
+        panel = self.frame.help_panel
+        self.assertEqual(panel.title_label.cget('text'), 'Inputs')
+        self.frame.show_page('CORRECTION')
+        self.assertEqual(panel.title_label.cget('text'), 'DLS (Downwelling Light Sensor)')
+        self.assertIn('E_panel / E_image', panel.text_label.cget('text'))
+
+    def test_the_pointer_shows_the_field_and_leaving_goes_back_to_the_page(self):
+        panel = self.frame.help_panel
+        entry = self.frame.entries['INPUTS.file_pattern']
+        panel.point_at(entry)
+        self.assertEqual(panel.title_label.cget('text'), 'File name pattern')
+        self.assertIn('{capture}', panel.text_label.cget('text'))
+        panel.point_at(self.frame.content)                      # over nothing that is explained
+        self.root.update()
+        self.assertEqual(panel.title_label.cget('text'), 'File name pattern')     # not at once: no flicker between fields
+        end = time.time() + 2
+        while panel.title_label.cget('text') != 'Inputs' and time.time() < end:
+            self.root.update()
+            time.sleep(0.02)
+        self.assertEqual(panel.title_label.cget('text'), 'Inputs')
+
+    def test_the_keyboard_focus_shows_the_field_and_the_pointer_wins(self):
+        panel = self.frame.help_panel
+        panel.focus_on(self.frame.entries['INPUTS.images_folder'])
+        self.assertEqual(panel.title_label.cget('text'), 'Images folder')
+        panel.point_at(self.frame.entries['INPUTS.results_folder'])
+        self.assertEqual(panel.title_label.cget('text'), 'Results folder')
+        panel.point_at(None)
+        panel._forget_hover()
+        self.assertEqual(panel.title_label.cget('text'), 'Images folder')        # back to the field with the focus
+
+    def test_a_real_focus_event_is_followed(self):
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.update()
+        entry = self.frame.entries['INPUTS.results_folder']
+        entry.focus_force()
+        self.root.update()
+        self.assertEqual(self.frame.help_panel.title_label.cget('text'), 'Results folder')
+
+    def test_the_rows_of_the_band_table_and_the_buttons_are_explained(self):
+        panel = self.frame.help_panel
+        row = self.frame.band_table.rows[0]['widgets']['name']
+        self.assertEqual(panel.explanation_of(row)[0], 'Bands of the camera')
+        self.assertEqual(panel.explanation_of(self.frame.buttons['regions'])[0], 'Check inputs, Check / draw panel regions')
+        self.assertEqual(panel.explanation_of(self.frame.buttons['run'])[0], 'Check inputs, Run, Open results folder')
+        self.assertEqual(panel.explanation_of(self.frame.preset_box)[0], 'Camera preset')
+
+    def test_the_group_note_is_shown_under_the_field_and_removed_when_there_is_none(self):
+        panel = self.frame.help_panel
+        panel.point_at(self.frame.entries['CHECKS.jump_threshold'])
+        self.assertEqual(panel.extra_title_label.cget('text'), 'Checks of the DLS data (limits)')
+        self.assertTrue(panel.extra_title_label.winfo_manager())
+        panel.point_at(self.frame.entries['INPUTS.images_folder'])
+        self.assertFalse(panel.extra_title_label.winfo_manager())
+
+    def test_the_tiles_choose_the_page(self):
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.update()
+        tiles = self.frame.navigation
+        self.assertEqual(tiles.curselection(), (0,))
+        tiles.tiles[2].event_generate('<Button-1>')
+        self.root.update()
+        self.assertEqual(tiles.curselection(), (2,))
+        self.assertTrue(self.frame.pages['CORRECTION'].winfo_manager())
+        self.assertFalse(self.frame.pages['INPUTS'].winfo_manager())
+        tiles.tiles[2].focus_force()
+        self.root.update()
+        tiles.tiles[2].event_generate('<Down>')
+        self.root.update()
+        self.assertEqual(tiles.curselection(), (3,))
+        self.assertEqual(self.frame.help_panel.title_label.cget('text'), 'Run and results')
 
 
 if __name__ == '__main__':

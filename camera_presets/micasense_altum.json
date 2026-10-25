@@ -1,7 +1,7 @@
 {
   "label": "MicaSense Altum (5 reflective bands, thermal band left out)",
   "notes": "The Altum shares the band layout of the RedEdge-MX; the thermal band (LWIR) is in the files but is not processed. Check the band names with 'Detect from capture' before relying on this preset.",
-  "file_pattern": "(?P<capture>.+)_(?P<index>\\d+)\\.tif$",
+  "file_pattern": "{capture}_{index}.tif",
   "bands": [
     {
       "name": "Blue",

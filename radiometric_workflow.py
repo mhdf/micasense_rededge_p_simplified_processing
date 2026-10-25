@@ -116,7 +116,7 @@ FIELDS = [
                                                     'names must be those written by the camera (XMP:BandName).'},
     {'key': 'PANEL.spectral_file', 'kind': 'file', 'default': '', 'group': 'Reflectance of the panel',
      'label': 'Spectral response file',
-     'help': 'Reflectance of the panel by wavelength (.csv). Use Import / preview to choose how to read it.'},
+     'help': 'Reflectance of the panel by wavelength (.csv). Use Import... to choose how to read it.'},
     {'key': 'PANEL.spectral_delimiter', 'kind': 'choice', 'choices': list(panel_spectrum.DELIMITERS), 'dialog': True,
      'default': 'auto', 'group': 'Reflectance of the panel', 'label': 'Delimiter',
      'help': 'Character that separates the columns; auto detects it.'},

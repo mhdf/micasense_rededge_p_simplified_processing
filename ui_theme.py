@@ -7,7 +7,8 @@ so that the windows can be merged into it later: when that happens this file can
 
 COLORS = {'background': '#242424', 'panel': '#2b2b2b', 'input': '#595d61', 'foreground': '#dedede',
           'muted': '#aaaeb2', 'disabled': '#777b7e', 'border': '#444444', 'accent': '#485968',
-          'manual': '#35c4e8', 'automatic': '#f2c84b', 'error': '#e8785a', 'ok': '#7cc67c'}
+          'manual': '#35c4e8', 'automatic': '#f2c84b', 'error': '#e8785a', 'ok': '#7cc67c',
+          'tile': '#32373c', 'tile_hover': '#3a4249', 'tile_selected': '#455a6a', 'tile_border': '#5d7487'}
 
 import sys
 

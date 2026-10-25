@@ -28,7 +28,8 @@ import camera_presets
 import radiometric_correction_tools as rct
 import radiometric_workflow as wf
 from ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
-from ui_widgets import BandTable, HelpPanel, NavTiles, ScrollablePage, model_from_rows, pick_names, rows_from_model
+from capture_picker import pick_captures
+from ui_widgets import BandTable, HelpPanel, NavTiles, ScrollablePage, model_from_rows, rows_from_model
 
 DEFAULT_CONFIG_NAME = 'radiometric_inputs.json'
 
@@ -47,9 +48,10 @@ PAGE_TITLES = {'CORRECTION': 'DLS (Downwelling Light Sensor)'}          # where 
 PAGE_PREFIXES = {'CORRECTION': ('CORRECTION', 'CHECKS')}
 FIELD_PAGE = {'PANEL.manual_regions_file': 'INPUTS'}
 
-# The keys that hold the name of a capture, chosen from the captures of the images folder (or typed): whether an empty
-# name is one of the choices
-CAPTURE_KEYS = {'INPUTS.reference_panel_capture': False, 'INPUTS.reference_panel_capture_after': True}
+# The keys that hold the name of a capture, typed or chosen by looking at the captures of the images folder: the text
+# of the choice of no capture, for the key that may be empty
+CAPTURE_KEYS = {'INPUTS.reference_panel_capture': None,
+                'INPUTS.reference_panel_capture_after': 'No second panel capture'}
 
 
 # What the help column says when the pointer and the keyboard focus are not on a field: title and text of each page.
@@ -61,10 +63,7 @@ PAGE_HELP = {
                "- Choose the images folder and the results folder.\n"
                "- Choose the capture that shows the reference panel (and the one taken after the flight, if there is one).\n"
                "- Check the inputs, then check or draw the regions of the panel.\n"
-               "- Choose the captures to correct.\n"
-               "# This column\n"
-               "- Point at a field, or move to it with the Tab key, to read what it does.\n"
-               "- Drag the line between this column and the fields to change its width."),
+               "- Choose the captures to correct."),
     'PANEL': ("Reference panel",
               "The bands of the camera, the known reflectance of the reference panel and how the panel is measured in its "
               "image.\n"
@@ -72,8 +71,7 @@ PAGE_HELP = {
               "- Bands of the camera: the table of the bands, with the buttons to detect them from a capture or to fill them "
               "from a camera preset.\n"
               "- Reflectance of the panel: where the value of each band comes from.\n"
-              "- Panel measurement: how the panel is measured, and what is done with a second panel capture.\n"
-              "Point at a field, or move to it with the Tab key, to read what it does."),
+              "- Panel measurement: how the panel is measured, and what is done with a second panel capture."),
     'CORRECTION': ("DLS (Downwelling Light Sensor)", wf.GROUP_NOTES['Correction with the DLS']),
     'RUN': ("Run and results",
             "Check the inputs, run the correction and follow it in the log.\n"
@@ -98,9 +96,9 @@ PRESET_NOTE = ("A camera preset fills the table of the bands, and the file name 
                "was tested. Check the result against your own data, for example with Detect from capture.")
 REGIONS_NOTE = ("- Check inputs: tells whether the folders, the panel capture and the bands are right, before anything is "
                 "opened.\n"
-                "- Check / draw panel regions: opens an overview of the panel capture with the region found from the QR code "
-                "in each band, and the regions saved before. Accept them there, or edit or draw a band when the region is "
-                "wrong or the QR code cannot be read. Every band has to be accepted.\n"
+                "- Check / draw panel regions: opens the panel capture band by band, with the region found from the QR code "
+                "and the regions saved before. Accept each one there, or turn on the drawing (Edit region) when the region "
+                "is wrong or the QR code cannot be read. Every band has to be accepted.\n"
                 "The regions are saved in the file above; if it is empty, in panel_regions.json in the results folder, which "
                 "is then filled in above.")
 RUN_NOTES = {
@@ -120,24 +118,12 @@ PROFILE_NOTES = {
 
 # The fields that show live information in the help column, and the information
 DETAILS = {'INPUTS.image_captures': 'captures_details', 'INPUTS.file_pattern': 'pattern_details',
-           'PANEL.spectral_file': 'spectral_details'}
-
-
-def default_text(field):
-    """ The default value of a field, as a line for the help column ('' for the fields without one worth showing) """
-    default, kind = field['default'], field['kind']
-    if kind in ('band_values',):
-        return ''
-    if kind == 'bool':
-        return 'Default: ' + ('on' if default else 'off')
-    if kind == 'choice' and field.get('labels'):
-        default = field['labels'].get(default, default)
-    return f"Default: {default if str(default) != '' else 'empty'}"
+           'PANEL.spectral_file': 'spectral_details', 'INPUTS.exiftool_path': 'exiftool_details'}
 
 
 def field_help(field):
-    """ What the help column says about a field: its explanation and its default value """
-    return field['help'].rstrip('\n') + ('\n' + default_text(field) if default_text(field) else '')
+    """ What the help column says about a field """
+    return field['help'].rstrip('\n')
 
 
 def page_of(key):
@@ -308,12 +294,20 @@ class RadiometricFrame:
         self._update_spectral_summary()
         self.preview_after = None
         self._update_pattern_preview()
+        self.exiftool_after = self.exiftool_state = None
+        self._check_exiftool()
         if self.load_message:
             self.log(self.load_message, 'error')
         self._after_id = self.parent.after(100, self._poll)
 
     def close(self):
         """ Stop looking for events of the worker threads (done when the frame is destroyed) """
+        if getattr(self, 'exiftool_after', None) is not None:
+            try:
+                self.parent.after_cancel(self.exiftool_after)
+            except self.tk.TclError:
+                pass
+            self.exiftool_after = None
         if getattr(self, 'preview_after', None) is not None:
             try:
                 self.parent.after_cancel(self.preview_after)
@@ -496,9 +490,6 @@ class RadiometricFrame:
                 elif kind == 'choice':
                     entry = ttk.Combobox(line, textvariable=variable, values=field['choices'], state='readonly',
                                          width=18)
-                elif key in CAPTURE_KEYS:                     # typed, or chosen among the captures of the folder
-                    entry = ttk.Combobox(line, textvariable=variable, values=self.capture_names(CAPTURE_KEYS[key]),
-                                         postcommand=lambda key=key: self._refresh_capture_choices(key))
                 else:
                     entry = ttk.Entry(line, textvariable=variable, width=12 if kind in ('float', 'int') else 56)
                 entry.pack(side='left', fill='x', expand=kind in ('folder', 'file', 'text'))
@@ -509,6 +500,9 @@ class RadiometricFrame:
                         importer = ttk.Button(line, text='Import...', command=self.import_spectrum)
                         importer.pack(side='left', padx=(6, 0))
                         self.source_widgets['spectral_file'].extend([entry, browse, importer])
+                if key in CAPTURE_KEYS:
+                    ttk.Button(line, text='Select...', command=lambda key=key: self.choose_panel_capture(key)).pack(
+                        side='left', padx=(6, 0))
                 if key == 'INPUTS.image_captures':
                     ttk.Button(line, text='Select...', command=self.choose_captures).pack(side='left', padx=(6, 0))
                 if key == 'INPUTS.file_pattern':
@@ -521,6 +515,8 @@ class RadiometricFrame:
             self.pattern_preview = ttk.Label(row, text='', style='Error.TLabel', wraplength=760, justify='left')
         if key == 'PANEL.spectral_file':
             self.spectral_summary = ttk.Label(row, text='', style='Error.TLabel', wraplength=760, justify='left')
+        if key == 'INPUTS.exiftool_path':
+            self.exiftool_summary = ttk.Label(row, text='', style='Error.TLabel', wraplength=760, justify='left')
         if key == 'PANEL.manual_regions_file':
             self._build_regions_tool(page)
 
@@ -653,18 +649,53 @@ class RadiometricFrame:
             names = []
         return ([''] if with_empty else []) + names
 
-    def _refresh_capture_choices(self, key):
-        self.entries[key].configure(values=self.capture_names(CAPTURE_KEYS[key]))
+    def _picker_arguments(self):
+        """ What the window of captures needs: the names, the files of each capture and the bands that can be shown """
+        config, _ = self.model.config()
+        folder = wf.resolve_path(self.root_folder, config['INPUTS.images_folder'])
+        pattern = config['INPUTS.file_pattern']
+        names = self.capture_names()
+        bands = [row['name'].strip() for row in self.band_table.get_rows() if row['process'] and row['name'].strip()]
+        exiftool = wf.exiftool_executable(config, self.root_folder)
+        ignored = wf.capture_names(config['INPUTS.ignored_bands'])
+        positions = {}
+
+        def paths_of(name):
+            return rct.find_capture_paths(folder, name, pattern)
+
+        def resolve_band(band):
+            """ The position of a band among the files of a capture, from the metadata of the first capture """
+            if not positions:
+                paths = paths_of(names[0])
+                for found, (path, _) in rct.read_band_files(paths, None, exiftool, ignored).items():
+                    positions[found] = paths.index(path)
+            return positions[band]
+
+        return {'paths_of': paths_of, 'bands': bands, 'resolve_band': resolve_band}
+
+    def choose_panel_capture(self, key):
+        """ Choose the capture of the panel by looking at the captures of the images folder """
+        names = self.capture_names()
+        if not names:
+            self.log('There are no captures in the images folder (check the folder and the file name pattern).', 'error')
+            return
+        chosen = pick_captures(self.parent.winfo_toplevel(), names, selected=[self.model.get(key).strip()],
+                               none_label=CAPTURE_KEYS[key], title='Select the capture that shows the panel',
+                               message='Click the capture that shows the reference panel', **self._picker_arguments())
+        if chosen is not None:
+            self.set_value(key, chosen)
 
     def choose_captures(self):
-        """ Choose the captures to correct in a list of those of the folder (the panel captures are left out) """
-        names = [name for name in self.capture_names()
-                 if name not in (self.model.get('INPUTS.reference_panel_capture').strip(),
-                                 self.model.get('INPUTS.reference_panel_capture_after').strip())]
+        """ Choose the captures to correct by looking at those of the folder (the panel captures are left out) """
+        panels = (self.model.get('INPUTS.reference_panel_capture').strip(),
+                  self.model.get('INPUTS.reference_panel_capture_after').strip())
+        names = [name for name in self.capture_names() if name not in panels]
         if not names:
             self.log('There are no other captures in the images folder (check the folder and the file name pattern).', 'error')
             return
-        chosen = pick_names(self.parent.winfo_toplevel(), names, wf.capture_names(self.model.get('INPUTS.image_captures')))
+        chosen = pick_captures(self.parent.winfo_toplevel(), names, selected=wf.capture_names(self.model.get('INPUTS.image_captures')),
+                               multiple=True, title='Select the captures to correct',
+                               message='Click the captures to correct', **self._picker_arguments())
         if chosen is not None:
             self.set_value('INPUTS.image_captures', ', '.join(chosen))
 
@@ -718,6 +749,39 @@ class RadiometricFrame:
                 problem = 'There are no captures to correct in the images folder.'
         self._problem(self.captures_summary, problem)
         self.help_panel.refresh()
+
+    def _check_exiftool(self):
+        """ Look for ExifTool and pyexiftool now; the version is asked a moment later, in another thread """
+        if self.exiftool_after is not None:
+            self.parent.after_cancel(self.exiftool_after)
+            self.exiftool_after = None
+        config, _ = self.model.config()
+        path, source = wf.find_exiftool(config, self.root_folder)
+        package = wf.pyexiftool_installed()
+        self.exiftool_state = {'path': path, 'source': source, 'package': package, 'version': None}
+        problems = []
+        if path is None:
+            problems.append(f"ExifTool was not found in {source}: install it (see the explanation), or choose it here.")
+        if not package:
+            problems.append('The Python package pyexiftool is not installed (pip install pyexiftool).')
+        self._problem(self.exiftool_summary, ' '.join(problems))
+        self.help_panel.refresh()
+        if path is not None:
+            self.exiftool_after = self.parent.after(800, lambda path=path: threading.Thread(
+                target=lambda: self.events.put(('exiftool', (path, wf.exiftool_version(path)))), daemon=True).start())
+
+    def exiftool_details(self):
+        """ (title, text) for the help column: the ExifTool that was found """
+        state = getattr(self, 'exiftool_state', None)
+        if not state:
+            return None
+        if state['path'] is None:
+            lines = [f"ExifTool was not found in {state['source']}."]
+        else:
+            version = state['version'] or ('checking...' if state['version'] is None else 'it cannot be run')
+            lines = [f"- Program: {state['path']}", f"- Found through: {state['source']}", f"- Version: {version}"]
+        lines.append('- Python package pyexiftool: ' + ('installed' if state['package'] else 'not installed'))
+        return 'ExifTool on this computer', '\n'.join(lines)
 
     def captures_details(self):
         """ (title, text) for the help column: the captures that will be corrected """
@@ -775,6 +839,8 @@ class RadiometricFrame:
             if getattr(self, 'preview_after', None) is not None:
                 self.parent.after_cancel(self.preview_after)
             self.preview_after = self.parent.after(400, self._update_pattern_preview)
+        if key == 'INPUTS.exiftool_path':
+            self._check_exiftool()
         if key == 'PANEL.reflectance_source':
             self._apply_source_state()
         if key.startswith('PANEL.spectral_') or key in ('PANEL.band_center_wavelengths', 'PANEL.band_bandwidths',
@@ -1193,6 +1259,14 @@ class RadiometricFrame:
             self.log(payload, 'error')
             self.summary.configure(text='The workflow stopped unexpectedly.', style='Error.TLabel')
             self._set_busy(False)
+        elif kind == 'exiftool':
+            path, version = payload
+            state = self.exiftool_state
+            if state and state['path'] == path:
+                state['version'] = version or ''
+                if not version:
+                    self._problem(self.exiftool_summary, f"{path} was found but it cannot be run.")
+                self.help_panel.refresh()
         elif kind == 'images':
             self._open_selector(payload)
         elif kind == 'bands':

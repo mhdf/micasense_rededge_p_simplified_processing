@@ -15,8 +15,11 @@ and identifiers may not, because saved inputs and results refer to them.
 
 # Standard Library Imports
 import argparse
+import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 import traceback
 import warnings
@@ -106,7 +109,9 @@ FIELDS = [
                   "- Download the 'Windows Executable' from exiftool.org.\n"
                   "- Rename exiftool(-k).exe to exiftool.exe and keep it next to its exiftool_files folder.\n"
                   "- Choose it here, or add its folder to the PATH.\n"
-                  "The Python package pyexiftool must be installed as well (pip install pyexiftool).")},
+                  "The Python package pyexiftool must be installed as well (pip install pyexiftool).\n"
+                  "The window looks for both when it opens and each time this field changes, and says below what it found: "
+                  "the program, how it was found, its version and whether the package is installed.")},
     {'key': 'INPUTS.reference_panel_capture', 'group': 'Reference panel', 'kind': 'text', 'default': 'IMG_0005',
      'label': 'Reference panel capture', 'help': ("The capture that shows the reference panel: choose it from the captures of the images folder, or "
                   "type its name (for example IMG_0005).\n"
@@ -323,6 +328,37 @@ def exiftool_executable(config, root='.'):
     return os.environ.get('exiftoolpath')
 
 
+def find_exiftool(config, root='.'):
+    """
+    The ExifTool that will be used and where it was looked for, in this order: INPUTS.exiftool_path, the environment
+    variable exiftoolpath, the system PATH. Returns (path, source); the path is None if it is not there
+    """
+    configured = config['INPUTS.exiftool_path'].strip()
+    if configured:
+        path = resolve_path(root, configured)
+        return (str(path) if path.is_file() else None), 'INPUTS.exiftool_path'
+    from_environment = os.environ.get('exiftoolpath', '').strip()
+    if from_environment:
+        return (from_environment if Path(from_environment).is_file() else shutil.which(from_environment)), \
+            'the environment variable exiftoolpath'
+    return shutil.which('exiftool'), 'the system PATH'
+
+
+def exiftool_version(path, timeout=30):
+    """ The version that 'exiftool -ver' prints, or None if the program cannot be run """
+    try:
+        done = subprocess.run([str(path), '-ver'], capture_output=True, text=True, timeout=timeout,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (done.stdout.strip() or None) if done.returncode == 0 else None
+
+
+def pyexiftool_installed():
+    """ Whether the Python package pyexiftool (import exiftool) is installed """
+    return importlib.util.find_spec('exiftool') is not None
+
+
 def read_capture_images(config, root, capture, exiftool_path=None):
     """ {band: rct.Image} of one capture, with the file pattern, the bands and the ignored bands of the configuration """
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
@@ -536,8 +572,15 @@ def validate_config(config, root='.'):
         problems.append(f"Images folder not found: {images}")
     if not config['INPUTS.results_folder'].strip():
         problems.append("INPUTS.results_folder is empty")
-    if config['INPUTS.exiftool_path'] and not resolve_path(root, config['INPUTS.exiftool_path']).is_file():
-        problems.append(f"ExifTool not found: {resolve_path(root, config['INPUTS.exiftool_path'])}")
+    exiftool_path, exiftool_source = find_exiftool(config, root)
+    if exiftool_path is None:
+        if config['INPUTS.exiftool_path'].strip():
+            problems.append(f"ExifTool not found: {resolve_path(root, config['INPUTS.exiftool_path'])}")
+        else:
+            problems.append(f"ExifTool was not found in {exiftool_source}: install it (exiftool.org), or choose it in "
+                            f"INPUTS.exiftool_path")
+    if not pyexiftool_installed():
+        problems.append("The Python package pyexiftool is not installed (pip install pyexiftool)")
     if config['PANEL.manual_regions_file']:
         regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
         if not regions_file.is_file():

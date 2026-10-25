@@ -99,7 +99,7 @@ class ViewTransformTests(unittest.TestCase):
         self.assertEqual(view.to_canvas((0, 0)), (5.0, -3.0))
 
 
-class TileTests(unittest.TestCase):
+class CloseUpTests(unittest.TestCase):
 
     def test_without_polygons_the_whole_image_is_shown(self):
         self.assertEqual(ps.tile_crop_box([], (1456, 1088), 340 / 250), (0, 0, 1456, 1088))
@@ -120,36 +120,14 @@ class TileTests(unittest.TestCase):
         left, top, right, bottom = ps.tile_crop_box([[[500, 500], [502, 500], [502, 502]]], (1456, 1088), 1.0)
         self.assertGreaterEqual(right - left, 120)
 
-    def display(self):
-        import numpy as np
-        return np.full((300, 400), 90, dtype=np.uint8)
-
-    def colored(self, picture, color):
-        from PIL import ImageColor
-        wanted = ImageColor.getrgb(color)
-        return sum(1 for pixel in picture.getdata() if pixel == wanted)
-
-    def test_a_tile_has_the_requested_size_and_shows_the_outlines(self):
-        polygon = [[150, 100], [250, 100], [250, 200], [150, 200]]
-        picture = ps.render_tile(self.display(), [(polygon, '#00ff00', False)], (340, 250))
-        self.assertEqual((picture.size, picture.mode), ((340, 250), 'RGB'))
-        self.assertGreater(self.colored(picture, '#00ff00'), 400)
-
-    def test_a_dashed_outline_has_gaps(self):
-        polygon = [[150, 100], [250, 100], [250, 200], [150, 200]]
-        solid = self.colored(ps.render_tile(self.display(), [(polygon, '#ffcc00', False)], (340, 250)), '#ffcc00')
-        dashed = self.colored(ps.render_tile(self.display(), [(polygon, '#ffcc00', True)], (340, 250)), '#ffcc00')
-        self.assertTrue(0 < dashed < 0.8 * solid)
-
-    def test_without_polygons_there_is_no_outline(self):
-        picture = ps.render_tile(self.display(), [], (340, 250))
-        self.assertEqual(self.colored(picture, '#00ff00') + self.colored(picture, '#ffcc00'), 0)
-
-    def test_the_second_polygon_is_drawn_over_the_first(self):
-        polygon = [[150, 100], [250, 100], [250, 200], [150, 200]]
-        picture = ps.render_tile(self.display(), [(polygon, '#00ff00', False), (polygon, '#ffcc00', True)], (340, 250))
-        self.assertGreater(self.colored(picture, '#00ff00'), 0)            # seen between the dashes
-        self.assertGreater(self.colored(picture, '#ffcc00'), 0)
+    def test_a_box_can_be_shown_in_the_view_and_the_whole_image_stays_reachable(self):
+        view = ps.ViewTransform()
+        view.fit_box((100, 100, 300, 200), (1000, 1000), (800, 400))
+        self.assertEqual(view.scale, 4.0)                                  # the box fills the canvas
+        self.assertEqual(view.to_canvas((200, 150)), (400.0, 200.0))       # and is centered
+        self.assertEqual(view.fit_scale, 0.4)                              # zooming out can reach the whole image
+        view.zoom_at((400, 200), 1 / 20)
+        self.assertEqual(view.scale, 0.2)
 
 
 class PanelImagesMixin:
@@ -419,11 +397,18 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         self.root.withdraw()
         self.open_window()
 
-    def open_window(self, saved=None, origins=None, images=None, start='overview'):
+    def open_window(self, saved=None, origins=None, images=None):
         self.session = ps.SelectionSession(images or self.panel_images(), saved, saved_origins=origins)
-        self.window = ps.PanelSelectorWindow(self.root, self.session, start=start)
+        self.window = ps.PanelSelectorWindow(self.root, self.session)
         self.root.geometry('1100x760')
         self.root.update()
+
+    def reopen(self, **kwargs):
+        self.root.destroy()
+        import tkinter as tk
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.open_window(**kwargs)
 
     def tearDown(self):
         try:
@@ -443,41 +428,70 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         self.root.update()
         return text
 
-    # --- overview ------------------------------------------------------------------------------------------
+    def band_list(self):
+        return [self.window.band_list.get(index) for index in range(self.window.band_list.size())]
 
-    def test_it_opens_on_an_overview_with_a_tile_for_each_band(self):
+    # --- the band and its decision ---------------------------------------------------------------------------
+
+    def test_it_opens_on_the_first_band_with_the_bands_in_a_list(self):
         window = self.window
-        self.assertEqual(window.mode, 'overview')
-        self.assertIn('overview', window.title_label.cget('text'))
-        self.assertEqual(list(window.tiles), BANDS)
-        for band, tile in window.tiles.items():
-            self.assertEqual((tile['photo'].width(), tile['photo'].height()), ps.TILE_SIZE, band)
-            self.assertEqual(tile['badge'].cget('text'), 'Not accepted (QR code)')
-            self.assertIn('pixels', tile['stats'].cget('text'))
-            self.assertEqual(tile['accept'].cget('text'), 'Accept')
+        self.assertIn('Blue (1 of 6)', window.title_label.cget('text'))
+        self.assertEqual(self.band_list(), [f"{band}   (to accept)" for band in BANDS])
+        self.assertEqual(window.band_list.curselection(), (0,))
         self.assertEqual(window.status_label.cget('text'), '0 of 6 bands accepted')
-        self.assertTrue(window.overview_buttons['finish'].instate(['disabled']))
-        self.assertFalse(window.overview_buttons['accept_all'].instate(['disabled']))
+        self.assertIn('pixels', window.stats_label.cget('text'))
+        self.assertIn('Not accepted yet', window.message_label.cget('text'))
+        self.assertFalse(window.editing)
+        self.assertEqual(window.model.as_integers(), self.session.automatic_polygon('Blue'))
+        self.assertEqual(window.buttons['accept'].cget('text'), 'Accept')
+        self.assertTrue(window.buttons['finish'].instate(['disabled']))
+        self.assertTrue(window.buttons['reset'].instate(['disabled']))              # the tools of the drawing are off
+        self.assertTrue(window.buttons['clear'].instate(['disabled']))
 
-    def test_a_tile_can_be_accepted_and_the_acceptance_undone(self):
+    def test_a_band_can_be_chosen_in_the_list(self):
         window = self.window
-        window.toggle_accept('Green')
-        tile = window.tiles['Green']
-        self.assertEqual(tile['accept'].cget('text'), 'Accepted (undo)')
-        self.assertEqual(tile['badge'].cget('text'), 'Accepted (as found)')
-        self.assertEqual(window.status_label.cget('text'), '1 of 6 bands accepted')
-        self.assertIn('Still to accept: Blue, Panchro', window.overview_message.cget('text'))
-        window.toggle_accept('Green')
-        self.assertEqual(window.tiles['Green']['accept'].cget('text'), 'Accept')
+        window.band_list.selection_clear(0, 'end')
+        window.band_list.selection_set(3)
+        window._on_band_chosen(None)
+        self.assertEqual(self.session.band, 'Red')
+        self.assertIn('Red (4 of 6)', window.title_label.cget('text'))
+
+    def test_accepting_marks_the_band_and_goes_to_the_next_one_that_is_not_accepted(self):
+        window = self.window
+        self.session.accept('Green')
+        window.accept_or_confirm()                                         # Blue, as it is: the region of the QR code
+        self.assertEqual(self.session.origins['Blue'], 'accepted_automatic')
+        self.assertEqual(self.session.band, 'Panchro')                     # Green was accepted already
+        self.assertEqual(self.band_list()[0], 'Blue   (accepted)')
+        self.assertEqual(window.status_label.cget('text'), '2 of 6 bands accepted')
+        self.assertIn('Still to accept: Panchro, Red, Red edge, NIR', window.summary_label.cget('text'))
+
+    def test_pressing_accept_again_takes_the_acceptance_back(self):
+        window = self.window
+        window.accept_or_confirm()
+        window.show_band('Blue')
+        self.assertEqual(window.buttons['accept'].cget('text'), 'Accepted (undo)')
+        self.assertIn('Accepted (as found from the QR code)', window.message_label.cget('text'))
+        window.accept_or_confirm()
+        self.assertEqual(self.session.state('Blue'), 'pending')
+        self.assertEqual(window.buttons['accept'].cget('text'), 'Accept')
         self.assertEqual(window.status_label.cget('text'), '0 of 6 bands accepted')
 
-    def test_all_the_automatic_regions_can_be_accepted_without_opening_the_editor(self):
+    def test_the_enter_key_accepts_but_never_undoes(self):
+        window = self.window
+        window._key_accept()
+        self.assertEqual(self.session.state('Blue'), 'accepted')
+        window.show_band('Blue')
+        window._key_accept()
+        self.assertEqual(self.session.state('Blue'), 'accepted')
+
+    def test_all_the_automatic_regions_can_be_accepted_without_drawing(self):
         window = self.window
         window.accept_all()
-        self.assertEqual(window.mode, 'overview')
+        self.assertFalse(window.editing)
         self.assertTrue(self.session.is_complete())
-        self.assertFalse(window.overview_buttons['finish'].instate(['disabled']))
-        self.assertIn('Every region is accepted', window.overview_message.cget('text'))
+        self.assertFalse(window.buttons['finish'].instate(['disabled']))
+        self.assertIn('Every region is accepted', window.summary_label.cget('text'))
         window.finish()
         self.assertFalse(window.cancelled)
         result = self.session.result()
@@ -486,71 +500,68 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
 
     def test_finishing_before_every_band_is_accepted_is_refused(self):
         window = self.window
-        window.toggle_accept('Blue')
+        window.accept_or_confirm()
         window.finish()
         self.assertFalse(window.finished)
-        self.assertIn('Accept every band of the panel captures first', window.overview_message.cget('text'))
-        self.assertIn('Green', window.overview_message.cget('text'))
+        self.assertIn('Accept every band of the panel captures first', window.message_label.cget('text'))
+        self.assertIn('Green', window.message_label.cget('text'))
 
     def test_the_regions_saved_before_are_shown_as_accepted(self):
-        self.root.destroy()
-        import tkinter as tk
-        self.root = tk.Tk()
-        self.root.withdraw()
         edited = [[700, 200], [850, 200], [850, 320], [700, 320]]
-        self.open_window({'Blue': edited}, {'Blue': 'edited'})
-        tile = self.window.tiles['Blue']
-        self.assertEqual(tile['accept'].cget('text'), 'Accepted (undo)')
-        self.assertEqual(tile['badge'].cget('text'), 'Accepted (edited)')
-        self.assertEqual(self.window.status_label.cget('text'), '1 of 6 bands accepted')
+        self.reopen(saved={'Blue': edited}, origins={'Blue': 'edited'})
+        window = self.window
+        self.assertEqual(self.band_list()[0], 'Blue   (accepted)')
+        self.assertEqual(window.buttons['accept'].cget('text'), 'Accepted (undo)')
+        self.assertIn('Accepted (drawn or edited)', window.message_label.cget('text'))
+        self.assertEqual(window.status_label.cget('text'), '1 of 6 bands accepted')
         self.assertEqual(self.session.proposed_polygon('Blue'), edited)
+        self.assertEqual(window.model.as_integers(), edited)
 
-    def test_a_saved_region_that_cannot_be_used_is_reported_in_the_overview(self):
-        self.root.destroy()
-        import tkinter as tk
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.open_window({'Blue': [[1, 1], [2, 2]]})
-        self.assertIn("The saved region of band 'Blue' is not valid", self.window.overview_message.cget('text'))
+    def test_a_saved_region_that_cannot_be_used_is_reported(self):
+        self.reopen(saved={'Blue': [[1, 1], [2, 2]]})
+        self.assertIn("The saved region of band 'Blue' is not valid", self.window.summary_label.cget('text'))
 
-    def test_a_band_without_a_region_cannot_be_accepted_from_the_overview(self):
-        self.root.destroy()
-        import tkinter as tk
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.open_window(images={'Blue': self.target_images()['Blue'], 'Green': self.target_images()['Green']})
-        tile = self.window.tiles['Blue']
-        self.assertEqual(tile['badge'].cget('text'), 'No region: use Edit')
-        self.assertTrue(tile['accept'].instate(['disabled']))
-        self.window.accept_all()
-        self.assertIn('Blue, Green', self.window.overview_message.cget('text'))
+    def test_a_band_without_a_region_has_to_be_drawn(self):
+        self.reopen(images={'Blue': self.target_images()['Blue'], 'Green': self.target_images()['Green']})
+        window = self.window
+        self.assertEqual(self.band_list(), ['Blue   (no region)', 'Green   (no region)'])
+        self.assertIn('No region was found', window.message_label.cget('text'))
+        self.assertTrue(window.buttons['accept'].instate(['disabled']))
+        window._key_accept()
+        self.assertEqual(self.session.accepted_count(), 0)
+        window.accept_all()
+        self.assertIn('Blue, Green', window.message_label.cget('text'))
         self.assertFalse(self.session.is_complete())
+        window.toggle_edit()                                               # drawing it is possible
+        self.assertFalse(window.buttons['accept'].instate(['disabled']))
 
     def test_cancel_returns_nothing(self):
         self.window.cancel()
         self.assertTrue(self.window.cancelled)
 
-    # --- editor --------------------------------------------------------------------------------------------
+    # --- the drawing, in the same window ---------------------------------------------------------------------
 
-    def test_edit_opens_the_band_in_the_editor_with_the_proposed_region(self):
+    def test_edit_region_turns_the_drawing_on_and_off_in_the_same_window(self):
         window = self.window
-        window.edit_band('Green')
-        self.assertEqual(window.mode, 'editor')
-        self.assertIn('Band 2 of 6: Green', window.title_label.cget('text'))
-        self.assertEqual(window.model.as_integers(), self.session.automatic_polygon('Green'))
-        self.assertIn('Not accepted yet', window.message_label.cget('text'))
-        self.assertIn('pixels', window.stats_label.cget('text'))
-        self.assertEqual(window.editor.winfo_manager(), 'pack')                 # the editor is shown, the overview is not
-        self.assertEqual(window.overview.winfo_manager(), '')
+        window.toggle_edit()
+        self.assertTrue(window.editing)
+        self.assertEqual(window.buttons['accept'].cget('text'), 'Confirm edit')
+        self.assertEqual(window.buttons['edit'].cget('text'), 'Discard edit')
+        self.assertFalse(window.buttons['reset'].instate(['disabled']))
+        self.assertIn('Drawing', window.message_label.cget('text'))
+        self.assertEqual(str(window.canvas.cget('cursor')), 'crosshair')
+        window.toggle_edit()
+        self.assertFalse(window.editing)
+        self.assertEqual(window.buttons['edit'].cget('text'), 'Edit region')
+        self.assertTrue(window.buttons['reset'].instate(['disabled']))
+        self.assertEqual(str(window.canvas.cget('cursor')), 'arrow')
 
-    def test_the_editor_can_be_the_first_view(self):
-        self.root.destroy()
-        import tkinter as tk
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.open_window(start='editor')
-        self.assertEqual(self.window.mode, 'editor')
-        self.assertIn('Band 1 of 6: Blue', self.window.title_label.cget('text'))
+    def test_clicks_only_draw_while_editing(self):
+        window = self.window
+        before = [list(vertex) for vertex in window.model.vertices]
+        self.click(window._on_press, [300, 300])
+        self.click(window._on_release, [300, 300])
+        self.assertEqual(window.model.vertices, before)
 
     def test_clicks_add_drag_and_remove_vertices(self):
         window = self.window
@@ -573,74 +584,75 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         window = self.window
         window.edit_band('Blue')
         window.clear()
-        window.confirm()
-        self.assertEqual(window.mode, 'editor')
+        window.accept_or_confirm()
+        self.assertTrue(window.editing)
         self.assertEqual(self.session.state('Blue'), 'pending')
         self.assertIn('at least 3 vertices', window.message_label.cget('text'))
 
-    def test_confirming_goes_to_the_next_band_that_is_not_accepted(self):
-        window = self.window
-        self.session.accept('Green')
-        window.edit_band('Blue')
-        window.confirm()                                                   # as it is: the automatic region
-        self.assertEqual(self.session.origins['Blue'], 'accepted_automatic')
-        self.assertEqual(window.mode, 'editor')
-        self.assertIn('Band 3 of 6: Panchro', window.title_label.cget('text'))   # Green is already accepted
-
-    def test_an_edited_region_is_accepted_as_edited(self):
+    def test_an_edited_region_is_accepted_as_edited_and_the_drawing_is_turned_off(self):
         window = self.window
         window.edit_band('Blue')
         window.model.move(0, (window.model.vertices[0][0] + 12, window.model.vertices[0][1] + 7))
-        window.confirm()
+        window.accept_or_confirm()
         self.assertEqual(self.session.origins['Blue'], 'edited')
         self.assertNotEqual(self.session.polygons['Blue'], self.session.automatic_polygon('Blue'))
+        self.assertFalse(window.editing)
+        self.assertEqual(self.session.band, 'Green')
 
-    def test_confirming_the_last_band_that_is_not_accepted_returns_to_the_overview(self):
+    def test_confirming_the_last_band_that_is_not_accepted_stays_on_it(self):
         window = self.window
         for band in BANDS[1:]:
             self.session.accept(band)
         window.edit_band('Blue')
-        window.confirm()
-        self.assertEqual(window.mode, 'overview')
+        window.accept_or_confirm()
         self.assertTrue(self.session.is_complete())
-        self.assertEqual(window.tiles['Blue']['accept'].cget('text'), 'Accepted (undo)')
-        self.assertFalse(window.overview_buttons['finish'].instate(['disabled']))
+        self.assertEqual(self.session.band, 'Blue')
+        self.assertFalse(window.editing)
+        self.assertEqual(window.buttons['accept'].cget('text'), 'Accepted (undo)')
+        self.assertFalse(window.buttons['finish'].instate(['disabled']))
 
-    def test_going_back_to_the_overview_discards_what_was_not_confirmed(self):
+    def test_changing_band_or_discarding_loses_what_was_not_confirmed(self):
         window = self.window
         before = self.session.proposed_polygon('Blue')
         window.edit_band('Blue')
         window.clear()
-        window.show_overview()
-        self.assertEqual(window.mode, 'overview')
+        window.toggle_edit()
+        self.assertEqual(window.model.as_integers(), before)
         self.assertEqual(self.session.state('Blue'), 'pending')
-        self.assertEqual(self.session.proposed_polygon('Blue'), before)
+        window.edit_band('Blue')
+        window.clear()
+        window.next()
+        self.assertFalse(window.editing)
+        window.previous()
+        self.assertEqual(window.model.as_integers(), before)
 
-    def test_the_editor_shows_the_accepted_region_to_compare(self):
+    def test_the_accepted_region_is_kept_to_compare_while_editing(self):
         window = self.window
         self.session.accept('Blue', [[700, 200], [850, 200], [850, 320], [700, 320]])
-        window.edit_band('Blue')
+        window.show_band('Blue')
+        window.toggle_edit()
         self.assertEqual(window.model.as_integers(), [[700, 200], [850, 200], [850, 320], [700, 320]])
-        self.assertIn('Accepted (drawn or edited)', window.message_label.cget('text'))
         window.reset()                                                      # back to the QR code region
         self.assertEqual(window.model.as_integers(), self.session.automatic_polygon('Blue'))
         window._redraw()                                                    # draws the accepted region too, to compare
         self.assertEqual(self.session.polygons['Blue'], [[700, 200], [850, 200], [850, 320], [700, 320]])
 
-    def test_previous_and_next_move_between_bands_in_the_editor(self):
+    def test_previous_and_next_move_between_bands(self):
         window = self.window
-        window.edit_band('Green')
+        window.show_band('Green')
         window.next()
-        self.assertIn('Band 3 of 6', window.title_label.cget('text'))
+        self.assertIn('Panchro (3 of 6)', window.title_label.cget('text'))
         window.previous()
         window.previous()
-        self.assertIn('Band 1 of 6', window.title_label.cget('text'))
+        self.assertIn('Blue (1 of 6)', window.title_label.cget('text'))
         window.previous()                                                   # clamped
-        self.assertIn('Band 1 of 6', window.title_label.cget('text'))
+        self.assertIn('Blue (1 of 6)', window.title_label.cget('text'))
 
-    def test_reset_returns_to_the_automatic_region_and_undo_removes_a_vertex(self):
+    def test_reset_clear_and_undo_work_while_editing_only(self):
         window = self.window
-        window.edit_band('Blue')
+        window.clear()
+        self.assertEqual(len(window.model.vertices), 4)                    # not editing: nothing happens
+        window.toggle_edit()
         window.clear()
         self.assertEqual(window.model.vertices, [])
         window.reset()
@@ -648,9 +660,30 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         window.undo()
         self.assertEqual(len(window.model.vertices), 3)
 
+    # --- the view ----------------------------------------------------------------------------------------------
+
+    def test_the_view_opens_close_to_the_region_and_can_show_the_whole_image(self):
+        window = self.window
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.update()
+        window.show_band('Blue')
+        self.root.update()
+        close_up = window.view.scale
+        width, height = window.session.image_size()
+        whole = min(window.canvas.winfo_width() / width, window.canvas.winfo_height() / height)
+        self.assertGreater(close_up, whole * 1.5)                           # the panel fills a good part of the picture
+        window.toggle_zoom()
+        self.assertAlmostEqual(window.view.scale, whole, places=3)
+        self.assertEqual(window.buttons['zoom'].cget('text'), 'Zoom to region')
+        window.toggle_zoom()
+        self.assertAlmostEqual(window.view.scale, close_up, places=3)
+        for vertex in window.model.vertices:                                # the region is inside the picture
+            x, y = window.view.to_canvas(vertex)
+            self.assertTrue(0 < x < window.canvas.winfo_width() and 0 < y < window.canvas.winfo_height())
+
     def test_zoom_with_the_wheel_and_pan(self):
         window = self.window
-        window.edit_band('Blue')
         before = window.view.scale
         window._on_wheel(SimpleNamespace(x=200, y=200, delta=120))
         self.assertGreater(window.view.scale, before)
@@ -659,22 +692,45 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         window._on_pan_move(SimpleNamespace(x=30, y=25))
         self.assertEqual(window.view.offset, (offset[0] + 20, offset[1] + 15))
 
-    def test_escape_goes_back_from_the_editor_and_cancels_from_the_overview(self):
+    def test_the_left_button_drags_the_image_when_not_editing(self):
+        window = self.window
+        window._on_press(SimpleNamespace(x=10, y=10))
+        offset = window.view.offset
+        window._on_drag(SimpleNamespace(x=40, y=30))
+        window._on_release(SimpleNamespace(x=40, y=30))
+        self.assertEqual(window.view.offset, (offset[0] + 30, offset[1] + 20))
+
+    def test_a_dual_camera_with_ten_bands_fits_in_the_list(self):
+        names = [f"B{number}" for number in range(10)]
+        images = {name: self.panel_images()[BANDS[number % 6]] for number, name in enumerate(names)}
+        self.reopen(images=images)
+        self.assertEqual(self.window.band_list.size(), 10)
+        self.window.show_band('B9')
+        self.assertIn('B9 (10 of 10)', self.window.title_label.cget('text'))
+        self.assertEqual(self.window.band_list.curselection(), (9,))
+
+    # --- keys ------------------------------------------------------------------------------------------------------
+
+    def test_escape_leaves_the_drawing_and_then_cancels(self):
         window = self.window
         window.edit_band('Blue')
         window._key_escape()
-        self.assertEqual(window.mode, 'overview')
+        self.assertFalse(window.editing)
         self.assertFalse(window.finished)
         window._key_escape()
         self.assertTrue(window.cancelled and window.finished)
 
-    def test_the_keys_of_the_editor_do_nothing_in_the_overview(self):
+    def test_the_keys_of_the_drawing_do_nothing_when_not_editing(self):
         window = self.window
-        window._key_confirm()
         window._key_clear()
+        window._key_reset()
+        window._key_undo()
+        self.assertEqual(len(window.model.vertices), 4)
+        window._key_edit()
+        self.assertTrue(window.editing)
         window._key_next()
-        self.assertEqual(window.mode, 'overview')
-        self.assertEqual(self.session.accepted_count(), 0)
+        self.assertEqual(self.session.band, 'Green')
+        self.assertFalse(window.editing)
 
     # --- several captures ----------------------------------------------------------------------------------------
 
@@ -705,7 +761,7 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
                          ['IMG_0005  (panel, 0 of 6 accepted)', 'IMG_0007  (not opened)', 'IMG_0010  (not opened)'])
         self.assertEqual(self.window.capture_var.get(), 'IMG_0005  (panel, 0 of 6 accepted)')
 
-    def test_another_capture_of_the_images_folder_can_be_chosen(self):
+    def test_another_capture_can_be_chosen(self):
         self.open_captures()
         window = self.window
         self.assertEqual(self.loaded, ['IMG_0005'])                           # the first capture is opened with the window
@@ -714,8 +770,8 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         self.assertEqual(self.captures.current, 'IMG_0010')
         self.assertEqual(self.loaded, ['IMG_0005', 'IMG_0010'])
         self.assertIs(window.session, self.captures.session('IMG_0010'))
-        self.assertEqual(window.tiles['Blue']['badge'].cget('text'), 'No region: use Edit')       # it has no panel
-        self.assertIn('IMG_0010: 0 of 6 bands accepted', window.overview_message.cget('text'))
+        self.assertEqual(self.band_list()[0], 'Blue   (no region)')                    # it has no panel
+        self.assertIn('IMG_0010: 0 of 6 bands accepted', window.summary_label.cget('text'))
         self.assertEqual(window.capture_var.get(), 'IMG_0010  (0 of 6 accepted)')
 
     def test_what_is_accepted_is_kept_for_each_capture(self):
@@ -724,36 +780,36 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         window.accept_all()
         self.assertTrue(window.switch_capture('IMG_0007'))
         self.assertEqual(window.session.accepted_count(), 0)
-        window.toggle_accept('Green')
+        window.accept_or_confirm()
         self.assertTrue(window.switch_capture('IMG_0005'))
         self.assertEqual(window.session.accepted_count(), 6)
         self.assertEqual(window.status_label.cget('text'), '6 of 6 bands accepted')
         self.assertEqual(self.captures.session('IMG_0007').accepted_count(), 1)
         self.assertIn('IMG_0007  (1 of 6 accepted)', window.capture_box.cget('values'))
 
-    def test_the_images_of_each_capture_are_shown_in_its_own_tiles(self):
+    def test_the_images_of_each_capture_are_kept_apart(self):
         self.open_captures()
         window = self.window
         window.switch_capture('IMG_0010')
         window.switch_capture('IMG_0005')
-        self.assertEqual(window.tiles['Blue']['badge'].cget('text'), 'Not accepted (QR code)')
+        self.assertEqual(self.band_list()[0], 'Blue   (to accept)')
         keys = set(window.display_cache)
         self.assertIn(('IMG_0005', 'Blue'), keys)
         self.assertIn(('IMG_0010', 'Blue'), keys)
 
-    def test_switching_from_the_editor_goes_to_the_overview(self):
+    def test_switching_capture_turns_the_drawing_off(self):
         self.open_captures()
         window = self.window
         window.edit_band('Blue')
         self.assertTrue(window.switch_capture('IMG_0007'))
-        self.assertEqual(window.mode, 'overview')
+        self.assertFalse(window.editing)
 
     def test_a_capture_that_cannot_be_read_is_reported_and_the_current_one_stays(self):
         self.open_captures(('IMG_0005', 'BROKEN'))
         window = self.window
         self.assertFalse(window.switch_capture('BROKEN'))
         self.assertEqual(self.captures.current, 'IMG_0005')
-        self.assertIn('BROKEN could not be opened: OSError: cannot read', window.overview_message.cget('text'))
+        self.assertIn('BROKEN could not be opened: OSError: cannot read', window.message_label.cget('text'))
         self.assertEqual(window.capture_var.get(), 'IMG_0005  (panel, 0 of 6 accepted)')
 
     def test_a_capture_with_other_bands_is_refused(self):
@@ -761,24 +817,24 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         window = self.window
         self.captures.sessions['IMG_0007'] = ps.SelectionSession({'Blue': self.panel_images()['Blue']})
         self.assertFalse(window.switch_capture('IMG_0007'))
-        self.assertIn('has the bands', window.overview_message.cget('text'))
+        self.assertIn('has the bands', window.message_label.cget('text'))
 
     def test_two_panel_captures_must_both_be_accepted_before_saving(self):
         self.open_captures(required=('IMG_0005', 'IMG_0007'))
         window = self.window
         window.accept_all()
-        self.assertTrue(window.overview_buttons['finish'].instate(['disabled']))
+        self.assertTrue(window.buttons['finish'].instate(['disabled']))
         self.assertIn('Panel captures: IMG_0005 (6 of 6 accepted), IMG_0007 (not opened)',
-                      window.overview_message.cget('text'))
+                      window.summary_label.cget('text'))
         window.finish()
         self.assertFalse(window.finished)
-        self.assertIn('IMG_0007: not opened', window.overview_message.cget('text'))
+        self.assertIn('IMG_0007: not opened', window.message_label.cget('text'))
         window.switch_capture('IMG_0007')
-        window.toggle_accept('Blue')
+        window.accept_or_confirm()
         window.finish()
-        self.assertIn('IMG_0007: still to accept Green', window.overview_message.cget('text'))
+        self.assertIn('IMG_0007: still to accept Green', window.message_label.cget('text'))
         window.accept_all()
-        self.assertFalse(window.overview_buttons['finish'].instate(['disabled']))
+        self.assertFalse(window.buttons['finish'].instate(['disabled']))
         window.finish()
         self.assertFalse(window.cancelled)
         result = self.captures.result()
@@ -790,7 +846,7 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         window = self.window
         window.accept_all()
         window.switch_capture('IMG_0010')                               # looked at, nothing accepted
-        self.assertFalse(window.overview_buttons['finish'].instate(['disabled']))
+        self.assertFalse(window.buttons['finish'].instate(['disabled']))
         window.finish()
         self.assertEqual(list(self.captures.result()), ['IMG_0005'])
 
@@ -799,8 +855,8 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         self.open_captures(saved={'IMG_0007': {'Blue': polygon}}, saved_origins={'IMG_0007': {'Blue': 'edited'}})
         window = self.window
         window.switch_capture('IMG_0007')
-        self.assertEqual(window.tiles['Blue']['badge'].cget('text'), 'Accepted (edited)')
-        self.assertEqual(window.tiles['Green']['badge'].cget('text'), 'Not accepted (QR code)')
+        self.assertEqual(self.band_list()[:2], ['Blue   (accepted)', 'Green   (to accept)'])
+        self.assertIn('Accepted (drawn or edited)', window.message_label.cget('text'))
 
     def test_pointing_at_the_capture_box_says_what_it_is(self):
         self.open_captures()
@@ -826,6 +882,7 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
             self.root.update()
             sizes.add((window.footer.winfo_height(), window.canvas.winfo_height(), window.canvas.winfo_width()))
         self.hover(window.canvas)
+        self.hover(window.band_list)
         sizes.add((window.footer.winfo_height(), window.canvas.winfo_height(), window.canvas.winfo_width()))
         self.assertEqual(len(sizes), 1, sizes)
 
@@ -865,45 +922,47 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         self.assertEqual(window.hint_label.cget('text'), ps.DEFAULT_HINT)
         self.assertNotIn('Mouse:', ps.DEFAULT_HINT)
 
-    def test_every_button_and_image_has_a_hint(self):
+    def test_every_element_has_a_hint(self):
         window = self.window
-        names = set(window.buttons) | set(window.overview_buttons) | {'canvas', 'tile_accept', 'tile_edit', 'tile_image', 'capture'}
+        names = set(window.buttons) | {'canvas', 'capture', 'bands', 'confirm', 'discard'}
         self.assertEqual(set(ps.HINTS), names)
         self.assertNotIn('skip', ps.HINTS)                                  # there is no separate automatic option
 
-    def test_pointing_at_the_buttons_of_the_overview_says_what_they_do(self):
-        window = self.window
-        for name, button in window.overview_buttons.items():
-            self.assertEqual(self.hover(button), ps.HINTS[name], name)
-        tile = window.tiles['Blue']
-        self.assertEqual(self.hover(tile['accept']), ps.HINTS['tile_accept'])
-        self.assertEqual(self.hover(tile['edit']), ps.HINTS['tile_edit'])
-        self.assertEqual(self.hover(tile['image']), ps.HINTS['tile_image'])
-        self.assertEqual(window.hint_label.cget('text'), ps.DEFAULT_HINT)
-
-    def test_pointing_at_the_buttons_and_the_image_of_the_editor_says_what_they_do(self):
+    def test_pointing_at_the_elements_says_what_they_do(self):
         window = self.window
         self.root.attributes('-alpha', 0.0)             # a canvas gets the events of the mouse only when it is shown
         self.root.deiconify()
-        window.edit_band('Blue')
         self.root.update()
         for name, button in window.buttons.items():
             self.assertEqual(self.hover(button), ps.HINTS[name], name)
         self.assertEqual(self.hover(window.canvas), ps.HINTS['canvas'])
+        self.assertEqual(self.hover(window.band_list), ps.HINTS['bands'])
+        self.assertEqual(window.hint_label.cget('text'), ps.DEFAULT_HINT)
+
+    def test_the_hint_of_the_accept_and_edit_buttons_follows_the_mode(self):
+        window = self.window
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.update()
+        window.toggle_edit()
+        self.assertEqual(self.hover(window.buttons['accept']), ps.HINTS['confirm'])
+        self.assertEqual(self.hover(window.buttons['edit']), ps.HINTS['discard'])
 
     def test_the_hints_carry_the_important_information(self):
         hints = ps.HINTS
-        for name, phrases in {'confirm': ('Enter', 'not accepted yet', '3 or more vertices', 'next band'),
-                              'overview': ('Esc', 'lost'),
+        for name, phrases in {'accept': ('Enter', 'next band', 'undo'),
+                              'confirm': ('Enter', '3 or more vertices', 'next band'),
+                              'edit': ('Click adds a vertex', 'right click', 'nothing is accepted until'),
+                              'discard': ('Esc', 'without changing'),
+                              'previous': ('Left arrow', 'lost'), 'next': ('Right arrow', 'lost'),
                               'reset': ('QR code', 'not accepted until'),
                               'clear': ('Backspace',),
-                              'canvas': ('Click adds a vertex', 'right click', 'wheel', 'middle button', 'Cyan',
-                                         'Yellow dashed', 'Green', 'variation'),
+                              'zoom': ('wheel', 'middle button'),
+                              'bands': ('accepted', 'to accept', 'no region', 'lost'),
+                              'canvas': ('wheel', 'Cyan', 'yellow dashed', 'green', 'variation'),
                               'accept_all': ('QR code', 'Bands without one', 'used for the reference panel'),
-                              'finish': ('every band is accepted', 'exactly these regions'),
-                              'cancel': ('save nothing',),
-                              'tile_accept': ('undo',), 'tile_edit': ('editor',),
-                              'tile_image': ('yellow dashed', 'green', 'cyan', 'variation')}.items():
+                              'finish': ('every band', 'exactly these regions'),
+                              'cancel': ('save nothing',)}.items():
             for phrase in phrases:
                 self.assertIn(phrase.lower(), hints[name].lower(), f"{name}: {phrase}")
 

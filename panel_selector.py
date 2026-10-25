@@ -1,12 +1,13 @@
 """
 Check, accept and (if needed) draw the reference panel region of each band
 
-The window opens on an overview with one tile per band: the image around the panel with the region found from the QR code
-(yellow, dashed) and the region that is accepted or saved (green), and the pixels, saturated pixels and variation inside.
-Each band must be accepted: "Accept" takes the region as it is shown, "Edit" opens the band in an editor where the polygon
-can be moved, extended or drawn. The regions that were saved before are shown as accepted, so the overview is also a way
-to look at them. The vertices are pixels of the undistorted image and are saved in the file used by the workflow
-(PANEL.manual_regions_file), with the origin of each region (accepted as found, or edited).
+The window shows one band at a time, with the bands in a list at the left (so that any number of bands fits, for example
+the ten of a dual camera): the image around the panel with the region found from the QR code (yellow, dashed), the region
+that is accepted or saved (green) and the region proposed (cyan), and the pixels, saturated pixels and variation inside.
+Each band must be accepted: "Accept" takes the region as it is shown, "Edit region" turns on the drawing in the same
+window, where the polygon can be moved, extended or drawn, and "Confirm edit" accepts it. The regions that were saved
+before are shown as accepted. The vertices are pixels of the undistorted image and are saved in the file used by the
+workflow (PANEL.manual_regions_file), with the origin of each region (accepted as found, or edited).
 
     python panel_selector.py [--config radiometric_inputs.json] [--root folder] [--capture IMG_0005]
 
@@ -14,7 +15,7 @@ Without --config, radiometric_inputs.json in the root folder is used if it exist
 
 What every element does is shown at the bottom of the window when the mouse is over it.
 
-The logic (PolygonModel, ViewTransform, SelectionSession, render_tile) has no user interface and is tested without a display.
+The logic (PolygonModel, ViewTransform, SelectionSession, CaptureSet) has no user interface and is tested without a display.
 """
 
 # Standard Library Imports
@@ -34,53 +35,50 @@ DEFAULT_HINT = "Point at a button or at an image to see what it does."
 
 # What each element does, shown while the mouse is over it
 HINTS = {
-    # --- editor
-    'overview': "Back to overview (Esc): leave this band and return to the overview. The polygon that you are editing is "
-                "not accepted and the changes made to it are lost; what was accepted before stays accepted.",
-    'previous': "Previous band (Left arrow): show the previous band in this editor, without accepting or changing anything "
-                "(the changes made to this polygon and not confirmed are lost).",
-    'next': "Next band (Right arrow): show the next band in this editor, without accepting or changing anything "
-            "(the changes made to this polygon and not confirmed are lost).",
+    'bands': "Bands: choose the band to look at. Each band must be accepted. After the name: accepted (green), to accept "
+             "(a region is proposed but not accepted) or no region (none was found: draw it with Edit region). What you "
+             "changed in a region that you are editing and did not confirm is lost when you change band.",
+    'previous': "Previous band (Left arrow): show the previous band, without accepting or changing anything (what you "
+                "changed in a region that you are editing and did not confirm is lost).",
+    'next': "Next band (Right arrow): show the next band, without accepting or changing anything (what you changed in a "
+            "region that you are editing and did not confirm is lost).",
+    'accept': "Accept (Enter): use the region outlined for this band (green or cyan; if there is none, the yellow one found "
+              "from the QR code) and go to the next band that is not accepted. Press it again on an accepted band to undo "
+              "the acceptance.",
+    'confirm': "Confirm edit (Enter): accept the polygon as it is drawn for this band and go to the next band that is not "
+               "accepted. It needs 3 or more vertices, inside the image and without crossing edges. The file keeps "
+               "exactly this polygon.",
+    'edit': "Edit region (E): turn on the drawing for this band, to move, add or delete vertices, or to draw the region when "
+            "none was found. Click adds a vertex (on an edge it inserts one), drag a vertex to move it, right click removes "
+            "it. Nothing is accepted until you confirm.",
+    'discard': "Discard edit (Esc): turn the drawing off and go back to the region as it was before, without changing what "
+               "is accepted.",
     'reset': "Reset to automatic (R): put the polygon back on the region found from the QR code (yellow dashed line). It is "
-             "not accepted until you press Confirm.",
+             "not accepted until you confirm. Only while editing.",
     'clear': "Clear (C): remove all the vertices to draw the region from scratch with clicks. Backspace removes only the "
-             "last vertex.",
-    'confirm': "Confirm (Enter): accept the polygon as it is shown for this band, then go to the next band that is not "
-               "accepted yet (or back to the overview if none is left). It needs 3 or more vertices, inside the image and "
-               "without crossing edges. The file keeps exactly this polygon.",
-    'canvas': "Image of this band. Click adds a vertex (on an edge it inserts one); drag a vertex to move it; right click "
-              "removes it; the wheel zooms; the middle button drags the image. Cyan: the polygon that you are editing. "
-              "Yellow dashed: the region found from the QR code. Green: the region accepted or saved before. The numbers "
-              "above are the pixels, the saturated pixels and the variation (std / mean) inside the polygon: lower means "
-              "a more uniform panel.",
-    # --- both views
+             "last vertex. Only while editing.",
+    'zoom': "Whole image / Zoom to region: switch between the whole image and a close view around the panel. The wheel "
+            "zooms and the middle button drags the image (also the left button, when you are not editing).",
+    'canvas': "Image of this band around the panel. Outlines: yellow dashed = region found from the QR code; green = region "
+              "accepted or saved before; cyan = region proposed or being edited. The numbers below the image are the "
+              "pixels, the saturated pixels and the variation (std / mean) inside the region: lower means a more uniform "
+              "panel. The wheel zooms; while editing, clicks draw.",
     'capture': "Capture: choose which panel capture to look at (the first one and the one after the flight, if there is "
                "one). All their bands must be accepted before saving. What you accepted is kept for each capture while "
                "you switch.",
-    # --- overview
-    'accept_all': "Accept all automatic regions: for every band that is not accepted yet, accept the region found from the "
-                  "QR code (yellow outline). Bands without one are left for you to draw with Edit. Look at the outlines "
-                  "first: accepting means that this region is the one used for the reference panel.",
+    'accept_all': "Accept all automatic regions: for every band of this capture that is not accepted yet, accept the region "
+                  "found from the QR code (yellow outline). Bands without one are left for you to draw with Edit region. "
+                  "Look at the outlines first: accepting means that this region is the one used for the reference panel.",
     'finish': "Save and close: write the accepted regions (and whether each was accepted as found or edited) to the "
-              "regions file; the workflow then uses exactly these regions. Available when every band is accepted.",
+              "regions file; the workflow then uses exactly these regions. Available when every band of the panel "
+              "captures is accepted.",
     'cancel': "Cancel: close the window and save nothing.",
-    'tile_accept': "Accept / Accepted: use the region outlined in this tile for the band (the green or cyan one; if there "
-                   "is none, the yellow one found from the QR code). Press it again on an accepted band to undo the "
-                   "acceptance.",
-    'tile_edit': "Edit: open this band in the editor to move, add or delete vertices, or to draw the region when none was "
-                 "found; confirm it there to accept it.",
-    'tile_image': "Outlines: yellow dashed = region found from the QR code; green = region accepted or saved; cyan = region "
-                  "proposed but not accepted yet. Below the image: the pixels, the saturated pixels and the variation "
-                  "(std / mean) inside the region shown; lower variation means a more uniform panel.",
 }
 
 VERTEX_RADIUS_PIXELS = 7      # distance on the screen to pick a vertex
 EDGE_DISTANCE_PIXELS = 6      # distance on the screen to insert a vertex on an edge
-TILE_SIZE = (320, 225)        # image of a tile of the overview
-TILE_COLUMNS = 3
 
 ORIGIN_TEXT = {'accepted_automatic': 'as found from the QR code', 'edited': 'drawn or edited', None: ''}
-BADGE_TEXT = {'accepted_automatic': 'Accepted (as found)', 'edited': 'Accepted (edited)', None: 'Accepted'}
 
 
 # ======================================================================================
@@ -168,6 +166,13 @@ class ViewTransform:
         self.scale = self.fit_scale = min(canvas_size[0] / image_size[0], canvas_size[1] / image_size[1])
         self.offset = ((canvas_size[0] - image_size[0] * self.scale) / 2, (canvas_size[1] - image_size[1] * self.scale) / 2)
 
+    def fit_box(self, box, image_size, canvas_size):
+        """ Show the part of the image in box (left, top, right, bottom), centered; zooming out can still reach the whole image """
+        left, top, right, bottom = box
+        self.fit_scale = min(canvas_size[0] / image_size[0], canvas_size[1] / image_size[1])
+        self.scale = min(canvas_size[0] / max(right - left, 1), canvas_size[1] / max(bottom - top, 1))
+        self.offset = ((canvas_size[0] - (left + right) * self.scale) / 2, (canvas_size[1] - (top + bottom) * self.scale) / 2)
+
     def zoom_at(self, canvas_point, factor, maximum=60.0):
         """ Zoom keeping the image point under canvas_point where it is """
         anchor = self.to_image(canvas_point)
@@ -199,47 +204,6 @@ def tile_crop_box(polygons, image_size, aspect, margin=0.8, minimum=60):
         extra = box_width / aspect - box_height
         top, bottom = top - extra / 2, bottom + extra / 2
     return (int(max(0, round(left))), int(max(0, round(top))), int(min(width, round(right))), int(min(height, round(bottom))))
-
-
-def _dashed_line(draw, start, end, color, width, dash=7, gap=5):
-    length = math.hypot(end[0] - start[0], end[1] - start[1])
-    if length == 0:
-        return
-    ux, uy = (end[0] - start[0]) / length, (end[1] - start[1]) / length
-    position = 0.0
-    while position < length:
-        stop = min(position + dash, length)
-        draw.line([(start[0] + ux * position, start[1] + uy * position), (start[0] + ux * stop, start[1] + uy * stop)],
-                  fill=color, width=width)
-        position += dash + gap
-
-
-def render_tile(display, polygons, size=TILE_SIZE):
-    """
-    The picture of a tile: the image around the polygons, with their outlines
-    Inputs: the image shown (2D uint8 array, undistorted), [(polygon [[x, y], ...], color, dashed)] and the size of the tile
-    Outputs: PIL image of that size (RGB)
-    """
-    from PIL import Image, ImageDraw
-    image = Image.fromarray(display)
-    box = tile_crop_box([polygon for polygon, _, _ in polygons], image.size, size[0] / size[1])
-    crop = image.crop(box).convert('RGB')
-    scale = min(size[0] / crop.width, size[1] / crop.height)
-    shown = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.BILINEAR)
-    tile = Image.new('RGB', size, COLORS['panel'])
-    offset = ((size[0] - shown.width) // 2, (size[1] - shown.height) // 2)
-    tile.paste(shown, offset)
-    draw = ImageDraw.Draw(tile)
-    for polygon, color, dashed in polygons:
-        if len(polygon) < 2:
-            continue
-        points = [((x - box[0]) * scale + offset[0], (y - box[1]) * scale + offset[1]) for x, y in polygon]
-        for start, end in zip(points, points[1:] + points[:1] if len(points) > 2 else points[1:]):
-            if dashed:
-                _dashed_line(draw, start, end, color, 2)
-            else:
-                draw.line([start, end], fill=color, width=2)
-    return tile
 
 
 class SelectionResult(dict):
@@ -467,9 +431,13 @@ def count_wrapped_lines(measure, text, width):
 # ======================================================================================
 
 class PanelSelectorWindow:
-    """ The overview and the editor; use select_panel_regions() to run it """
+    """
+    One window for the bands of a panel capture: the list of the bands, the image of the selected band with its region and
+    the decisions. A band is accepted as it is shown, or edited in the same window (Edit region) and then confirmed.
+    Use select_panel_regions() to run it
+    """
 
-    def __init__(self, root, source, title="Reference panel regions", start='overview'):
+    def __init__(self, root, source, title="Reference panel regions", start=None):
         import tkinter as tk
         from tkinter import ttk
         from PIL import Image as PILImage, ImageTk
@@ -477,31 +445,28 @@ class PanelSelectorWindow:
         self.root = root
         self.captures = CaptureSet.single(source) if isinstance(source, SelectionSession) else source
         self.session = self.captures.session(self.captures.current)
+        self.band_names = list(self.session.bands)
         self.capture_labels = {}
         self.cancelled = True
         self.finished = False
-        self.mode = None
+        self.editing = False
+        self.whole_image = False
         self.model = PolygonModel()
         self.view = ViewTransform()
         self.display = None
         self.photo = None
         self.drag_vertex = None
         self.pan_start = None
-        self.fitted_band = None
+        self.fitted = None
         self.display_cache = {}
-        self.tiles = {}
-        self.buttons = {}                     # buttons of the editor
-        self.overview_buttons = {}
+        self.buttons = {}
         self.root.title(title)
         self.root.geometry("1180x860")
-        self.root.minsize(1060, 560)
+        self.root.minsize(1060, 600)
         apply_dark_theme(self.root)
         self._build()
         hide_title_icon(self.root)
-        if start == 'editor':
-            self.show_editor(self.session.index)
-        else:
-            self.show_overview()
+        self.show_band(self.session.index)
 
     # --- construction ---------------------------------------------------------------------------------------
 
@@ -532,13 +497,81 @@ class PanelSelectorWindow:
         footer.configure(height=self.hint_height(1156))
         footer.bind('<Configure>', self._on_footer_configure)
 
-        self.container = ttk.Frame(self.root)
-        self.container.pack(fill='both', expand=True)
-        self._build_overview()
-        self._build_editor()
-        for sequence, command in (('<Return>', self._key_confirm), ('<r>', self._key_reset), ('<c>', self._key_clear),
-                                  ('<BackSpace>', self._key_undo), ('<Left>', self._key_previous),
-                                  ('<Right>', self._key_next), ('<Escape>', self._key_escape)):
+        body = ttk.Frame(self.root)
+        body.pack(fill='both', expand=True)
+        side = ttk.Frame(body, padding=(12, 0, 0, 0))
+        side.pack(side='left', fill='y')
+        ttk.Label(side, text='Bands', style='Heading.TLabel').pack(anchor='w', pady=(0, 4))
+        holder = ttk.Frame(side)
+        holder.pack(fill='y', expand=True)
+        self.band_list = tk.Listbox(holder, exportselection=False, activestyle='none', width=26, font=FONT,
+                                    background=COLORS['panel'], foreground=COLORS['foreground'], borderwidth=0,
+                                    highlightthickness=0, selectbackground=COLORS['accent'],
+                                    selectforeground=COLORS['foreground'])
+        scroll = ttk.Scrollbar(holder, command=self.band_list.yview)
+        self.band_list.configure(yscrollcommand=scroll.set)
+        self.band_list.pack(side='left', fill='y', expand=True)
+        scroll.pack(side='right', fill='y')
+        self.band_list.bind('<<ListboxSelect>>', self._on_band_chosen)
+        self._hover(self.band_list, 'bands')
+
+        main = ttk.Frame(body)
+        main.pack(side='left', fill='both', expand=True)
+        row_end = ttk.Frame(main, padding=(12, 2, 12, 8))
+        row_end.pack(side='bottom', fill='x')
+        row_band = ttk.Frame(main, padding=(12, 4, 12, 2))
+        row_band.pack(side='bottom', fill='x')
+        info = ttk.Frame(main, padding=(12, 6))
+        info.pack(side='bottom', fill='x')
+        self.stats_label = ttk.Label(info)
+        self.stats_label.pack(anchor='w')
+        self.message_label = ttk.Label(info, style='Muted.TLabel')
+        self.message_label.pack(anchor='w')
+        self.summary_label = ttk.Label(info, style='Muted.TLabel')
+        self.summary_label.pack(anchor='w')
+
+        self.canvas = tk.Canvas(main, background=COLORS['panel'], highlightthickness=0)
+        self.canvas.pack(fill='both', expand=True, padx=12)
+        self.canvas.bind('<Configure>', self._on_configure)
+        self.canvas.bind('<Button-1>', self._on_press)
+        self.canvas.bind('<B1-Motion>', self._on_drag)
+        self.canvas.bind('<ButtonRelease-1>', self._on_release)
+        self.canvas.bind('<Button-3>', self._on_remove)
+        self.canvas.bind('<Button-2>', self._on_pan_start)
+        self.canvas.bind('<B2-Motion>', self._on_pan_move)
+        self.canvas.bind('<MouseWheel>', self._on_wheel)
+        self._hover(self.canvas, 'canvas')
+
+        # the band: moving between bands and deciding on this one; the tools of the drawing; the whole image
+        for name, text, command in (('previous', 'Previous', self.previous), ('next', 'Next', self.next)):
+            self.buttons[name] = ttk.Button(row_band, text=text, command=command)
+            self.buttons[name].pack(side='left', padx=(0, 6))
+        ttk.Separator(row_band, orient='vertical').pack(side='left', fill='y', padx=(6, 12), pady=2)
+        self.buttons['accept'] = ttk.Button(row_band, text='Accept', command=self.accept_or_confirm)
+        self.buttons['accept'].pack(side='left', padx=(0, 6))
+        self.buttons['edit'] = ttk.Button(row_band, text='Edit region', command=self.toggle_edit)
+        self.buttons['edit'].pack(side='left', padx=(0, 6))
+        ttk.Separator(row_band, orient='vertical').pack(side='left', fill='y', padx=(6, 12), pady=2)
+        for name, text, command in (('reset', 'Reset to automatic', self.reset), ('clear', 'Clear', self.clear)):
+            self.buttons[name] = ttk.Button(row_band, text=text, command=command)
+            self.buttons[name].pack(side='left', padx=(0, 6))
+        # the capture: all the automatic regions, saving and leaving
+        for name, text, command, side in (('cancel', 'Cancel', self.cancel, 'right'),
+                                          ('finish', 'Save and close', self.finish, 'right'),
+                                          ('accept_all', 'Accept all automatic regions', self.accept_all, 'left'),
+                                          ('zoom', 'Whole image', self.toggle_zoom, 'left')):
+            self.buttons[name] = ttk.Button(row_end, text=text, command=command)
+            self.buttons[name].pack(side=side, padx=(0, 6) if side == 'left' else (6, 0))
+        self._hover(self.buttons['previous'], 'previous')
+        self._hover(self.buttons['next'], 'next')
+        self._hover(self.buttons['accept'], lambda: 'confirm' if self.editing else 'accept')
+        self._hover(self.buttons['edit'], lambda: 'discard' if self.editing else 'edit')
+        for name in ('reset', 'clear', 'zoom', 'cancel', 'finish', 'accept_all'):
+            self._hover(self.buttons[name], name)
+        for sequence, command in (('<Return>', self._key_accept), ('<e>', self._key_edit), ('<r>', self._key_reset),
+                                  ('<c>', self._key_clear), ('<BackSpace>', self._key_undo),
+                                  ('<Left>', self._key_previous), ('<Right>', self._key_next),
+                                  ('<Escape>', self._key_escape)):
             self.root.bind(sequence, lambda event, command=command: command())
         self.root.protocol('WM_DELETE_WINDOW', self.cancel)
 
@@ -557,93 +590,11 @@ class PanelSelectorWindow:
             self.footer.configure(height=height)
 
     def _hover(self, widget, name):
-        """ Show what an element does while the mouse is over it """
-        widget.bind('<Enter>', lambda event: self.hint_label.configure(text=HINTS[name]), add='+')
+        """ Show what an element does while the mouse is over it (name: the key of the hint, or a function that gives it) """
+        widget.bind('<Enter>', lambda event: self.hint_label.configure(text=HINTS[name() if callable(name) else name]), add='+')
         widget.bind('<Leave>', lambda event: self.hint_label.configure(text=DEFAULT_HINT), add='+')
 
-    def _build_overview(self):
-        ttk = self.ttk
-        from ui_widgets import ScrollablePage
-        self.overview = ttk.Frame(self.container)
-        buttons = ttk.Frame(self.overview, padding=(12, 4, 12, 8))
-        buttons.pack(side='bottom', fill='x')
-        self.overview_message = ttk.Label(self.overview, style='Muted.TLabel', padding=(12, 4))
-        self.overview_message.pack(side='bottom', anchor='w')
-        for name, text, command, side in (('cancel', 'Cancel', self.cancel, 'right'),
-                                          ('finish', 'Save and close', self.finish, 'right'),
-                                          ('accept_all', 'Accept all automatic regions', self.accept_all, 'left')):
-            self.overview_buttons[name] = ttk.Button(buttons, text=text, command=command)
-            self.overview_buttons[name].pack(side=side, padx=(0, 6) if side == 'left' else (6, 0))
-            self._hover(self.overview_buttons[name], name)
-        self.tile_page = ScrollablePage(self.overview)
-        self.tile_page.widget.pack(fill='both', expand=True, padx=(12, 0))
-        self.tile_bands = list(self.session.bands)
-        for number, band in enumerate(self.session.bands):
-            self._build_tile(band, number)
-
-    def _build_tile(self, band, number):
-        ttk = self.ttk
-        row, column = divmod(number, TILE_COLUMNS)
-        frame = ttk.Frame(self.tile_page.body, padding=(0, 0, 12, 12))
-        frame.grid(row=row, column=column, sticky='nw')
-        head = ttk.Frame(frame)
-        head.pack(fill='x')
-        title = ttk.Label(head, text=band, style='Heading.TLabel')
-        title.pack(side='left')
-        badge = ttk.Label(head, style='Muted.TLabel')
-        badge.pack(side='right')
-        image = ttk.Label(frame)
-        image.pack(pady=(3, 3))
-        stats = ttk.Label(frame, style='Muted.TLabel', wraplength=TILE_SIZE[0])
-        stats.pack(anchor='w')
-        actions = ttk.Frame(frame)
-        actions.pack(fill='x', pady=(4, 0))
-        accept = ttk.Button(actions, text='Accept', command=lambda band=band: self.toggle_accept(band))
-        accept.pack(side='left')
-        edit = ttk.Button(actions, text='Edit...', command=lambda band=band: self.edit_band(band))
-        edit.pack(side='left', padx=(6, 0))
-        self._hover(image, 'tile_image')
-        self._hover(accept, 'tile_accept')
-        self._hover(edit, 'tile_edit')
-        self.tiles[band] = {'frame': frame, 'title': title, 'badge': badge, 'image': image, 'stats': stats,
-                            'accept': accept, 'edit': edit, 'photo': None}
-
-    def _build_editor(self):
-        tk, ttk = self.tk, self.ttk
-        self.editor = ttk.Frame(self.container)
-        buttons = ttk.Frame(self.editor, padding=(12, 4, 12, 8))
-        buttons.pack(side='bottom', fill='x')
-        info = ttk.Frame(self.editor, padding=(12, 6))
-        info.pack(side='bottom', fill='x')
-        self.stats_label = ttk.Label(info)
-        self.stats_label.pack(anchor='w')
-        self.message_label = ttk.Label(info, style='Muted.TLabel')
-        self.message_label.pack(anchor='w')
-
-        self.canvas = tk.Canvas(self.editor, background=COLORS['panel'], highlightthickness=0, cursor='crosshair')
-        self.canvas.pack(fill='both', expand=True, padx=12)
-        self.canvas.bind('<Configure>', self._on_configure)
-        self.canvas.bind('<Button-1>', self._on_press)
-        self.canvas.bind('<B1-Motion>', self._on_drag)
-        self.canvas.bind('<ButtonRelease-1>', self._on_release)
-        self.canvas.bind('<Button-3>', self._on_remove)
-        self.canvas.bind('<Button-2>', self._on_pan_start)
-        self.canvas.bind('<B2-Motion>', self._on_pan_move)
-        self.canvas.bind('<MouseWheel>', self._on_wheel)
-        self._hover(self.canvas, 'canvas')
-        # editing buttons on the left, decisions on the right (packed from the right edge inwards)
-        for name, text, command in (('previous', 'Previous', self.previous), ('next', 'Next', self.next),
-                                    ('reset', 'Reset to automatic', self.reset), ('clear', 'Clear', self.clear)):
-            self.buttons[name] = ttk.Button(buttons, text=text, command=command)
-            self.buttons[name].pack(side='left', padx=(0, 6))
-        for name, text, command in (('overview', 'Back to overview', self.show_overview),
-                                    ('confirm', 'Confirm', self.confirm)):
-            self.buttons[name] = ttk.Button(buttons, text=text, command=command)
-            self.buttons[name].pack(side='right', padx=(6, 0))
-        for name, button in self.buttons.items():
-            self._hover(button, name)
-
-    # --- views ---------------------------------------------------------------------------------------------
+    # --- the bands and the captures -------------------------------------------------------------------------
 
     def _status_text(self):
         return f"{self.session.accepted_count()} of {len(self.session.bands)} bands accepted"
@@ -672,156 +623,121 @@ class PanelSelectorWindow:
         """ Look at another capture (its images are read the first time). Returns False if it could not be opened """
         if name == self.captures.current:
             return True
-        self.overview_message.configure(text=f"Reading {name}...", style='Muted.TLabel')
+        self.message(f"Reading {name}...", error=False)
         self.root.update_idletasks()
         try:
             session = self.captures.session(name)
-            if session.bands != self.tile_bands:
-                raise ValueError(f"{name} has the bands {session.bands}, not {self.tile_bands}")
+            if session.bands != self.band_names:
+                raise ValueError(f"{name} has the bands {session.bands}, not {self.band_names}")
         except Exception as error:
             self._refresh_capture_box()
-            self.overview_message.configure(text=f"{name} could not be opened: {type(error).__name__}: {error}",
-                                            style='Error.TLabel')
+            self.message(f"{name} could not be opened: {type(error).__name__}: {error}", error=True)
             return False
         self.captures.current = name
         self.session = session
-        if self.mode == 'editor':
-            self.show_overview()
-        else:
-            self.refresh_overview()
+        self.show_band(session.index)
         return True
 
-    def show_overview(self):
-        self.mode = 'overview'
-        self.editor.pack_forget()
-        self.overview.pack(fill='both', expand=True)
-        self.title_label.configure(text="Reference panel regions: overview")
-        self.refresh_overview()
+    def _band_line(self, band):
+        state = self.session.state(band)
+        label = {'accepted': 'accepted', 'pending': 'to accept', 'no_region': 'no region'}[state]
+        return f"{band}   ({label})", {'accepted': COLORS['ok'], 'pending': COLORS['foreground'],
+                                       'no_region': COLORS['error']}[state]
 
-    def refresh_overview(self):
-        for band in self.session.bands:
-            self.refresh_tile(band)
-        self._update_overview_state()
+    def _refresh_band_list(self):
+        self.band_list.delete(0, 'end')
+        for index, band in enumerate(self.band_names):
+            text, color = self._band_line(band)
+            self.band_list.insert('end', text)
+            self.band_list.itemconfigure(index, foreground=color)
+        self.band_list.selection_clear(0, 'end')
+        self.band_list.selection_set(self.session.index)
+        self.band_list.see(self.session.index)
 
-    def tile_polygons(self, band):
-        """ What a tile draws: the region found from the QR code, and the one that is accepted or proposed """
-        session = self.session
-        shown = []
-        proposed = session.proposed_polygon(band)
-        if proposed:
-            shown.append((proposed, COLORS['ok'] if session.decisions[band] == 'accepted' else COLORS['manual'], False))
-        automatic = session.automatic_polygon(band)
-        if automatic:
-            shown.append((automatic, COLORS['automatic'], True))
-        return shown
+    def _on_band_chosen(self, event):
+        selection = self.band_list.curselection()
+        if selection and selection[0] != self.session.index:
+            self.show_band(selection[0])
 
-    def refresh_tile(self, band):
-        session, tile = self.session, self.tiles[band]
-        state = session.state(band)
-        polygon = session.proposed_polygon(band)
-        picture = render_tile(self.display_image(band), self.tile_polygons(band))
-        tile['photo'] = self.ImageTk.PhotoImage(picture)
-        tile['image'].configure(image=tile['photo'])
-        if state == 'accepted':
-            tile['badge'].configure(text=BADGE_TEXT.get(session.origins[band], 'Accepted'), style='Ok.TLabel')
-            tile['accept'].configure(text='Accepted (undo)')
-        elif state == 'pending':
-            origin = 'saved' if session.saved.get(band) else 'QR code'
-            tile['badge'].configure(text=f"Not accepted ({origin})", style='Muted.TLabel')
-            tile['accept'].configure(text='Accept')
-        else:
-            tile['badge'].configure(text='No region: use Edit', style='Error.TLabel')
-            tile['accept'].configure(text='Accept')
-        tile['accept'].state(['disabled'] if state == 'no_region' else ['!disabled'])
-        stats = session.stats(band, polygon) if len(polygon) >= 3 else None
-        tile['stats'].configure(text='' if stats is None else
-                                f"{stats['n_pixels']} pixels, {stats['n_saturated']} saturated, "
-                                f"variation {stats['variation_percent']:.2f} %")
+    def show_band(self, band):
+        """ Show a band (its name or number): its image, its region and what has been decided; drawing is turned off """
+        index = band if isinstance(band, int) else self.band_names.index(band)
+        self.session.go_to(index)
+        self.editing = False
+        self.display = self.PILImage.fromarray(self.display_image(self.session.band))
+        self.model = PolygonModel(self.session.proposed_polygon(self.session.band))
+        self.fitted = None
+        self.whole_image = False
+        self.refresh()
 
-    def _update_overview_state(self):
-        session = self.session
+    def refresh(self):
+        """ Everything that depends on the decisions: the list, the texts, the buttons and the drawing """
+        session, band = self.session, self.session.band
+        self.title_label.configure(text=f"Reference panel regions: {band} ({session.index + 1} of {len(self.band_names)})")
         self.status_label.configure(text=self._status_text())
-        ready = self.captures.is_ready()
-        self.overview_buttons['finish'].state(['!disabled'] if ready else ['disabled'])
-        pending = [band for band in session.bands if session.decisions[band] != 'accepted']
-        text = (f"{self.captures.current}: {session.accepted_count()} of {len(session.bands)} bands accepted. " +
-                ("Every region is accepted." if not pending else f"Still to accept: {', '.join(pending)}."))
+        self._refresh_capture_box()
+        self._refresh_band_list()
+        state = session.state(band)
+        if self.editing:
+            text = "Drawing: click adds a vertex, drag moves one, right click removes it. Confirm accepts this polygon."
+        elif state == 'accepted':
+            origin = ORIGIN_TEXT.get(session.origins[band], '')
+            text = "Accepted" + (f" ({origin})" if origin else '') + ". Edit region changes it; Accepted (undo) takes the acceptance back."
+        elif state == 'pending':
+            text = "Not accepted yet: Accept uses the region as shown; Edit region lets you change it first."
+        else:
+            text = "No region was found from the QR code: Edit region, then click the corners of the panel (3 or more clicks)."
+        self.message(text, error=False)
+        pending = [name for name in session.bands if session.decisions[name] != 'accepted']
+        summary = (f"{self.captures.current}: {session.accepted_count()} of {len(session.bands)} bands accepted. " +
+                   ("Every region is accepted." if not pending else f"Still to accept: {', '.join(pending)}."))
         missing = self.captures.not_ready()
         if len(self.captures.required) > 1 or (missing and list(missing) != [self.captures.current]):
-            text += (" Panel captures: " + ', '.join(f"{name} ({self.captures.summary(name)})"
-                                                     for name in self.captures.required) + '.')
-        if ready:
-            text += " Save and close writes the accepted captures."
+            summary += (" Panel captures: " + ', '.join(f"{name} ({self.captures.summary(name)})"
+                                                        for name in self.captures.required) + '.')
+        if self.captures.is_ready():
+            summary += " Save and close writes the accepted captures."
         if session.notes:
-            text += ' ' + ' '.join(session.notes)
-        self.overview_message.configure(text=text, style='Muted.TLabel')
-        self._refresh_capture_box()
-
-    def show_editor(self, band):
-        """ Open a band (its name or number) in the editor """
-        index = band if isinstance(band, int) else self.session.bands.index(band)
-        self.session.go_to(index)
-        self.mode = 'editor'
-        self.overview.pack_forget()
-        self.editor.pack(fill='both', expand=True)
-        self._load_band()
-
-    # --- overview actions -----------------------------------------------------------------------------------
-
-    def toggle_accept(self, band):
-        session = self.session
-        if session.decisions[band] == 'accepted':
-            session.unaccept(band)
-        else:
-            try:
-                session.accept(band)
-            except ValueError as error:
-                self.overview_message.configure(text=str(error), style='Error.TLabel')
-                return
-        self.refresh_tile(band)
-        self._update_overview_state()
-
-    def edit_band(self, band):
-        self.show_editor(band)
-
-    def accept_all(self):
-        left = self.session.accept_all_automatic()
-        self.refresh_overview()
-        if left:
-            self.overview_message.configure(
-                text=f"No region was found from the QR code for: {', '.join(left)}. Draw them with Edit.", style='Error.TLabel')
-
-    # --- editor: band ---------------------------------------------------------------------------------------
-
-    def _load_band(self):
-        session = self.session
-        band = session.band
-        self.display = self.PILImage.fromarray(self.display_image(band))
-        self.model = PolygonModel(session.proposed_polygon(band))
-        self.fitted_band = None
-        self._fit_if_possible()
-        self.title_label.configure(text=f"Band {session.index + 1} of {len(session.bands)}: {band}")
-        state = session.state(band)
-        automatic = session.automatic_polygon(band)
-        if state == 'accepted':
-            origin = ORIGIN_TEXT.get(session.origins[band], '')
-            text = "Accepted" + (f" ({origin})" if origin else '') + ". Confirm again to replace it."
-        elif automatic:
-            text = "Not accepted yet. Confirm accepts the polygon as shown."
-        else:
-            text = "No region was found from the QR code: draw the panel (3 or more clicks) and Confirm."
-        self.message(text, error=False)
-        self.status_label.configure(text=self._status_text())
+            summary += ' ' + ' '.join(session.notes)
+        self.summary_label.configure(text=summary)
+        self._update_buttons(state)
         self._update_stats()
+        self._fit_if_possible()
         self._redraw()
+
+    def _update_buttons(self, state):
+        buttons = self.buttons
+        editing = self.editing
+        buttons['accept'].configure(text='Confirm edit' if editing else ('Accepted (undo)' if state == 'accepted' else 'Accept'))
+        buttons['edit'].configure(text='Discard edit' if editing else 'Edit region')
+        buttons['zoom'].configure(text='Zoom to region' if self.whole_image else 'Whole image')
+        buttons['accept'].state(['disabled'] if (state == 'no_region' and not editing) else ['!disabled'])
+        for name in ('reset', 'clear'):
+            buttons[name].state(['!disabled'] if editing else ['disabled'])
+        buttons['finish'].state(['!disabled'] if self.captures.is_ready() else ['disabled'])
+        self.canvas.configure(cursor='crosshair' if editing else 'arrow')
+
+    # --- the image ---------------------------------------------------------------------------------------------
 
     def _fit_if_possible(self):
         width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
-        if width > 20 and height > 20 and self.fitted_band != self.session.band:
-            self.view.fit(self.session.image_size(), (width, height))
-            self.fitted_band = self.session.band
+        key = (self.captures.current, self.session.band, self.whole_image)
+        if width > 20 and height > 20 and self.fitted != key:
+            size = self.session.image_size()
+            polygons = [polygon for polygon in (self.session.proposed_polygon(self.session.band),
+                                                self.session.automatic_polygon(self.session.band)) if polygon]
+            if self.whole_image or not polygons:
+                self.view.fit(size, (width, height))
+            else:
+                self.view.fit_box(tile_crop_box(polygons, size, width / height, margin=1.6, minimum=120), size, (width, height))
+            self.fitted = key
 
-    # --- editor: drawing --------------------------------------------------------------------------------------
+    def toggle_zoom(self):
+        self.whole_image = not self.whole_image
+        self.fitted = None
+        self._fit_if_possible()
+        self._update_buttons(self.session.state(self.session.band))
+        self._redraw()
 
     def _outline(self, polygon, color, **options):
         points = [coordinate for vertex in polygon for coordinate in self.view.to_canvas(vertex)]
@@ -841,21 +757,28 @@ class PanelSelectorWindow:
             self.photo = self.ImageTk.PhotoImage(shown)
             canvas.create_image(0, 0, image=self.photo, anchor='nw')
         session, band = self.session, self.session.band
-        reference = session.polygons[band] if session.decisions[band] == 'accepted' else session.saved.get(band)
-        if reference:
-            self._outline(reference, COLORS['ok'], width=2)               # accepted or saved before, to compare
-        self._outline(self.model.vertices, COLORS['manual'], width=2)
+        accepted = session.polygons[band] if session.decisions[band] == 'accepted' else None
+        reference = accepted or session.saved.get(band)
+        if self.editing:
+            if reference:
+                self._outline(reference, COLORS['ok'], width=2)               # accepted or saved before, to compare
+            self._outline(self.model.vertices, COLORS['manual'], width=2)
+        else:
+            self._outline(self.model.vertices, COLORS['ok'] if accepted else COLORS['manual'], width=2)
         # the region found from the QR code is drawn last, so that it can be seen over an identical drawn one
         automatic = session.automatic_polygon(band)
         if automatic:
             self._outline(automatic, COLORS['automatic'], dash=(6, 4), width=2)
-        for x, y in (view.to_canvas(vertex) for vertex in self.model.vertices):
-            canvas.create_rectangle(x - 4, y - 4, x + 4, y + 4, outline=COLORS['manual'], fill=COLORS['background'])
+        if self.editing:
+            for x, y in (view.to_canvas(vertex) for vertex in self.model.vertices):
+                canvas.create_rectangle(x - 4, y - 4, x + 4, y + 4, outline=COLORS['manual'], fill=COLORS['background'])
 
     def _update_stats(self):
-        stats = self.session.stats(self.session.band, self.model.vertices) if len(self.model.vertices) >= 3 else None
+        vertices = self.model.vertices
+        stats = self.session.stats(self.session.band, vertices) if len(vertices) >= 3 else None
         if stats is None:
-            self.stats_label.configure(text="Region: draw at least 3 vertices without crossing edges")
+            self.stats_label.configure(text="Region: no region yet" if not vertices else
+                                       "Region: draw at least 3 vertices without crossing edges")
         else:
             self.stats_label.configure(
                 text=f"Region: {stats['n_pixels']} pixels, {stats['n_saturated']} saturated, "
@@ -864,7 +787,7 @@ class PanelSelectorWindow:
     def message(self, text, error):
         self.message_label.configure(text=text, style='Error.TLabel' if error else 'Muted.TLabel')
 
-    # --- editor: mouse -----------------------------------------------------------------------------------------
+    # --- the mouse -----------------------------------------------------------------------------------------------
 
     def _image_point(self, event):
         return self.view.to_image((event.x, event.y))
@@ -875,6 +798,9 @@ class PanelSelectorWindow:
 
     def _on_press(self, event):
         self.canvas.focus_set()
+        if not self.editing:                                  # looking at it: the left button drags the image
+            self.pan_start = (event.x, event.y)
+            return
         point = self._image_point(event)
         radius = VERTEX_RADIUS_PIXELS / self.view.scale
         index = self.model.nearest_vertex(point, radius)
@@ -884,16 +810,22 @@ class PanelSelectorWindow:
         self._redraw()
 
     def _on_drag(self, event):
-        if self.drag_vertex is not None:
+        if not self.editing:
+            self._on_pan_move(event)
+        elif self.drag_vertex is not None:
             self.model.move(self.drag_vertex, self._image_point(event))
             self._redraw()
 
     def _on_release(self, event):
         self.drag_vertex = None
-        self._update_stats()
-        self._redraw()
+        self.pan_start = None
+        if self.editing:
+            self._update_stats()
+            self._redraw()
 
     def _on_remove(self, event):
+        if not self.editing:
+            return
         index = self.model.nearest_vertex(self._image_point(event), VERTEX_RADIUS_PIXELS / self.view.scale)
         if index is not None:
             self.model.remove(index)
@@ -913,86 +845,124 @@ class PanelSelectorWindow:
         self.view.zoom_at((event.x, event.y), 1.25 if event.delta > 0 else 1 / 1.25)
         self._redraw()
 
-    # --- editor: commands ---------------------------------------------------------------------------------------
+    # --- the decisions -------------------------------------------------------------------------------------------
 
-    def confirm(self):
-        """ Accept the polygon shown for this band, then go to the next band that is not accepted (or to the overview) """
+    def accept_or_confirm(self):
+        """ Accept the region as it is shown (or, while editing, the polygon that was drawn) and go to the next band """
+        session, band = self.session, self.session.band
+        if self.editing:
+            polygon = self.model.vertices
+        elif session.decisions[band] == 'accepted':
+            session.unaccept(band)                                 # pressed again: take the acceptance back
+            self.refresh()
+            return
+        else:
+            polygon = None
         try:
-            self.session.accept(self.session.band, self.model.vertices)
+            session.accept(band, polygon)
         except ValueError as error:
             self.message(str(error), error=True)
             return
-        self.status_label.configure(text=self._status_text())
-        self._refresh_capture_box()
-        following = self.session.next_not_accepted()
+        following = session.next_not_accepted()
         if following is None:
-            self.show_overview()
+            self.show_band(session.index)
         else:
-            self.show_editor(following)
+            self.show_band(following)
+
+    confirm = accept = accept_or_confirm
+
+    def toggle_edit(self):
+        """ Turn the drawing on, or off (discarding what was drawn and not confirmed) """
+        self.editing = not self.editing
+        self.model = PolygonModel(self.session.proposed_polygon(self.session.band))
+        self.refresh()
+
+    def edit_band(self, band):
+        """ Show a band with the drawing turned on """
+        self.show_band(band)
+        self.toggle_edit()
+
+    def accept_all(self):
+        left = self.session.accept_all_automatic()
+        self.show_band(self.session.index)
+        if left:
+            self.message(f"No region was found from the QR code for: {', '.join(left)}. Draw them with Edit region.", error=True)
 
     def previous(self):
-        self.show_editor(self.session.index - 1)
+        self.show_band(self.session.index - 1)
 
     def next(self):
-        self.show_editor(self.session.index + 1)
+        self.show_band(self.session.index + 1)
 
     def reset(self):
-        automatic = self.session.automatic_polygon(self.session.band)
-        self.model = PolygonModel(automatic or [])
+        if not self.editing:
+            return
+        self.model = PolygonModel(self.session.automatic_polygon(self.session.band) or [])
         self._update_stats()
         self._redraw()
 
     def clear(self):
+        if not self.editing:
+            return
         self.model.clear()
         self._update_stats()
         self._redraw()
 
     def undo(self):
+        if not self.editing:
+            return
         self.model.remove_last()
         self._update_stats()
         self._redraw()
 
-    # --- keys -----------------------------------------------------------------------------------------------------
+    # --- keys ------------------------------------------------------------------------------------------------------
 
-    def _key_confirm(self):
-        if self.mode == 'editor':
-            self.confirm()
+    def _typing(self):
+        """ The keys that draw are left alone while a box that takes text has the focus """
+        return self.root.focus_get() is not None and self.root.focus_get().winfo_class() in ('TCombobox', 'TEntry', 'Entry')
+
+    def _key_accept(self):
+        if not self._typing() and (self.editing or self.session.state(self.session.band) == 'pending'):
+            self.accept_or_confirm()                       # Enter never takes an acceptance back
+
+    def _key_edit(self):
+        if not self._typing():
+            self.toggle_edit()
 
     def _key_reset(self):
-        if self.mode == 'editor':
+        if not self._typing():
             self.reset()
 
     def _key_clear(self):
-        if self.mode == 'editor':
+        if not self._typing():
             self.clear()
 
     def _key_undo(self):
-        if self.mode == 'editor':
+        if not self._typing():
             self.undo()
 
     def _key_previous(self):
-        if self.mode == 'editor':
+        if not self._typing():
             self.previous()
 
     def _key_next(self):
-        if self.mode == 'editor':
+        if not self._typing():
             self.next()
 
     def _key_escape(self):
-        if self.mode == 'editor':
-            self.show_overview()
+        if self.editing:
+            self.toggle_edit()
         else:
             self.cancel()
 
-    # --- end ----------------------------------------------------------------------------------------------------
+    # --- end -----------------------------------------------------------------------------------------------------
 
     def finish(self):
         missing = self.captures.not_ready()
         if missing:
             parts = [f"{name}: " + ('not opened' if bands is None else f"still to accept {', '.join(bands)}")
                      for name, bands in missing.items()]
-            self.overview_message.configure(text="Accept every band of the panel captures first. " + '; '.join(parts),
-                                            style='Error.TLabel')
+            self.message("Accept every band of the panel captures first. " + '; '.join(parts), error=True)
             return
         self.cancelled = False
         self.finished = True
@@ -1005,13 +975,13 @@ class PanelSelectorWindow:
 
 
 def select_panel_regions(captures, load, required=None, saved=None, saved_origins=None, percent_inner_area=0.7,
-                         sat_threshold=65000, parent=None, preloaded=None, current=None, start='overview'):
+                         sat_threshold=65000, parent=None, preloaded=None, current=None, start=None):
     """
     Open the window and wait for the user
     Inputs: the names of the captures that can be looked at, a function that reads the images of a capture, the panel
             captures that must be fully accepted (default: the first one), the regions and origins saved before for every
             capture (they are shown as accepted), the images that were read already and, when another window is open,
-            that window (the window is then modal and opens above it)
+            that window (the window is then modal and opens above it); start is not used any more (kept so that callers work)
     Outputs: {capture: SelectionResult} for every capture whose bands are all accepted (the panel captures at least), or
              None if the user cancelled
     """

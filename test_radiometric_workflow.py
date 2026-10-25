@@ -65,6 +65,39 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('CHECKS.ratio_range_min must be smaller', text)
         self.assertIn("Capture 'IMG_9999' not found", text)
 
+    def test_exiftool_is_looked_for_in_the_configuration_the_environment_and_the_path(self):
+        import os
+        with tempfile.TemporaryDirectory() as folder:
+            program = Path(folder) / 'exiftool.exe'
+            program.write_text('x')
+            self.assertEqual(wf.find_exiftool(wf.merge_config({'INPUTS.exiftool_path': str(program)})),
+                             (str(program), 'INPUTS.exiftool_path'))
+            self.assertEqual(wf.find_exiftool(wf.merge_config({'INPUTS.exiftool_path': str(program) + '.no'})),
+                             (None, 'INPUTS.exiftool_path'))
+            with mock.patch.dict(os.environ, {'exiftoolpath': str(program)}):
+                self.assertEqual(wf.find_exiftool(wf.default_config()),
+                                 (str(program), 'the environment variable exiftoolpath'))
+            with mock.patch.dict(os.environ, {'exiftoolpath': ''}), mock.patch('shutil.which', return_value=None):
+                self.assertEqual(wf.find_exiftool(wf.default_config()), (None, 'the system PATH'))
+            with mock.patch.dict(os.environ, {'exiftoolpath': ''}), mock.patch('shutil.which', return_value='C:/x/exiftool'):
+                self.assertEqual(wf.find_exiftool(wf.default_config()), ('C:/x/exiftool', 'the system PATH'))
+
+    def test_the_version_comes_from_the_program(self):
+        done = mock.Mock(stdout='12.70\n', returncode=0)
+        with mock.patch('subprocess.run', return_value=done):
+            self.assertEqual(wf.exiftool_version('exiftool'), '12.70')
+        with mock.patch('subprocess.run', return_value=mock.Mock(stdout='', returncode=1)):
+            self.assertIsNone(wf.exiftool_version('exiftool'))
+        with mock.patch('subprocess.run', side_effect=FileNotFoundError):
+            self.assertIsNone(wf.exiftool_version('exiftool'))
+
+    def test_a_missing_exiftool_or_package_is_a_problem_of_the_configuration(self):
+        with mock.patch.object(wf, 'find_exiftool', return_value=(None, 'the system PATH')), \
+                mock.patch.object(wf, 'pyexiftool_installed', return_value=False):
+            text = '\n'.join(wf.validate_config(wf.default_config(), ROOT))
+        self.assertIn('ExifTool was not found in the system PATH', text)
+        self.assertIn('pyexiftool is not installed', text)
+
     def test_missing_folder_and_exiftool_are_reported(self):
         config = wf.merge_config({'INPUTS.images_folder': 'does/not/exist', 'INPUTS.exiftool_path': 'nope.exe'})
         text = '\n'.join(wf.validate_config(config, ROOT))

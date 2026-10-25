@@ -742,7 +742,7 @@ class WindowTests(unittest.TestCase):
             widget = self.frame.entries[key]
             found = self.frame.help_panel.explanation_of(next(iter(widget.values())) if isinstance(widget, dict) else widget)
             self.assertEqual((found[0], found[1]), (field['label'], rw.field_help(field)), key)
-            self.assertTrue(found[1].startswith(field['help'].rstrip('\n')), key)
+            self.assertNotIn('Default', found[1], key)                              # the defaults are not shown
 
     def dls_labels(self):
         return [child.cget('text') for child in self.frame.scroll_pages['CORRECTION'].body.winfo_children()
@@ -810,27 +810,44 @@ class CaptureChoiceTests(unittest.TestCase):
     setUp = WindowTests.setUp
     tearDown = WindowTests.tearDown
 
-    def test_panel_captures_are_chosen_among_the_captures_of_the_folder(self):
-        box = self.frame.entries['INPUTS.reference_panel_capture']
-        self.assertEqual(box.winfo_class(), 'TCombobox')
+    def test_panel_captures_are_typed_or_chosen_by_looking_at_the_captures(self):
+        entry = self.frame.entries['INPUTS.reference_panel_capture']
+        self.assertEqual(entry.winfo_class(), 'TEntry')
         self.assertEqual(self.frame.capture_names(), ['IMG_0005', 'IMG_0010'])
-        self.frame._refresh_capture_choices('INPUTS.reference_panel_capture_after')
-        self.assertEqual(list(self.frame.entries['INPUTS.reference_panel_capture_after'].cget('values')),
-                         ['', 'IMG_0005', 'IMG_0010'])
+        self.assertEqual(self.frame.capture_names(True), ['', 'IMG_0005', 'IMG_0010'])
+        with mock.patch.object(rw, 'pick_captures', return_value='IMG_0010') as picker:
+            self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
+        args, kwargs = picker.call_args
+        self.assertEqual(args[1], ['IMG_0005', 'IMG_0010'])
+        self.assertEqual(kwargs['selected'], ['IMG_0005'])
+        self.assertIsNone(kwargs['none_label'])                                  # the first panel capture is needed
+        self.assertFalse(kwargs.get('multiple', False))
+        self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture'), 'IMG_0010')
+        self.assertEqual(len(kwargs['paths_of']('IMG_0005')), 6)                  # what the window needs to show the pictures
+        self.assertEqual(kwargs['bands'], ['Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR'])
+        self.assertIn(kwargs['resolve_band']('Red'), range(6))                    # read from the metadata of a capture
+        self.frame.set_value('INPUTS.reference_panel_capture_after', 'IMG_0010')
+        with mock.patch.object(rw, 'pick_captures', return_value='') as picker:
+            self.frame.choose_panel_capture('INPUTS.reference_panel_capture_after')
+        self.assertEqual(picker.call_args.kwargs['none_label'], 'No second panel capture')
+        self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture_after'), '')
+        with mock.patch.object(rw, 'pick_captures', return_value=None):
+            self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
+        self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture'), 'IMG_0010')    # cancelled: unchanged
         self.frame.set_value('INPUTS.images_folder', 'does/not/exist')
         self.assertEqual(self.frame.capture_names(), [])
 
     def test_captures_to_correct_are_chosen_from_a_list(self):
-        with mock.patch.object(rw, 'pick_names', return_value=['IMG_0010']) as picker:
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
             self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
             self.frame.choose_captures()
         self.assertEqual(picker.call_args[0][1], ['IMG_0010'])             # the panel capture is not offered
         self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')      # shown in the field, even if it is all
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0001')
-        with mock.patch.object(rw, 'pick_names', return_value=['IMG_0010']):
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']):
             self.frame.choose_captures()
         self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')
-        with mock.patch.object(rw, 'pick_names', return_value=None):
+        with mock.patch.object(rw, 'pick_captures', return_value=None):
             self.frame.choose_captures()
         self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')
         self.frame._update_captures_summary()
@@ -902,13 +919,13 @@ class HelpColumnTests(unittest.TestCase):
         panel.point_at(self.frame.entries['CHECKS.jump_threshold'])
         text = panel.plain_text()
         self.assertIn('\u2022\tA spike', text)                                  # a list item
-        self.assertIn('Default: 0.1', text)
         self.assertIn('Checks of the DLS data (limits)', text)                  # the note of the part, in its own section
         self.assertEqual(len(panel.rules), 1)                                   # with a line between the two
         tags = set(panel.text.tag_names('2.0'))
         self.assertIn('title', panel.text.tag_names('1.0'))
         self.assertIn('body_p', tags)
-        self.assertEqual(int(float(panel.text.tag_cget('body_p', 'lmargin1'))) > int(float(panel.text.tag_cget('body_p', 'lmargin2'))), True)
+        self.assertGreater(int(float(panel.text.tag_cget('body_p', 'lmargin2'))),
+                           int(float(panel.text.tag_cget('body_p', 'lmargin1'))))       # the lines after the first hang
         self.assertGreater(int(float(panel.text.tag_cget('body_p', 'spacing3'))), 8)      # space after a paragraph
 
     def test_the_pointer_shows_the_field_and_leaving_goes_back_to_the_page(self):
@@ -974,6 +991,33 @@ class HelpColumnTests(unittest.TestCase):
         panel.point_at(self.frame.entries['INPUTS.images_folder'])
         self.assertEqual(panel.shown[2], '')
         self.assertEqual(len(panel.rules), 0)
+
+    def test_exiftool_is_looked_for_and_reported(self):
+        found = {'path': r'C:\tools\exiftool.exe', 'source': 'the system PATH', 'package': True, 'version': None}
+        with mock.patch.object(wf, 'find_exiftool', return_value=(found['path'], found['source'])), \
+                mock.patch.object(wf, 'pyexiftool_installed', return_value=True):
+            self.frame._check_exiftool()
+        title, text = self.frame.exiftool_details()
+        self.assertEqual(title, 'ExifTool on this computer')
+        self.assertIn('- Program: C:\\tools\\exiftool.exe', text)
+        self.assertIn('- Version: checking...', text)
+        self.assertEqual(self.frame.exiftool_summary.cget('text'), '')
+        self.frame._handle('exiftool', (found['path'], '12.70'))
+        self.assertIn('- Version: 12.70', self.frame.exiftool_details()[1])
+        self.frame._handle('exiftool', ('C:\\other\\exiftool.exe', '1.0'))               # an old answer is ignored
+        self.assertIn('- Version: 12.70', self.frame.exiftool_details()[1])
+        self.frame.parent.after_cancel(self.frame.exiftool_after)
+
+    def test_a_missing_exiftool_or_package_is_a_problem_under_the_field(self):
+        with mock.patch.object(wf, 'find_exiftool', return_value=(None, 'the system PATH')), \
+                mock.patch.object(wf, 'pyexiftool_installed', return_value=False):
+            self.frame._check_exiftool()
+        text = self.frame.exiftool_summary.cget('text')
+        self.assertIn('ExifTool was not found in the system PATH', text)
+        self.assertIn('pyexiftool is not installed', text)
+        self.assertTrue(self.frame.exiftool_summary.winfo_manager())
+        self.assertIn('was not found', self.frame.exiftool_details()[1])
+        self.assertIn('pyexiftool: not installed', self.frame.exiftool_details()[1])
 
     def test_the_column_can_be_resized_and_keeps_the_text_inside(self):
         self.root.attributes('-alpha', 0.0)

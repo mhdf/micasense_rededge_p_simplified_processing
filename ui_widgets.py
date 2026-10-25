@@ -261,51 +261,6 @@ class BandTable:
                 widget.state(['disabled'] if disabled else ['!disabled'])
 
 
-def pick_names(parent, names, selected=(), title='Select captures'):
-    """
-    A modal list in which several of the names can be selected (click, ctrl-click, shift-click)
-    Inputs: the names to show and those that start selected
-    Outputs: the list of the names that were selected, in the order of the list, or None if the dialog was cancelled
-    """
-    import tkinter as tk
-    from tkinter import ttk
-    window = tk.Toplevel(parent)
-    window.title(title)
-    window.configure(background=COLORS['background'])
-    window.transient(parent)
-    outcome = {'value': None}
-    ttk.Label(window, text='Select the captures to correct (ctrl-click or shift-click for several).',
-              style='Muted.TLabel').pack(anchor='w', padx=12, pady=(12, 6))
-    holder = ttk.Frame(window)
-    holder.pack(fill='both', expand=True, padx=12)
-    listbox = tk.Listbox(holder, selectmode='extended', exportselection=False, activestyle='none', height=16, width=34,
-                         font=FONT, background=COLORS['input'], foreground=COLORS['foreground'], borderwidth=0,
-                         highlightthickness=0, selectbackground=COLORS['accent'], selectforeground=COLORS['foreground'])
-    scrollbar = ttk.Scrollbar(holder, orient='vertical', command=listbox.yview)
-    listbox.configure(yscrollcommand=scrollbar.set)
-    listbox.pack(side='left', fill='both', expand=True)
-    scrollbar.pack(side='right', fill='y')
-    for name in names:
-        listbox.insert('end', name)
-    for number, name in enumerate(names):
-        if name in selected:
-            listbox.selection_set(number)
-
-    def accept():
-        outcome['value'] = [names[number] for number in listbox.curselection()]
-        window.destroy()
-
-    buttons = ttk.Frame(window)
-    buttons.pack(fill='x', padx=12, pady=12)
-    ttk.Button(buttons, text='OK', command=accept).pack(side='right')
-    ttk.Button(buttons, text='Cancel', command=window.destroy).pack(side='right', padx=(0, 6))
-    ttk.Button(buttons, text='Select all', command=lambda: listbox.selection_set(0, 'end')).pack(side='left')
-    ttk.Button(buttons, text='Clear', command=lambda: listbox.selection_clear(0, 'end')).pack(side='left', padx=(6, 0))
-    window.grab_set()
-    window.wait_window()
-    return outcome['value']
-
-
 class NavTiles:
     """
     Tiles in a column to choose a page (the pages of the photogrammetric workflow window look like this), as tall as two
@@ -383,12 +338,12 @@ class HelpPanel:
     pointer, the field that has the keyboard focus, and the explanation of the page (set_default). A widget is described
     with describe(widget, title, text, extra_title, extra_text, details): everything inside it (also what is added later,
     like the rows of a table) shows that explanation; details is an optional function that returns the (title, text) of
-    live information (what a file pattern matches now, for example) and refresh() shows it again after a change. The
+    live information (what a file pattern matches now, for example), shown above the explanation; refresh() shows it again after a change. The
     pointer and the focus are followed from the toplevel window, so nothing has to be bound to each widget; follow(toplevel)
     starts it. While the pointer is over the column itself the explanation stays, so that it can be read and scrolled.
 
     The texts are written with a few marks, one paragraph per line: a line that starts with '# ' is a sub-heading, one that
-    starts with '- ' is an item of a list, any other line is a paragraph (shown with its first line indented). The text
+    starts with '- ' is an item of a list, any other line is a paragraph (the lines after the first are indented). The text
     wraps to the width of the column, which the user can change
     """
 
@@ -407,7 +362,7 @@ class HelpPanel:
         self.text.tag_configure('title', font=('Segoe UI', 12, 'bold'), spacing3=12)
         for section in self.SECTIONS:
             color = COLORS['muted'] if section == 'extra' else COLORS['foreground']
-            self.text.tag_configure(f'{section}_p', lmargin1=18, lmargin2=0, spacing2=5, spacing3=12, foreground=color)
+            self.text.tag_configure(f'{section}_p', lmargin1=0, lmargin2=18, spacing2=5, spacing3=12, foreground=color)
             self.text.tag_configure(f'{section}_b', lmargin1=14, lmargin2=30, tabs=(30,), spacing2=5, spacing3=7,
                                     foreground=color)
             self.text.tag_configure(f'{section}_h', font=FONT_BOLD, spacing1=6, spacing3=6, foreground=COLORS['foreground'])
@@ -459,15 +414,15 @@ class HelpPanel:
         self.rules = []
         if title:
             t.insert('end', title + '\n', 'title')
+        if live and live[0]:                                   # what is true now comes first, then the explanation
+            t.insert('end', live[0] + '\n', 'section')
+            self._markup(live[1], 'detail')
+            self._rule()
         self._markup(text, 'body')
-        parts = [(extra_title, extra_text, 'extra')]
-        if live:
-            parts.append((live[0], live[1], 'detail'))
-        for heading, body, section in parts:
-            if heading:
-                self._rule()
-                t.insert('end', heading + '\n', 'section')
-                self._markup(body, section)
+        if extra_title:
+            self._rule()
+            t.insert('end', extra_title + '\n', 'section')
+            self._markup(extra_text, 'extra')
         t.configure(state='disabled')
         t.yview_moveto(0)
 

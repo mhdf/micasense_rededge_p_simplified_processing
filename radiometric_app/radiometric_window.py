@@ -72,7 +72,8 @@ PAGE_HELP = {
               "from a camera preset.\n"
               "- Reflectance of the panel: where the value of each band comes from.\n"
               "- Panel measurement: how the panel is measured, and what is done with a second panel capture."),
-    'CORRECTION': ("DLS (Downwelling Light Sensor)", wf.GROUP_NOTES['Correction with the DLS']),
+    'CORRECTION': ("DLS (Downwelling Light Sensor)", wf.GROUP_NOTES['Correction with the DLS'],
+                   'Checks of the DLS data (limits)', wf.GROUP_NOTES['Checks of the DLS data (limits)']),
     'RUN': ("Run and results",
             "Check the inputs, run the correction and follow it in the log.\n"
             "The configuration is saved when the run starts, so the results can be traced to the values used."),
@@ -449,10 +450,8 @@ class RadiometricFrame:
             return
         row = ttk.Frame(page)
         row.pack(fill='x', pady=(0, 9))
-        note = wf.GROUP_NOTES.get(group or self.groups.get(page))
         details = getattr(self, DETAILS[key]) if key in DETAILS else None
-        self.help_panel.describe(row, field['label'], field_help(field),
-                                 *((group or self.groups.get(page), note) if note else ('', '')), details)
+        self.help_panel.describe(row, field['label'], field_help(field), '', '', details)
         if kind == 'bool':
             variable = tk.BooleanVar(value=self.model.get(key))
             ttk.Checkbutton(row, text=field['label'], variable=variable).pack(anchor='w')

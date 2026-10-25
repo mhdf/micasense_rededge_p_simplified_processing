@@ -71,17 +71,20 @@ GROUP_NOTES = {
         "flight and no value is estimated from other bands. A missing irradiance in any band, Panchro "
         "included, is an error.",
     "Checks of the DLS data (limits)":
-        "These checks only raise flags: they never change the result. They use the DLS data of the image "
-        "capture and of the panel capture(s).\n"
+        "These checks look for DLS data that should not be trusted. They only raise flags: the correction is "
+        "applied anyway and the images are written. The flags are shown in the log, and saved in the result "
+        "file and in the provenance record of each capture, so that you can look at those captures.\n"
         "# What is checked\n"
-        "- Band ratio and plausible range: the bands of a capture must have almost the same ratio (the light "
-        "changes all of them together), within a credible range.\n"
-        "- Sun angle: if the DLS is level, the sun direction it measures (XMP:EstimatedDirectLightVector) "
-        "matches the solar zenith, 90 degrees minus XMP:SolarElevation. A large difference means a tilted DLS "
-        "or inconsistent data.\n"
+        "- Band ratio: the DLS ratio of each band is compared with the median of the ratios of all the bands "
+        "of the same capture. The light changes all the bands together, so they should agree.\n"
+        "- Plausible range: a ratio far from 1 means that the light at the image was very different from the "
+        "light at the panel.\n"
+        "- Sun angle: the sun direction measured by the DLS against the solar zenith computed from "
+        "XMP:SolarElevation; they differ when the DLS is tilted. It is checked in the panel capture and in "
+        "the image capture.\n"
         "- Jump: change of the irradiance of a band between consecutive captures: a spike if it comes back, a "
         "step if it stays.\n"
-        "- Panel drift: the two panel captures against each other.",
+        "- Panel drift: the two panel captures against each other (only with a second panel capture).",
 }
 
 FIELDS = [
@@ -256,33 +259,57 @@ FIELDS = [
                   "On: every band of the image and of the panel capture needs a valid irradiance "
                   "(XMP:HorizontalIrradiance); otherwise the run stops with an error.")},
     {'key': 'CHECKS.band_ratio_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['band_ratio_tolerance'],
-     'label': 'Band ratio tolerance', 'help': ("Largest departure of the DLS ratio of a band from the median ratio of the bands (0.03 = 3 %).\n"
-                  "The light changes all the bands together, so a band that departs more than this points to a problem "
-                  "with the data of that band.")},
+     'label': 'Band ratio tolerance', 'help': ("Largest departure accepted (0.03 = 3 %) of the DLS ratio of a band from the median of the ratios of "
+                  "all the bands of the same capture.\n"
+                  "The light changes all the bands together, so within one capture the ratio E_panel / E_image should "
+                  "be almost the same in every band. A band that departs more than this points to a problem with the "
+                  "irradiance of that band in that capture.")},
     {'key': 'CHECKS.ratio_range_min', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['ratio_range'][0],
-     'label': 'Smallest plausible DLS ratio', 'help': ("Ratios below this are flagged: the image would have more light than the panel (0.5 = twice as much).\n"
-                  "Such a ratio is hardly credible: look for a DLS reading that is wrong, or a panel photographed in "
-                  "the shade.")},
+     'label': 'Smallest plausible DLS ratio', 'help': ("Ratios below this are flagged. A ratio of 0.5 means that the DLS measured twice as much light at the "
+                  "image as at the panel.\n"
+                  "That is hardly credible within one flight. It happens, for example, if the panel was photographed in "
+                  "shade or under cloud and the image was taken in full sun, or if the irradiance of the image is "
+                  "wrong.\n"
+                  "The correction is still applied; the flag asks you to look at that capture.")},
     {'key': 'CHECKS.ratio_range_max', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['ratio_range'][1],
-     'label': 'Largest plausible DLS ratio', 'help': ("Ratios above this are flagged: the image would have less light than the panel (2 = half as much).\n"
-                  "Such a ratio is hardly credible: look for a covered DLS, heavy cloud or a panel photographed in full "
-                  "sun with the flight in the shade.")},
+     'label': 'Largest plausible DLS ratio', 'help': ("Ratios above this are flagged. A ratio of 2 means that the DLS measured half as much light at the "
+                  "image as at the panel.\n"
+                  "It is credible when the panel was photographed in full sun and the image was taken under heavy cloud "
+                  "or in shade. It also happens when the DLS was covered or pointing away from the sun at that moment, "
+                  "and then the irradiance of the image is wrong.\n"
+                  "The correction is still applied; the flag asks you to look at that capture.")},
     {'key': 'CHECKS.max_sun_angle_discrepancy_deg', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
      'default': rct.DLS_CHECKS['max_sun_angle_discrepancy_deg'],
      'label': 'Largest sun angle discrepancy (deg)',
-     'help': ("Degrees. Largest difference between the sun angle seen by the DLS and the solar zenith (90 degrees "
-                  "minus XMP:SolarElevation).\n"
-                  "If the DLS is level the two agree; the difference is at least the tilt of the DLS. It is checked in "
-                  "the panel capture and in the image capture.")},
+     'help': ("Largest difference accepted, in degrees, between two measurements of the angle of the sun from the "
+                  "vertical (the solar zenith).\n"
+                  "# How it works\n"
+                  "- The DLS measures where the direct sunlight comes from, in its own frame "
+                  "(XMP:EstimatedDirectLightVector). If the DLS is level, the angle between that direction and the "
+                  "vertical is the solar zenith.\n"
+                  "- The camera also writes the solar elevation (XMP:SolarElevation). The solar zenith is 90 degrees "
+                  "minus it, and it does not depend on the DLS.\n"
+                  "- The two agree when the DLS is level. If the aircraft was rolled or pitched, the DLS was tilted and "
+                  "they differ: the tilt is at least as large as the difference.\n"
+                  "A tilted DLS measures the irradiance on a tilted surface instead of a horizontal one, so the DLS "
+                  "ratio of that capture is less reliable. The check is made on the panel capture and on the image "
+                  "capture.")},
     {'key': 'CHECKS.jump_threshold', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['jump_threshold'],
      'label': 'Irradiance jump threshold', 'help': ("Change (0.1 = 10 %) of the irradiance of a band between consecutive captures that is reported.\n"
                   "- A spike: the irradiance jumps and comes back, for example a shaded or tilted DLS in one capture.\n"
                   "- A step: the change stays, for example the sun going behind a cloud.")},
     {'key': 'CHECKS.panel_drift_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['panel_drift_tolerance'],
-     'label': 'Panel drift tolerance', 'help': ("Largest change (0.05 = 5 %) between the first and the second panel captures of the panel factor of a "
-                  "band and of the DLS irradiance relative to the irradiance estimated from the panel.\n"
-                  "A larger change means that the light changed between the two panel photos, or that one of them has a "
-                  "problem (shadow, dirt, handling of the panel).")},
+     'label': 'Panel drift tolerance', 'help': ("Compares the two panel captures, band by band. Largest change accepted (0.05 = 5 %) in each of "
+                  "these:\n"
+                  "- The panel factor: the relation between the reflectance of the panel and what the camera read from "
+                  "it. It changes if the light was not the same in the two photos, or if the panel was shaded, dirty or "
+                  "held differently.\n"
+                  "- The agreement between the DLS and the camera: the change of the DLS irradiance between the two "
+                  "photos, divided by the change of the irradiance that the camera sees on the panel. It is 1 if the "
+                  "DLS followed the light that the panel received, and it is not when the DLS was tilted or shaded in "
+                  "one of the photos.\n"
+                  "Only used with a second panel capture. A flag does not change the result; whether the second panel "
+                  "also calibrates the images is chosen in 'Panels used when there are two'.")},
 ]
 
 FIELD_KEYS = [field['key'] for field in FIELDS]

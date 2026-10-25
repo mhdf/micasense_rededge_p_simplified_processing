@@ -753,10 +753,11 @@ class WindowTests(unittest.TestCase):
         body = self.frame.scroll_pages['CORRECTION'].body
         notes = [self.frame.help_panel.explanation_of(child)[1] for child in body.winfo_children()
                  if child.winfo_class() == 'TLabel' and self.frame.help_panel.explanation_of(child)]
-        texts = ' '.join([self.frame.help_panel.default[1]] + notes)
+        helps = [field['help'] for field in wf.FIELDS if field['key'].startswith('CHECKS.')]
+        texts = ' '.join([self.frame.help_panel.default[1]] + notes + helps)
         for phrase in ('E_panel / E_image', 'XMP:HorizontalIrradiance', 'a ratio of 0.885 means that the light was 13 % stronger',
                        'the reflectance is multiplied by 0.885', 'XMP:EstimatedDirectLightVector',
-                       'zenith, 90 degrees minus XMP:SolarElevation', 'tilted DLS or inconsistent data',
+                       'The solar zenith is 90 degrees minus it', 'the DLS was tilted and they differ',
                        'Only the metadata of the image and of the panel capture is used'):
             self.assertIn(phrase, texts)
         self.assertIn('Checks of the DLS data (limits)', self.dls_labels())
@@ -765,23 +766,26 @@ class WindowTests(unittest.TestCase):
         body = self.frame.scroll_pages['CORRECTION'].body
         headings = {child.cget('text'): child for child in body.winfo_children() if child.winfo_class() == 'TLabel'}
         for group, start in (('Correction with the DLS', 'The panel photo sets the reflectance scale'),
-                             ('Checks of the DLS data (limits)', 'These checks only raise flags')):
+                             ('Checks of the DLS data (limits)', 'These checks look for DLS data')):
             found = self.frame.help_panel.explanation_of(headings[group])
             self.assertEqual(found[0], group)
             self.assertTrue(found[1].startswith(start), group)
-        use = self.frame.help_panel.explanation_of(self.frame.entries['CHECKS.jump_threshold'])
-        self.assertEqual(use[2], 'Checks of the DLS data (limits)')                 # a field also shows the note of its part
+        field = self.frame.help_panel.explanation_of(self.frame.entries['CHECKS.jump_threshold'])
+        self.assertEqual(field[2], '')                                              # a field does not repeat the note
 
     def test_the_limits_say_what_they_mean(self):
         helps = {field['key']: field['help'] for field in wf.FIELDS if field['key'].startswith(('CHECKS.', 'CORRECTION.'))}
         self.assertIn('DLS ratio E_panel / E_image', helps['CORRECTION.use_dls'])
-        self.assertIn('median ratio', helps['CHECKS.band_ratio_tolerance'])
+        self.assertIn('median of the ratios of all the bands of the same capture', helps['CHECKS.band_ratio_tolerance'])
         self.assertIn('twice as much', helps['CHECKS.ratio_range_min'])
         self.assertIn('half as much', helps['CHECKS.ratio_range_max'])
-        self.assertIn('90 degrees minus XMP:SolarElevation', helps['CHECKS.max_sun_angle_discrepancy_deg'])
+        self.assertIn('XMP:SolarElevation', helps['CHECKS.max_sun_angle_discrepancy_deg'])
+        self.assertIn('the tilt is at least as large as the difference', helps['CHECKS.max_sun_angle_discrepancy_deg'])
         self.assertIn('spike', helps['CHECKS.jump_threshold'])
         self.assertIn('step', helps['CHECKS.jump_threshold'])
-        self.assertIn('second panel captures', helps['CHECKS.panel_drift_tolerance'])
+        self.assertIn('panel factor', helps['CHECKS.panel_drift_tolerance'])
+        self.assertIn('DLS and the camera', helps['CHECKS.panel_drift_tolerance'])
+        self.assertIn('flag asks you to look', helps['CHECKS.ratio_range_max'])
 
     def test_the_use_of_two_panels_is_a_choice_in_the_panel_page(self):
         self.assertTrue(self.inside(self.frame.entries['PANEL.panels_used'], 'PANEL'))
@@ -919,8 +923,8 @@ class HelpColumnTests(unittest.TestCase):
         panel.point_at(self.frame.entries['CHECKS.jump_threshold'])
         text = panel.plain_text()
         self.assertIn('\u2022\tA spike', text)                                  # a list item
-        self.assertIn('Checks of the DLS data (limits)', text)                  # the note of the part, in its own section
-        self.assertEqual(len(panel.rules), 1)                                   # with a line between the two
+        self.assertIn('Irradiance jump threshold', text)
+        self.assertEqual(len(panel.rules), 0)
         tags = set(panel.text.tag_names('2.0'))
         self.assertIn('title', panel.text.tag_names('1.0'))
         self.assertIn('body_p', tags)
@@ -984,13 +988,15 @@ class HelpColumnTests(unittest.TestCase):
         self.assertEqual(panel.explanation_of(self.frame.buttons['run'])[0], 'Check inputs, Run, Open results folder')
         self.assertEqual(panel.explanation_of(self.frame.preset_box)[0], 'Camera preset')
 
-    def test_the_note_of_the_part_is_shown_under_the_field_only_when_there_is_one(self):
+    def test_the_note_of_a_part_is_not_repeated_under_each_of_its_fields(self):
         panel = self.frame.help_panel
-        panel.point_at(self.frame.entries['CHECKS.jump_threshold'])
+        for key in ('CHECKS.jump_threshold', 'CHECKS.band_ratio_tolerance', 'PANEL.panels_used'):
+            panel.point_at(self.frame.entries[key])
+            self.assertEqual(panel.shown[2], '', key)
+            self.assertEqual(len(panel.rules), 0, key)
+        self.frame.show_page('CORRECTION')                                  # the page and the headings carry the notes
         self.assertEqual(panel.shown[2], 'Checks of the DLS data (limits)')
-        panel.point_at(self.frame.entries['INPUTS.images_folder'])
-        self.assertEqual(panel.shown[2], '')
-        self.assertEqual(len(panel.rules), 0)
+        self.assertEqual(len(panel.rules), 1)
 
     def test_exiftool_is_looked_for_and_reported(self):
         found = {'path': r'C:\tools\exiftool.exe', 'source': 'the system PATH', 'package': True, 'version': None}

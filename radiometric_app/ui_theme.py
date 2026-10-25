@@ -90,10 +90,17 @@ def apply_dark_theme(root):
     style.configure('TEntry', background=c['background'], fieldbackground=c['input'], foreground=c['foreground'],
                     bordercolor=c['border'],
                     lightcolor=c['input'], darkcolor=c['input'], insertcolor=c['foreground'], padding=(3, 3, 3, 4))
-    style.map('TEntry', fieldbackground=[('disabled', c['panel'])], foreground=[('disabled', c['disabled'])])
+    # every state is given a dark color: the defaults of the theme are light (the hovered or pressed combobox and the
+    # readonly entry showed a light box, with the arrow lost in it)
+    style.map('TEntry', fieldbackground=[('readonly', c['input']), ('disabled', c['panel'])],
+              background=[('readonly', c['background'])], foreground=[('disabled', c['disabled'])])
     style.configure('Invalid.TEntry', fieldbackground='#6b3f36')
-    style.configure('TCheckbutton', background=c['background'], foreground=c['foreground'], font=FONT)
-    style.map('TCheckbutton', background=[('active', c['background'])])
+    style.configure('TCheckbutton', background=c['background'], foreground=c['foreground'], font=FONT,
+                    indicatorbackground=c['input'], indicatorforeground=c['foreground'], upperbordercolor=c['border'],
+                    lowerbordercolor=c['border'])
+    style.map('TCheckbutton', background=[('active', c['background'])],
+              indicatorbackground=[('pressed', c['accent']), ('disabled', c['panel'])],
+              indicatorforeground=[('disabled', c['disabled'])], foreground=[('disabled', c['disabled'])])
     style.configure('TProgressbar', background=c['accent'], troughcolor=c['panel'], bordercolor=c['border'],
                     lightcolor=c['accent'], darkcolor=c['accent'])
     style.configure('TScrollbar', background=c['input'], troughcolor=c['panel'], bordercolor=c['border'],
@@ -102,8 +109,17 @@ def apply_dark_theme(root):
                     arrowcolor=c['foreground'], bordercolor=c['border'], lightcolor=c['input'], darkcolor=c['input'],
                     selectbackground=c['input'], selectforeground=c['foreground'], padding=(3, 3, 3, 4))
     style.map('TCombobox', fieldbackground=[('readonly', c['input']), ('disabled', c['panel'])],
+              background=[('active', c['accent']), ('pressed', c['accent']), ('disabled', c['panel'])],
+              arrowcolor=[('disabled', c['disabled'])],
               foreground=[('disabled', c['disabled'])], selectbackground=[('readonly', c['input'])],
               selectforeground=[('readonly', c['foreground'])])
+    style.configure('TSpinbox', fieldbackground=c['input'], background=c['input'], foreground=c['foreground'],
+                    arrowcolor=c['foreground'], bordercolor=c['border'], lightcolor=c['input'], darkcolor=c['input'],
+                    padding=(3, 3, 3, 4))
+    style.map('TSpinbox', fieldbackground=[('readonly', c['input']), ('disabled', c['panel'])],
+              background=[('active', c['accent']), ('pressed', c['accent']), ('disabled', c['panel']),
+                          ('readonly', c['input'])],
+              arrowcolor=[('disabled', c['disabled'])], foreground=[('disabled', c['disabled'])])
     style.configure('Treeview', background=c['panel'], fieldbackground=c['panel'], foreground=c['foreground'],
                     bordercolor=c['border'], lightcolor=c['panel'], darkcolor=c['panel'], rowheight=22, font=FONT)
     style.map('Treeview', background=[('selected', c['accent'])], foreground=[('selected', c['foreground'])])

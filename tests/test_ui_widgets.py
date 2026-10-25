@@ -293,5 +293,51 @@ class TitleIconTests(unittest.TestCase):
             self.assertEqual(self.frame_state(dialog_window), (False, True))
 
 
+class ThemeColorsTests(unittest.TestCase):
+    """ No state of a field may show a light box: the corners, the arrow and the check box have to stay dark """
+
+    def setUp(self):
+        import tkinter as tk
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"no display for Tk: {error}")
+        self.root.withdraw()
+        from radiometric_app.ui_theme import apply_dark_theme
+        apply_dark_theme(self.root)
+        from tkinter import ttk
+        self.style = ttk.Style(self.root)
+
+    def tearDown(self):
+        self.root.destroy()
+
+    def luminance(self, color):
+        red, green, blue = (value // 256 for value in self.root.winfo_rgb(color))
+        return 0.299 * red + 0.587 * green + 0.114 * blue
+
+    def test_the_fields_are_dark_in_every_state(self):
+        states = ([], ['active'], ['pressed'], ['focus'], ['readonly'], ['disabled'], ['focus', 'active'], ['selected'])
+        options = {'TCombobox': ('background', 'fieldbackground', 'arrowcolor'),
+                   'TEntry': ('background', 'fieldbackground'),
+                   'Invalid.TEntry': ('background', 'fieldbackground'),
+                   'TSpinbox': ('background', 'fieldbackground', 'arrowcolor'),
+                   'TButton': ('background',),
+                   'TCheckbutton': ('background', 'indicatorbackground')}
+        for style, names in options.items():
+            for state in states:
+                for name in names:
+                    color = self.style.lookup(style, name, state)
+                    if name == 'arrowcolor':
+                        self.assertGreater(self.luminance(color), 90, f"{style} {name} {state}: the arrow is lost")
+                    else:
+                        self.assertLess(self.luminance(color), 130, f"{style} {name} {state}: {color} is light")
+
+    def test_the_check_mark_can_be_seen(self):
+        for state in ([], ['selected']):
+            mark = self.style.lookup('TCheckbutton', 'indicatorforeground', state)
+            box = self.style.lookup('TCheckbutton', 'indicatorbackground', state)
+            self.assertGreater(self.luminance(mark), self.luminance(box) + 60)
+
+
 if __name__ == '__main__':
     unittest.main()

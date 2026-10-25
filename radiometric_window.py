@@ -52,50 +52,92 @@ FIELD_PAGE = {'PANEL.manual_regions_file': 'INPUTS'}
 CAPTURE_KEYS = {'INPUTS.reference_panel_capture': False, 'INPUTS.reference_panel_capture_after': True}
 
 
-# What the help column says when the pointer and the keyboard focus are not on a field: title and text of each page
+# What the help column says when the pointer and the keyboard focus are not on a field: title and text of each page.
+# The texts use the marks of ui_widgets.HelpPanel: '# ' sub-heading, '- ' list item, any other line is a paragraph
 PAGE_HELP = {
-    'INPUTS': ("Inputs", "Where the images are, which captures show the reference panel and which captures are corrected. "
-                         "Point at a field, or move to it with the keyboard, to read what it does."),
-    'PANEL': ("Reference panel", "The bands of the camera, the known reflectance of the reference panel and how the panel "
-                                 "is measured in its image. Point at a field, or move to it with the keyboard, to read what "
-                                 "it does."),
+    'INPUTS': ("Inputs",
+               "Where the images are, which captures show the reference panel and which captures are corrected.\n"
+               "# The steps\n"
+               "- Choose the images folder and the results folder.\n"
+               "- Choose the capture that shows the reference panel (and the one taken after the flight, if there is one).\n"
+               "- Check the inputs, then check or draw the regions of the panel.\n"
+               "- Choose the captures to correct.\n"
+               "# This column\n"
+               "- Point at a field, or move to it with the Tab key, to read what it does.\n"
+               "- Drag the line between this column and the fields to change its width."),
+    'PANEL': ("Reference panel",
+              "The bands of the camera, the known reflectance of the reference panel and how the panel is measured in its "
+              "image.\n"
+              "# In this page\n"
+              "- Bands of the camera: the table of the bands, with the buttons to detect them from a capture or to fill them "
+              "from a camera preset.\n"
+              "- Reflectance of the panel: where the value of each band comes from.\n"
+              "- Panel measurement: how the panel is measured, and what is done with a second panel capture.\n"
+              "Point at a field, or move to it with the Tab key, to read what it does."),
     'CORRECTION': ("DLS (Downwelling Light Sensor)", wf.GROUP_NOTES['Correction with the DLS']),
-    'RUN': ("Run and results", "Check the inputs, run the correction and follow it in the log. The configuration is saved "
-                               "when the run starts."),
+    'RUN': ("Run and results",
+            "Check the inputs, run the correction and follow it in the log.\n"
+            "The configuration is saved when the run starts, so the results can be traced to the values used."),
 }
 
 # Explanations of the parts of the pages that are not fields of the configuration
-BAND_NOTE = ("One row per band. The names must be those written by the camera (XMP:BandName). A band that is not used is in "
-             "the files but is left out of the processing, for example a thermal band. The panel reflectance is the value "
-             "provided with the panel for each band; it is typed here only when its source is 'Values typed in the table "
-             "of the bands'. The center and the bandwidth give the spectral window of the band, used to compute the "
-             "reflectance of the panel from its spectral response file.")
-BAND_TOOLS_NOTE = ("Add band: a new row. Detect from capture: reads the names and spectral windows of the bands from the "
-                   "metadata of the reference panel capture (the typed panel reflectances are kept). Remove: deletes the "
-                   "row of the band.")
-PRESET_NOTE = ("A camera preset fills the table of the bands (and the file name pattern) for a camera model. The presets "
-               "come from the documentation of the manufacturer, not from images: only the MicaSense RedEdge-P was tested. "
-               "Check the result against your own data, for example with Detect from capture.")
-REGIONS_NOTE = ("Check inputs tells whether the folders, the panel capture and the bands are right, before anything is "
-                "opened. Check / draw panel regions opens an overview of the reference panel capture with the region found "
-                "from the QR code in each band (and the regions saved before): accept them there, or edit or draw a band "
-                "when the region is wrong or the QR code cannot be read. Every band has to be accepted. The regions are "
-                "saved in the file above (if it is empty, in panel_regions.json in the results folder, which is then "
-                "filled in above).")
+BAND_NOTE = ("One row per band of the camera.\n"
+             "- Use: a band that is not used is in the files but is left out of the processing, for example a thermal band.\n"
+             "- Band name: as written by the camera (XMP:BandName).\n"
+             "- Center and bandwidth (nm): the spectral window of the band, used to compute the reflectance of the panel "
+             "from its spectral response file.\n"
+             "- Panel reflectance: the value provided with the panel for the band. It is typed here only when the source of "
+             "the reflectance is 'Values typed in the table of the bands'.\n"
+             "The values at the start are those of the panel that goes with the example images: use the ones of your panel.")
+BAND_TOOLS_NOTE = ("- Add band: a new row at the end of the table.\n"
+                   "- Detect from capture: reads the names and the spectral windows of the bands from the metadata of the "
+                   "reference panel capture. The panel reflectances that were typed are kept for the bands that stay.\n"
+                   "- Remove (in each row): deletes the row of the band.")
+PRESET_NOTE = ("A camera preset fills the table of the bands, and the file name pattern, for a camera model.\n"
+               "The presets come from the documentation of the manufacturer, not from images: only the MicaSense RedEdge-P "
+               "was tested. Check the result against your own data, for example with Detect from capture.")
+REGIONS_NOTE = ("- Check inputs: tells whether the folders, the panel capture and the bands are right, before anything is "
+                "opened.\n"
+                "- Check / draw panel regions: opens an overview of the panel capture with the region found from the QR code "
+                "in each band, and the regions saved before. Accept them there, or edit or draw a band when the region is "
+                "wrong or the QR code cannot be read. Every band has to be accepted.\n"
+                "The regions are saved in the file above; if it is empty, in panel_regions.json in the results folder, which "
+                "is then filled in above.")
 RUN_NOTES = {
     'buttons': ("Check inputs, Run, Open results folder",
-                "Check inputs tells whether everything the correction needs is in place, without running it. Run saves "
-                "the configuration and corrects the captures in the background. Open results folder shows the corrected "
-                "images and the provenance records."),
+                "- Check inputs: tells whether everything the correction needs is in place, without running it.\n"
+                "- Run: saves the configuration and corrects the captures in the background; the window stays usable.\n"
+                "- Open results folder: shows the corrected images and the provenance records."),
     'log': ("Log", "What the correction did: errors, flags raised by the checks of the DLS data, and the files written."),
 }
 PROFILE_NOTES = {
     'save': ("Save configuration", "Writes the values that differ from the defaults in the configuration file shown at the "
                                    "left."),
-    'profile': ("Profiles", "A profile is a named copy of the configuration, for a camera or a flight. Save profile... writes "
-                            "one in the profiles folder; Load profile... replaces the values in the window with those of a "
-                            "profile."),
+    'profile': ("Profiles", "A profile is a named copy of the configuration, for a camera or a flight.\n"
+                            "- Save profile...: writes one in the profiles folder.\n"
+                            "- Load profile...: replaces the values in the window with those of a profile."),
 }
+
+# The fields that show live information in the help column, and the information
+DETAILS = {'INPUTS.image_captures': 'captures_details', 'INPUTS.file_pattern': 'pattern_details',
+           'PANEL.spectral_file': 'spectral_details'}
+
+
+def default_text(field):
+    """ The default value of a field, as a line for the help column ('' for the fields without one worth showing) """
+    default, kind = field['default'], field['kind']
+    if kind in ('band_values',):
+        return ''
+    if kind == 'bool':
+        return 'Default: ' + ('on' if default else 'off')
+    if kind == 'choice' and field.get('labels'):
+        default = field['labels'].get(default, default)
+    return f"Default: {default if str(default) != '' else 'empty'}"
+
+
+def field_help(field):
+    """ What the help column says about a field: its explanation and its default value """
+    return field['help'].rstrip('\n') + ('\n' + default_text(field) if default_text(field) else '')
 
 
 def page_of(key):
@@ -310,10 +352,13 @@ class RadiometricFrame:
         body.pack(fill='both', expand=True)
         self.navigation = NavTiles(body, [title for _, title in SECTIONS], self._on_navigate)
         self.navigation.widget.pack(side='left', fill='y', padx=(12, 0), pady=(12, 6))
-        self.help_panel = HelpPanel(body)
-        self.help_panel.widget.pack(side='right', fill='y', padx=(0, 12), pady=(12, 6))
-        self.content = ttk.Frame(body, padding=(16, 10, 12, 0))
-        self.content.pack(side='left', fill='both', expand=True)
+        self.panes = tk.PanedWindow(body, orient='horizontal', sashwidth=6, sashrelief='flat', borderwidth=0,
+                                    background=COLORS['border'], opaqueresize=True)
+        self.panes.pack(side='left', fill='both', expand=True, padx=(8, 12), pady=(12, 6))
+        self.content = ttk.Frame(self.panes, padding=(12, 10, 10, 0))
+        self.help_panel = HelpPanel(self.panes)
+        self.panes.add(self.content, minsize=520, stretch='always')                # the line between the two can be dragged
+        self.panes.add(self.help_panel.widget, width=380, minsize=220, stretch='never')
 
         self.scroll_pages = {}
         for prefix, title in SECTIONS:
@@ -410,7 +455,9 @@ class RadiometricFrame:
         row = ttk.Frame(page)
         row.pack(fill='x', pady=(0, 9))
         note = wf.GROUP_NOTES.get(group or self.groups.get(page))
-        self.help_panel.describe(row, field['label'], field['help'], *((group or self.groups.get(page), note) if note else ()))
+        details = getattr(self, DETAILS[key]) if key in DETAILS else None
+        self.help_panel.describe(row, field['label'], field_help(field),
+                                 *((group or self.groups.get(page), note) if note else ('', '')), details)
         if kind == 'bool':
             variable = tk.BooleanVar(value=self.model.get(key))
             ttk.Checkbutton(row, text=field['label'], variable=variable).pack(anchor='w')
@@ -468,15 +515,12 @@ class RadiometricFrame:
                     ttk.Button(line, text='Suggest from files', command=self.suggest_pattern).pack(side='left', padx=(6, 0))
                 variable.trace_add('write', lambda *_, key=key, variable=variable: self._changed(key, variable.get()))
                 self.variables[key], self.entries[key] = variable, entry
-        if key == 'INPUTS.image_captures':
-            self.captures_summary = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
-            self.captures_summary.pack(anchor='w', pady=(3, 0))
+        if key == 'INPUTS.image_captures':                          # only what is wrong is written on the page
+            self.captures_summary = ttk.Label(row, text='', style='Error.TLabel', wraplength=760, justify='left')
         if key == 'INPUTS.file_pattern':
-            self.pattern_preview = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
-            self.pattern_preview.pack(anchor='w', pady=(3, 0))
+            self.pattern_preview = ttk.Label(row, text='', style='Error.TLabel', wraplength=760, justify='left')
         if key == 'PANEL.spectral_file':
-            self.spectral_summary = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
-            self.spectral_summary.pack(anchor='w', pady=(3, 0))
+            self.spectral_summary = ttk.Label(row, text='', style='Error.TLabel', wraplength=760, justify='left')
         if key == 'PANEL.manual_regions_file':
             self._build_regions_tool(page)
 
@@ -637,53 +681,93 @@ class RadiometricFrame:
         self.set_value('INPUTS.file_pattern', pattern)
         self.log(f"File name pattern suggested from the files of the images folder: {pattern}")
 
+    @staticmethod
+    def _problem(label, text):
+        """ Show a problem under a field (the label is only on the page while there is one) """
+        label.configure(text=text, style='Error.TLabel')
+        if text and not label.winfo_manager():
+            label.pack(anchor='w', pady=(3, 0))
+        elif not text and label.winfo_manager():
+            label.pack_forget()
+
+    @staticmethod
+    def _names_list(names, limit=12):
+        shown = [f"- {name}" for name in names[:limit]]
+        if len(names) > limit:
+            shown.append(f"- and {len(names) - limit} more")
+        return '\n'.join(shown)
+
     def _update_captures_summary(self):
-        """ Say which captures will be corrected (the typed ones, or all but the panel captures when the field is empty) """
+        """ The captures that will be corrected (the typed ones, or all but the panel captures when the field is empty) """
         if not hasattr(self, 'captures_summary'):
             return
         typed = wf.capture_names(self.model.get('INPUTS.image_captures'))
         available = self.capture_names()
         panels = {self.model.get('INPUTS.reference_panel_capture').strip(),
                   self.model.get('INPUTS.reference_panel_capture_after').strip()}
+        problem = ''
         if typed:
             missing = [name for name in typed if name not in available]
-            text = f"{len(typed)} capture(s) will be corrected: {', '.join(typed)}."
+            self._captures_info = (f"{len(typed)} capture(s) will be corrected:", typed)
             if missing:
-                text += f" Not found in the images folder: {', '.join(missing)}."
+                problem = f"Not found in the images folder: {', '.join(missing)}."
         else:
             others = [name for name in available if name not in panels]
-            text = (f"All the other captures of the folder will be corrected ({len(others)}): {', '.join(others)}."
-                    if others else 'There are no captures to correct in the images folder.')
-        self.captures_summary.configure(text=text, style='Muted.TLabel')
+            self._captures_info = (f"All the other captures of the folder will be corrected ({len(others)}):", others)
+            if not others:
+                problem = 'There are no captures to correct in the images folder.'
+        self._problem(self.captures_summary, problem)
+        self.help_panel.refresh()
+
+    def captures_details(self):
+        """ (title, text) for the help column: the captures that will be corrected """
+        info = getattr(self, '_captures_info', None)
+        if not info or not info[1]:
+            return None
+        return 'Captures to correct', info[0] + '\n' + self._names_list(info[1])
+
+    def pattern_details(self):
+        """ (title, text) for the help column: how the file name pattern reads the images folder """
+        return getattr(self, '_pattern_info', None)
+
+    def spectral_details(self):
+        """ (title, text) for the help column: the reflectance that the spectral file gives in each band """
+        return getattr(self, '_spectral_info', None)
 
     def _update_pattern_preview(self):
-        """ Show how the file name pattern reads the files of the images folder """
+        """ Read the images folder with the file name pattern """
         self.preview_after = None
         self._update_captures_summary()
         if not hasattr(self, 'pattern_preview'):
             return
         pattern = self.model.get('INPUTS.file_pattern')
         folder = wf.resolve_path(self.root_folder, self.model.get('INPUTS.images_folder'))
+        self._pattern_info = None
         try:
             template = rct.pattern_template(pattern)
             info = rct.preview_file_pattern(folder, pattern)
         except ValueError as error:
-            self.pattern_preview.configure(text=str(error), style='Error.TLabel')
+            self._problem(self.pattern_preview, str(error))
+            self.help_panel.refresh()
             return
         except OSError:
-            self.pattern_preview.configure(text='The images folder cannot be read.', style='Error.TLabel')
+            self._problem(self.pattern_preview, 'The images folder cannot be read.')
+            self.help_panel.refresh()
             return
-        lines = [f"The pattern reads names written as {template}: <capture> is the name of the capture, <index> the number "
-                 f"of the file. In the images folder it matches {info['matched']} of {info['files']} files, in "
-                 f"{info['captures']} captures"
-                 + (' (' + ', '.join(f"{count} with {files} files" for files, count in info['files_per_capture'].items()) + ')'
-                    if info['captures'] else '') + '.']
-        for name, capture, index in info['examples']:
-            lines.append(f"    {name}  ->  capture {capture}" + ('' if index is None else f", file {index}"))
+        sizes = ', '.join(f"{count} with {files} files" for files, count in info['files_per_capture'].items())
+        lines = [f"The pattern reads names written as {template}.",
+                 f"- {info['matched']} of {info['files']} files match, in {info['captures']} captures"
+                 + (f" ({sizes})" if info['captures'] else '') + '.']
+        if info['examples']:
+            lines.append('# Examples')
+            lines.extend(f"- {file} -> capture {capture}" + ('' if index is None else f", file {index}")
+                         for file, capture, index in info['examples'])
         if info['unmatched']:
-            lines.append('Not matched, for example: ' + ', '.join(info['unmatched']))
-        self.pattern_preview.configure(text='\n'.join(lines),
-                                       style='Muted.TLabel' if info['matched'] else 'Error.TLabel')
+            lines.append('# Not matched, for example')
+            lines.extend(f"- {file}" for file in info['unmatched'])
+        self._pattern_info = ('In the images folder', '\n'.join(lines))
+        self._problem(self.pattern_preview, '' if info['matched'] else 'No file of the images folder matches the pattern.')
+        self.help_panel.refresh()
 
     def _after_change(self, key):
         if key in ('INPUTS.images_folder', 'INPUTS.file_pattern', 'INPUTS.image_captures', 'INPUTS.reference_panel_capture',
@@ -712,25 +796,27 @@ class RadiometricFrame:
         self.summary_after = None
         if not hasattr(self, 'spectral_summary'):
             return
+        self._spectral_info = None
         config, errors = self.model.config()
         if not config['PANEL.spectral_file'].strip():
-            self.spectral_summary.configure(text='', style='Muted.TLabel')
-            return
-        if errors:
-            self.spectral_summary.configure(text='Fix the values marked in red to read the file.', style='Error.TLabel')
-            return
-        try:
-            config['PANEL.reflectance_source'] = 'spectral_file'
-            levels, info = wf.panel_reflectance_levels(config, self.root_folder)
-        except (ValueError, OSError) as error:
-            self.spectral_summary.configure(text=str(error), style='Error.TLabel')
-            return
-        partial = [f"{band} {100 * values['coverage']:.0f} %" for band, values in info['bands'].items()
-                   if values['coverage'] < 1]
-        text = 'From the file: ' + ', '.join(f"{band} {level:.4f}" for band, level in levels.items())
-        if partial:
-            text += '. Part of the window covered: ' + ', '.join(partial)
-        self.spectral_summary.configure(text=text, style='Muted.TLabel')
+            self._problem(self.spectral_summary, '')
+        elif errors:
+            self._problem(self.spectral_summary, 'Fix the values marked in red to read the file.')
+        else:
+            try:
+                config['PANEL.reflectance_source'] = 'spectral_file'
+                levels, info = wf.panel_reflectance_levels(config, self.root_folder)
+            except (ValueError, OSError) as error:
+                self._problem(self.spectral_summary, str(error))
+            else:
+                self._problem(self.spectral_summary, '')
+                lines = ['The file gives these reflectances:'] + [f"- {band}: {level:.4f}" for band, level in levels.items()]
+                partial = [f"{band} {100 * values['coverage']:.0f} %" for band, values in info['bands'].items()
+                           if values['coverage'] < 1]
+                if partial:
+                    lines.append('Part of the window of the band that the file covers: ' + ', '.join(partial) + '.')
+                self._spectral_info = ('Read from the spectral file', '\n'.join(lines))
+        self.help_panel.refresh()
 
     def import_spectrum(self):
         """ Open the dialog to choose and preview the spectral response file, and apply what the user accepts """
@@ -1144,8 +1230,8 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     window = tk.Tk()
     window.title("Radiometric correction - Micasense RedEdge-P")
-    window.geometry("1360x800")
-    window.minsize(1100, 620)
+    window.geometry("1400x820")
+    window.minsize(1150, 620)
     apply_dark_theme(window)
     frame = RadiometricFrame(window, arguments.config, arguments.root)
     frame.widget.pack(fill='both', expand=True)

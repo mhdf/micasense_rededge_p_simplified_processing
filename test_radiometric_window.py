@@ -359,12 +359,16 @@ class WindowTests(unittest.TestCase):
     def test_the_summary_shows_the_values_read_from_the_file_or_the_problem(self):
         path = self.write_spectrum(level=0.5, stop=848)
         self.frame.set_value('PANEL.spectral_file', str(path))
-        self.pump(lambda: 'From the file' in self.frame.spectral_summary.cget('text'), 5)
-        text = self.frame.spectral_summary.cget('text')
-        self.assertIn('Blue 0.5000', text)
+        self.pump(lambda: self.frame.spectral_details() is not None, 5)
+        text = self.frame.spectral_details()[1]
+        self.assertIn('- Blue: 0.5000', text)
         self.assertIn('NIR 61 %', text)                         # the window of NIR is partly covered
+        self.assertEqual(self.frame.spectral_summary.cget('text'), '')
+        self.assertFalse(self.frame.spectral_summary.winfo_manager())
         self.frame.set_value('PANEL.spectral_wavelength_column', '9')
         self.pump(lambda: 'data row' in self.frame.spectral_summary.cget('text'), 5)
+        self.assertTrue(self.frame.spectral_summary.winfo_manager())
+        self.assertIsNone(self.frame.spectral_details())
         self.frame.set_value('PANEL.spectral_wavelength_column', '1')
         self.frame.set_value('PANEL.spectral_min_coverage', '0.9')
         self.pump(lambda: "Band 'NIR'" in self.frame.spectral_summary.cget('text'), 5)
@@ -737,7 +741,8 @@ class WindowTests(unittest.TestCase):
                 continue                                                      # a check box has no entry
             widget = self.frame.entries[key]
             found = self.frame.help_panel.explanation_of(next(iter(widget.values())) if isinstance(widget, dict) else widget)
-            self.assertEqual((found[0], found[1]), (field['label'], field['help']), key)
+            self.assertEqual((found[0], found[1]), (field['label'], rw.field_help(field)), key)
+            self.assertTrue(found[1].startswith(field['help'].rstrip('\n')), key)
 
     def dls_labels(self):
         return [child.cget('text') for child in self.frame.scroll_pages['CORRECTION'].body.winfo_children()
@@ -749,9 +754,9 @@ class WindowTests(unittest.TestCase):
         notes = [self.frame.help_panel.explanation_of(child)[1] for child in body.winfo_children()
                  if child.winfo_class() == 'TLabel' and self.frame.help_panel.explanation_of(child)]
         texts = ' '.join([self.frame.help_panel.default[1]] + notes)
-        for phrase in ('E_panel / E_image', 'XMP:HorizontalIrradiance', 'Example: 0.885 means that the light was 13 % stronger',
+        for phrase in ('E_panel / E_image', 'XMP:HorizontalIrradiance', 'a ratio of 0.885 means that the light was 13 % stronger',
                        'the reflectance is multiplied by 0.885', 'XMP:EstimatedDirectLightVector',
-                       'the solar zenith, 90 degrees minus XMP:SolarElevation', 'tilted DLS or inconsistent data',
+                       'zenith, 90 degrees minus XMP:SolarElevation', 'tilted DLS or inconsistent data',
                        'Only the metadata of the image and of the panel capture is used'):
             self.assertIn(phrase, texts)
         self.assertIn('Checks of the DLS data (limits)', self.dls_labels())
@@ -760,7 +765,7 @@ class WindowTests(unittest.TestCase):
         body = self.frame.scroll_pages['CORRECTION'].body
         headings = {child.cget('text'): child for child in body.winfo_children() if child.winfo_class() == 'TLabel'}
         for group, start in (('Correction with the DLS', 'The panel photo sets the reflectance scale'),
-                             ('Checks of the DLS data (limits)', 'Flags only')):
+                             ('Checks of the DLS data (limits)', 'These checks only raise flags')):
             found = self.frame.help_panel.explanation_of(headings[group])
             self.assertEqual(found[0], group)
             self.assertTrue(found[1].startswith(start), group)
@@ -829,31 +834,43 @@ class CaptureChoiceTests(unittest.TestCase):
             self.frame.choose_captures()
         self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')
         self.frame._update_captures_summary()
-        self.assertEqual(self.frame.captures_summary.cget('text'), '1 capture(s) will be corrected: IMG_0010.')
+        title, text = self.frame.captures_details()
+        self.assertEqual(title, 'Captures to correct')
+        self.assertIn('1 capture(s) will be corrected:', text)
+        self.assertIn('- IMG_0010', text)
+        self.assertEqual(self.frame.captures_summary.cget('text'), '')                 # nothing is wrong
         self.frame.set_value('INPUTS.image_captures', 'IMG_0010, IMG_7')
         self.frame._update_captures_summary()
         self.assertIn('Not found in the images folder: IMG_7', self.frame.captures_summary.cget('text'))
+        self.assertTrue(self.frame.captures_summary.winfo_manager())
         self.frame.set_value('INPUTS.image_captures', '')
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
         self.frame._update_captures_summary()
-        self.assertEqual(self.frame.captures_summary.cget('text'),
-                         'All the other captures of the folder will be corrected (1): IMG_0010.')
+        text = self.frame.captures_details()[1]
+        self.assertIn('All the other captures of the folder will be corrected (1):', text)
+        self.assertIn('- IMG_0010', text)
+        self.assertFalse(self.frame.captures_summary.winfo_manager())
 
-    def test_the_pattern_preview_and_the_suggestion(self):
+    def test_the_pattern_details_and_the_suggestion(self):
         self.frame._update_pattern_preview()
-        text = self.frame.pattern_preview.cget('text')
+        title, text = self.frame.pattern_details()
+        self.assertEqual(title, 'In the images folder')
         self.assertIn('{capture}_{index}.tif', text)
-        self.assertIn('IMG_0005_1.tif  ->  capture IMG_0005, file 1', text)
+        self.assertIn('- IMG_0005_1.tif -> capture IMG_0005, file 1', text)
         self.assertIn('2 captures (2 with 6 files)', text)
+        self.assertEqual(self.frame.pattern_preview.cget('text'), '')
         self.frame.set_value('INPUTS.file_pattern', r'(?P<capture>X.+)\.tif$')
         self.frame._update_pattern_preview()
-        self.assertEqual(self.frame.pattern_preview.cget('style'), 'Error.TLabel')
+        self.assertIn('No file', self.frame.pattern_preview.cget('text'))
+        self.assertTrue(self.frame.pattern_preview.winfo_manager())
         self.frame.suggest_pattern()
         self.assertEqual(self.frame.model.get('INPUTS.file_pattern'), '{capture}_{index}.tif')
+        self.frame._update_pattern_preview()
+        self.assertFalse(self.frame.pattern_preview.winfo_manager())
         self.frame.set_value('INPUTS.file_pattern', '(unclosed')
         self.frame._update_pattern_preview()
         self.assertIn('not a valid regular expression', self.frame.pattern_preview.cget('text'))
-
+        self.assertIsNone(self.frame.pattern_details())
 
     def test_the_source_of_the_panel_reflectance_is_a_dropdown_of_descriptions(self):
         box = self.frame.entries['PANEL.reflectance_source']
@@ -874,35 +891,64 @@ class HelpColumnTests(unittest.TestCase):
 
     def test_the_page_is_explained_when_no_field_is_pointed_at(self):
         panel = self.frame.help_panel
-        self.assertEqual(panel.title_label.cget('text'), 'Inputs')
+        self.assertEqual(panel.shown[0], 'Inputs')
+        self.assertTrue(panel.plain_text().startswith('Inputs'))
         self.frame.show_page('CORRECTION')
-        self.assertEqual(panel.title_label.cget('text'), 'DLS (Downwelling Light Sensor)')
-        self.assertIn('E_panel / E_image', panel.text_label.cget('text'))
+        self.assertEqual(panel.shown[0], 'DLS (Downwelling Light Sensor)')
+        self.assertIn('E_panel / E_image', panel.plain_text())
+
+    def test_the_text_is_formatted_in_paragraphs_lists_and_sections(self):
+        panel = self.frame.help_panel
+        panel.point_at(self.frame.entries['CHECKS.jump_threshold'])
+        text = panel.plain_text()
+        self.assertIn('\u2022\tA spike', text)                                  # a list item
+        self.assertIn('Default: 0.1', text)
+        self.assertIn('Checks of the DLS data (limits)', text)                  # the note of the part, in its own section
+        self.assertEqual(len(panel.rules), 1)                                   # with a line between the two
+        tags = set(panel.text.tag_names('2.0'))
+        self.assertIn('title', panel.text.tag_names('1.0'))
+        self.assertIn('body_p', tags)
+        self.assertEqual(int(float(panel.text.tag_cget('body_p', 'lmargin1'))) > int(float(panel.text.tag_cget('body_p', 'lmargin2'))), True)
+        self.assertGreater(int(float(panel.text.tag_cget('body_p', 'spacing3'))), 8)      # space after a paragraph
 
     def test_the_pointer_shows_the_field_and_leaving_goes_back_to_the_page(self):
         panel = self.frame.help_panel
         entry = self.frame.entries['INPUTS.file_pattern']
         panel.point_at(entry)
-        self.assertEqual(panel.title_label.cget('text'), 'File name pattern')
-        self.assertIn('{capture}', panel.text_label.cget('text'))
+        self.assertEqual(panel.shown[0], 'File name pattern')
+        self.assertIn('{capture}', panel.plain_text())
+        self.assertIn('The pattern reads names written as', panel.plain_text())      # the live information
         panel.point_at(self.frame.content)                      # over nothing that is explained
         self.root.update()
-        self.assertEqual(panel.title_label.cget('text'), 'File name pattern')     # not at once: no flicker between fields
+        self.assertEqual(panel.shown[0], 'File name pattern')                         # not at once: no flicker between fields
         end = time.time() + 2
-        while panel.title_label.cget('text') != 'Inputs' and time.time() < end:
+        while panel.shown[0] != 'Inputs' and time.time() < end:
             self.root.update()
             time.sleep(0.02)
-        self.assertEqual(panel.title_label.cget('text'), 'Inputs')
+        self.assertEqual(panel.shown[0], 'Inputs')
+
+    def test_the_explanation_stays_while_the_pointer_is_over_the_column(self):
+        panel = self.frame.help_panel
+        panel.point_at(self.frame.entries['INPUTS.images_folder'])
+        panel.point_at(self.frame.content)                      # leaving the field starts the return to the page ...
+        panel.point_at(panel.text)                              # ... but the pointer went to read the explanation
+        end = time.time() + 0.4
+        while time.time() < end:
+            self.root.update()
+            time.sleep(0.02)
+        self.assertEqual(panel.shown[0], 'Images folder')
 
     def test_the_keyboard_focus_shows_the_field_and_the_pointer_wins(self):
         panel = self.frame.help_panel
         panel.focus_on(self.frame.entries['INPUTS.images_folder'])
-        self.assertEqual(panel.title_label.cget('text'), 'Images folder')
+        self.assertEqual(panel.shown[0], 'Images folder')
         panel.point_at(self.frame.entries['INPUTS.results_folder'])
-        self.assertEqual(panel.title_label.cget('text'), 'Results folder')
+        self.assertEqual(panel.shown[0], 'Results folder')
         panel.point_at(None)
         panel._forget_hover()
-        self.assertEqual(panel.title_label.cget('text'), 'Images folder')        # back to the field with the focus
+        self.assertEqual(panel.shown[0], 'Images folder')                             # back to the field with the focus
+        panel.focus_on(panel.text)                                                    # clicking the column changes nothing
+        self.assertEqual(panel.shown[0], 'Images folder')
 
     def test_a_real_focus_event_is_followed(self):
         self.root.attributes('-alpha', 0.0)
@@ -911,7 +957,7 @@ class HelpColumnTests(unittest.TestCase):
         entry = self.frame.entries['INPUTS.results_folder']
         entry.focus_force()
         self.root.update()
-        self.assertEqual(self.frame.help_panel.title_label.cget('text'), 'Results folder')
+        self.assertEqual(self.frame.help_panel.shown[0], 'Results folder')
 
     def test_the_rows_of_the_band_table_and_the_buttons_are_explained(self):
         panel = self.frame.help_panel
@@ -921,19 +967,42 @@ class HelpColumnTests(unittest.TestCase):
         self.assertEqual(panel.explanation_of(self.frame.buttons['run'])[0], 'Check inputs, Run, Open results folder')
         self.assertEqual(panel.explanation_of(self.frame.preset_box)[0], 'Camera preset')
 
-    def test_the_group_note_is_shown_under_the_field_and_removed_when_there_is_none(self):
+    def test_the_note_of_the_part_is_shown_under_the_field_only_when_there_is_one(self):
         panel = self.frame.help_panel
         panel.point_at(self.frame.entries['CHECKS.jump_threshold'])
-        self.assertEqual(panel.extra_title_label.cget('text'), 'Checks of the DLS data (limits)')
-        self.assertTrue(panel.extra_title_label.winfo_manager())
+        self.assertEqual(panel.shown[2], 'Checks of the DLS data (limits)')
         panel.point_at(self.frame.entries['INPUTS.images_folder'])
-        self.assertFalse(panel.extra_title_label.winfo_manager())
+        self.assertEqual(panel.shown[2], '')
+        self.assertEqual(len(panel.rules), 0)
 
-    def test_the_tiles_choose_the_page(self):
+    def test_the_column_can_be_resized_and_keeps_the_text_inside(self):
         self.root.attributes('-alpha', 0.0)
         self.root.deiconify()
+        self.root.geometry('1400x800')
+        self.root.update()
+        panes = self.frame.panes
+        panel = self.frame.help_panel
+        wide = panel.widget.winfo_width()
+        total = panes.winfo_width()
+        panes.sash_place(0, total - 560, 0)                         # drag the line to the left: a wider column
+        self.root.update()
+        self.assertGreater(panel.widget.winfo_width(), wide + 100)
+        self.assertLessEqual(panel.text.winfo_width(), panel.widget.winfo_width())
+        self.root.geometry('1700x800')
+        self.root.update()
+        self.assertAlmostEqual(panel.widget.winfo_width(), panes.winfo_width() - panes.sash_coord(0)[0] - 6, delta=8)
+
+    def test_the_tiles_are_smaller_than_the_column_and_choose_the_page(self):
+        self.root.attributes('-alpha', 0.0)
+        self.root.deiconify()
+        self.root.geometry('1400x860')
         self.root.update()
         tiles = self.frame.navigation
+        self.assertLess(tiles.widget.winfo_width(), 150)
+        heights = {tile.winfo_height() for tile in tiles.tiles}
+        self.assertEqual(len(heights), 1)
+        full = tiles.widget.winfo_height() / tiles.size()
+        self.assertLess(heights.pop(), full * 0.75)
         self.assertEqual(tiles.curselection(), (0,))
         tiles.tiles[2].event_generate('<Button-1>')
         self.root.update()
@@ -945,7 +1014,7 @@ class HelpColumnTests(unittest.TestCase):
         tiles.tiles[2].event_generate('<Down>')
         self.root.update()
         self.assertEqual(tiles.curselection(), (3,))
-        self.assertEqual(self.frame.help_panel.title_label.cget('text'), 'Run and results')
+        self.assertEqual(self.frame.help_panel.shown[0], 'Run and results')
 
 
 if __name__ == '__main__':

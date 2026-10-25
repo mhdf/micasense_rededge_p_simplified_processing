@@ -308,12 +308,12 @@ def pick_names(parent, names, selected=(), title='Select captures'):
 
 class NavTiles:
     """
-    Large tiles in a column to choose a page (the pages of the photogrammetric workflow window look like this). The
-    selected tile is highlighted; click, Enter/Space (focused tile) and Up/Down choose one. on_select(index) is called
+    Tiles in a column to choose a page (the pages of the photogrammetric workflow window look like this), as tall as two
+    thirds of what the column would give them. The selected tile is highlighted; click, Enter/Space (focused tile) and Up/Down choose one. on_select(index) is called
     after the choice; get, size, select and curselection follow the interface of a Listbox
     """
 
-    def __init__(self, parent, titles, on_select=None, width=190):
+    def __init__(self, parent, titles, on_select=None, width=132):
         import tkinter as tk
         self.tk = tk
         self.titles = list(titles)
@@ -325,8 +325,9 @@ class NavTiles:
         self.widget.grid_columnconfigure(0, weight=1)
         self.tiles = []
         for index, title in enumerate(self.titles):
-            self.widget.grid_rowconfigure(index, weight=1, uniform='tile')
-            tile = tk.Label(self.widget, text=title, anchor='w', padx=22, font=('Segoe UI', 11, 'bold'),
+            self.widget.grid_rowconfigure(index, minsize=100)
+            tile = tk.Label(self.widget, text=title, anchor='w', justify='left', wraplength=width - 30, padx=14,
+                            font=('Segoe UI', 11, 'bold'),
                             background=COLORS['tile'], foreground=COLORS['foreground'], takefocus=True,
                             highlightthickness=1, highlightbackground=COLORS['border'], highlightcolor=COLORS['tile_border'],
                             cursor='hand2')
@@ -339,6 +340,13 @@ class NavTiles:
             tile.bind('<Enter>', lambda event, index=index: self._paint(index, hover=True))
             tile.bind('<Leave>', lambda event, index=index: self._paint(index))
             self.tiles.append(tile)
+        self.widget.bind('<Configure>', self._fit)
+
+    def _fit(self, event):
+        """ The tiles are two thirds as tall as they would be if they filled the column (with a floor and a ceiling) """
+        height = int(min(max(event.height / max(len(self.titles), 1) * 2 / 3, 70), 170))
+        for index in range(len(self.titles)):
+            self.widget.grid_rowconfigure(index, minsize=height)
 
     def _paint(self, index, hover=False):
         if index == self.selected:
@@ -373,60 +381,127 @@ class HelpPanel:
     """
     A column with the explanation of a field. What it shows, in this order of preference: the field under the mouse
     pointer, the field that has the keyboard focus, and the explanation of the page (set_default). A widget is described
-    with describe(widget, title, text, extra_title, extra_text): everything inside it (also what is added later, like the
-    rows of a table) shows that explanation. The pointer and the focus are followed from the toplevel window, so nothing
-    has to be bound to each widget; follow(toplevel) starts it
+    with describe(widget, title, text, extra_title, extra_text, details): everything inside it (also what is added later,
+    like the rows of a table) shows that explanation; details is an optional function that returns the (title, text) of
+    live information (what a file pattern matches now, for example) and refresh() shows it again after a change. The
+    pointer and the focus are followed from the toplevel window, so nothing has to be bound to each widget; follow(toplevel)
+    starts it. While the pointer is over the column itself the explanation stays, so that it can be read and scrolled.
+
+    The texts are written with a few marks, one paragraph per line: a line that starts with '# ' is a sub-heading, one that
+    starts with '- ' is an item of a list, any other line is a paragraph (shown with its first line indented). The text
+    wraps to the width of the column, which the user can change
     """
+
+    SECTIONS = ('body', 'extra', 'detail')
 
     def __init__(self, parent, width=340):
         import tkinter as tk
         self.tk = tk
         self.width = width
         self.widget = tk.Frame(parent, background=COLORS['panel'], width=width)
-        self.widget.pack_propagate(False)
-        wrap = width - 36
-        self.title_label = tk.Label(self.widget, text='', font=FONT_BOLD, anchor='nw', justify='left', wraplength=wrap,
-                                    background=COLORS['panel'], foreground=COLORS['foreground'])
-        self.text_label = tk.Label(self.widget, text='', font=FONT, anchor='nw', justify='left', wraplength=wrap,
-                                   background=COLORS['panel'], foreground=COLORS['foreground'])
-        self.extra_title_label = tk.Label(self.widget, text='', font=FONT_BOLD, anchor='nw', justify='left', wraplength=wrap,
-                                          background=COLORS['panel'], foreground=COLORS['foreground'])
-        self.extra_text_label = tk.Label(self.widget, text='', font=FONT, anchor='nw', justify='left', wraplength=wrap,
-                                         background=COLORS['panel'], foreground=COLORS['muted'])
-        self.title_label.pack(fill='x', padx=18, pady=(16, 6))
-        self.text_label.pack(fill='x', padx=18)
-        self.described = {}                          # str(widget) -> (title, text, extra title, extra text)
-        self.default = ('', '', '', '')
+        self.text = tk.Text(self.widget, wrap='word', borderwidth=0, highlightthickness=0, padx=20, pady=18,
+                            background=COLORS['panel'], foreground=COLORS['foreground'], font=FONT, cursor='arrow',
+                            takefocus=0, state='disabled', insertwidth=0, selectbackground=COLORS['accent'],
+                            selectforeground=COLORS['foreground'], spacing1=0, spacing2=5, spacing3=0)
+        self.text.pack(fill='both', expand=True)
+        self.text.tag_configure('title', font=('Segoe UI', 12, 'bold'), spacing3=12)
+        for section in self.SECTIONS:
+            color = COLORS['muted'] if section == 'extra' else COLORS['foreground']
+            self.text.tag_configure(f'{section}_p', lmargin1=18, lmargin2=0, spacing2=5, spacing3=12, foreground=color)
+            self.text.tag_configure(f'{section}_b', lmargin1=14, lmargin2=30, tabs=(30,), spacing2=5, spacing3=7,
+                                    foreground=color)
+            self.text.tag_configure(f'{section}_h', font=FONT_BOLD, spacing1=6, spacing3=6, foreground=COLORS['foreground'])
+        self.text.tag_configure('section', font=FONT_BOLD, spacing3=8)
+        self.text.tag_configure('rule', spacing1=10, spacing3=12)
+        self.text.bind('<Configure>', lambda event: self._fit_rules())
+        self.text.bind('<Enter>', lambda event: self.text.bind_all('<MouseWheel>', self._on_wheel))
+        self.text.bind('<Leave>', lambda event: self.text.unbind_all('<MouseWheel>'))
+        self.rules = []
+        self.described = {}              # str(widget) -> (title, text, extra title, extra text, details function)
+        self.default = ('', '', '', '', None)
         self.hover = None
         self.focus = None
         self.shown = self.default
+        self.written = None
         self.revert_job = None
         self.root = None
 
     # --- what is shown --------------------------------------------------------------------------------------
 
-    def describe(self, widget, title, text, extra_title='', extra_text=''):
-        self.described[str(widget)] = (title, text, extra_title, extra_text)
+    def describe(self, widget, title, text, extra_title='', extra_text='', details=None):
+        self.described[str(widget)] = (title, text, extra_title, extra_text, details)
 
-    def set_default(self, title, text, extra_title='', extra_text=''):
+    def set_default(self, title, text, extra_title='', extra_text='', details=None):
         """ The explanation of the page; the pointer and the focus are forgotten (a new page was opened) """
-        self.default = (title, text, extra_title, extra_text)
+        self.default = (title, text, extra_title, extra_text, details)
         self.hover = self.focus = None
+        self._refresh()
+
+    def refresh(self):
+        """ Show the explanation again, with the live information as it is now """
         self._refresh()
 
     def _refresh(self):
         self.shown = self.hover or self.focus or self.default
-        title, text, extra_title, extra_text = self.shown
-        for label, content in ((self.title_label, title), (self.text_label, text),
-                               (self.extra_title_label, extra_title), (self.extra_text_label, extra_text)):
-            if label.cget('text') != content:
-                label.configure(text=content)
-        if not extra_title:
-            self.extra_title_label.pack_forget()
-            self.extra_text_label.pack_forget()
-        elif not self.extra_title_label.winfo_manager():
-            self.extra_title_label.pack(fill='x', padx=18, pady=(18, 6))
-            self.extra_text_label.pack(fill='x', padx=18)
+        title, text, extra_title, extra_text, details = self.shown
+        live = details() if details else None
+        content = (title, text, extra_title, extra_text, live)
+        if content != self.written:
+            self.written = content
+            self._write(*content)
+
+    def _write(self, title, text, extra_title, extra_text, live):
+        t = self.text
+        t.configure(state='normal')
+        t.delete('1.0', 'end')
+        for rule in self.rules:
+            rule.destroy()
+        self.rules = []
+        if title:
+            t.insert('end', title + '\n', 'title')
+        self._markup(text, 'body')
+        parts = [(extra_title, extra_text, 'extra')]
+        if live:
+            parts.append((live[0], live[1], 'detail'))
+        for heading, body, section in parts:
+            if heading:
+                self._rule()
+                t.insert('end', heading + '\n', 'section')
+                self._markup(body, section)
+        t.configure(state='disabled')
+        t.yview_moveto(0)
+
+    def _markup(self, text, section):
+        """ Write the paragraphs, sub-headings and list items of a text """
+        for line in str(text).split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('# '):
+                self.text.insert('end', line[2:] + '\n', f'{section}_h')
+            elif line.startswith('- '):
+                self.text.insert('end', '•\t' + line[2:] + '\n', f'{section}_b')
+            else:
+                self.text.insert('end', line + '\n', f'{section}_p')
+
+    def _rule(self):
+        """ A thin line between the parts of the explanation """
+        from tkinter import Frame
+        rule = Frame(self.text, height=1, background=COLORS['border'], width=max(self.text.winfo_width() - 44, 40))
+        self.rules.append(rule)
+        self.text.window_create('end', window=rule)
+        self.text.insert('end', '\n', 'rule')
+
+    def _fit_rules(self):
+        for rule in self.rules:
+            rule.configure(width=max(self.text.winfo_width() - 44, 40))
+
+    def _on_wheel(self, event):
+        self.text.yview_scroll(-1 if event.delta > 0 else 1, 'units')
+
+    def plain_text(self):
+        """ What is written now, without the marks of the formatting """
+        return self.text.get('1.0', 'end').strip()
 
     def explanation_of(self, widget):
         """ The explanation of the widget or of the nearest widget around it that has one, or None """
@@ -439,8 +514,16 @@ class HelpPanel:
 
     # --- the pointer and the focus --------------------------------------------------------------------------
 
+    def _in_panel(self, widget):
+        return widget is not None and str(widget).startswith(str(self.widget))
+
     def point_at(self, widget):
         """ The mouse pointer is over widget (None: over nothing). Leaving a field goes back to the page a moment later """
+        if self._in_panel(widget):
+            if self.revert_job is not None:                       # the pointer went to read the explanation
+                self.widget.after_cancel(self.revert_job)
+                self.revert_job = None
+            return
         found = self.explanation_of(widget)
         if self.revert_job is not None:
             self.widget.after_cancel(self.revert_job)
@@ -459,6 +542,8 @@ class HelpPanel:
 
     def focus_on(self, widget):
         """ The keyboard focus moved to widget """
+        if self._in_panel(widget):
+            return
         self.focus = self.explanation_of(widget)
         self._refresh()
 

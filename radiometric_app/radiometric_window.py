@@ -122,11 +122,20 @@ RUN_NOTES = {
     'log': ("Log", "What the correction did: errors, flags raised by the checks of the DLS data, and the files written."),
 }
 PROFILE_NOTES = {
-    'save': ("Save configuration", "Writes the values that differ from the defaults in the configuration file shown at the "
-                                   "left."),
-    'profile': ("Profiles", "A profile is a named copy of the configuration, for a camera or a flight.\n"
-                            "- Save profile...: writes one in the config/profiles folder.\n"
-                            "- Load profile...: replaces the values in the window with those of a profile."),
+    'save': ("Save configuration", "Saves what is in the window in the working file shown at the left (the one that the "
+                                   "window reads when it opens). Only the values that differ from the defaults are written. "
+                                   "It is done by itself when you run the correction, so the button is for keeping changes "
+                                   "without running."),
+    'profile': ("Profiles", "A profile is a named copy of all the values, for a camera or a flight, kept apart from the "
+                            "working configuration.\n"
+                            "- Save profile...: writes every value in a file that you name (the config/profiles folder is "
+                            "proposed). The working configuration does not change.\n"
+                            "- Load profile...: replaces the values in the window with those of a profile; they become the "
+                            "working configuration when you save or run. It also reads the radiometric_result.json of a past "
+                            "run (or a provenance record), to bring back the settings that run used; the results folder "
+                            "then is that of the run.\n"
+                            "Running does not make a profile, but every run writes the complete configuration that it used "
+                            "in radiometric_result.json (and in the provenance record of each capture), next to the results."),
 }
 
 # The fields that show live information in the help column, and the information
@@ -289,6 +298,7 @@ class RadiometricFrame:
         self.band_table = None
         self.buttons = {}
         self.syncing = False
+        self.loading_values = False                  # a profile is being loaded: its values are not corrected
         self.detecting = False
         self.presets, self.preset_problems = camera_presets.load_presets(camera_presets.preset_folders(self.root_folder))
         self.summary_after = None
@@ -391,6 +401,9 @@ class RadiometricFrame:
                     self._build_python_section(page)
         for key in BAND_KEYS:                                     # these keys live in the band table
             self.variables[key] = self.band_table
+        self.entries['PANEL.panels_used'].bind('<<ComboboxSelected>>', lambda event: self._panels_selected())
+        chosen = self.variables['PANEL.panels_used'].get()
+        self.panels_used_ok = chosen if self._panels_used_allowed(chosen) else 'first'
         self.help_panel.describe(save_button, *PROFILE_NOTES['save'])
         self.help_panel.describe(save_profile, *PROFILE_NOTES['profile'])
         self.help_panel.describe(load_profile, *PROFILE_NOTES['profile'])
@@ -495,7 +508,7 @@ class RadiometricFrame:
                     labels = field['labels']
                     shown = tk.StringVar(value=labels[variable.get()] if variable.get() in labels else variable.get())
                     entry = ttk.Combobox(line, textvariable=shown, values=[labels[name] for name in field['choices']],
-                                         state='readonly', width=38)
+                                         state='readonly', width=max(38, max(map(len, labels.values())) + 2))
                     names = {label: name for name, label in labels.items()}
                     shown.trace_add('write', lambda *_, shown=shown, variable=variable, names=names:
                                     variable.set(names.get(shown.get(), shown.get())))
@@ -935,7 +948,40 @@ class RadiometricFrame:
         self._problem(self.pattern_preview, '' if info['matched'] else 'No file of the images folder matches the pattern.')
         self.help_panel.refresh()
 
+    def _panels_used_allowed(self, name):
+        """ The choices of the panel by the light read by the DLS need the DLS correction to be on """
+        use = self.variables.get('CORRECTION.use_dls')
+        return name not in rct.PANELS_BY_ILLUMINATION or use is None or bool(use.get())
+
+    def _panels_selected(self):
+        """
+        A choice made in the list of the panel selection approach. Those by the light are in the list, marked, but they are
+        refused while the DLS correction is off (the previous choice comes back, and the status line says why)
+        """
+        chosen = self.variables['PANEL.panels_used']
+        if self._panels_used_allowed(chosen.get()):
+            self.panels_used_ok = chosen.get()
+            return
+        refused, labels = chosen.get(), self.model.fields['PANEL.panels_used']['labels']
+        chosen.set(self.panels_used_ok)
+        self.status.configure(text=f"'{labels[refused]}' cannot be chosen while the DLS correction is off: turn on 'Correct "
+                                   "illumination changes with the DLS' (DLS page) first.", style='Error.TLabel')
+
+    def _dls_correction_changed(self):
+        """ Turning the DLS correction off while a choice that needs it is made goes back to 'first', and says so """
+        chosen = self.variables.get('PANEL.panels_used')
+        if self.loading_values or chosen is None or self._panels_used_allowed(chosen.get()):
+            return                                   # a profile keeps its values: the check of the inputs reports them
+        previous = self.model.fields['PANEL.panels_used']['labels'][chosen.get()]
+        chosen.set('first')
+        self.status.configure(text=f"The panel selection approach was '{previous}' and is now 'First panel only': it needs the "
+                                   "DLS correction, which is off.", style='Muted.TLabel')
+
     def _after_change(self, key):
+        if key == 'CORRECTION.use_dls':
+            self._dls_correction_changed()
+        if key == 'PANEL.panels_used' and self._panels_used_allowed(self.model.get(key)):
+            self.panels_used_ok = self.model.get(key)
         if key in ('INPUTS.images_folder', 'INPUTS.file_pattern', 'INPUTS.image_captures', 'INPUTS.reference_panel_capture',
                    'INPUTS.reference_panel_capture_after'):
             if getattr(self, 'preview_after', None) is not None:
@@ -1185,16 +1231,28 @@ class RadiometricFrame:
         return True
 
     def load_profile(self, path):
-        """ Replace the values of all the fields with those of a profile (a json file with any of the keys) """
+        """
+        Replace the values of all the fields with those of a profile (a json file with any of the keys), or with the settings
+        that a run used (its radiometric_result.json or the provenance record of a capture)
+        """
         try:
-            values = wf.merge_config(json.loads(Path(path).read_text(encoding='utf-8')))
+            data = json.loads(Path(path).read_text(encoding='utf-8'))
+            values = wf.merge_config(wf.configuration_from_json(data))
         except (ValueError, OSError) as error:
             self.log(f"The profile {path} was not loaded: {error}", 'error')
             self.status.configure(text=f"The profile was not loaded: {error}", style='Error.TLabel')
             return False
-        for key, field in self.model.fields.items():
-            self.set_value(key, ConfigModel.to_raw(field, values[key]), replace=True)
-        self.status.configure(text=f"Profile loaded from {path}", style='Muted.TLabel')
+        self.loading_values = True
+        try:
+            for key, field in self.model.fields.items():
+                self.set_value(key, ConfigModel.to_raw(field, values[key]), replace=True)
+        finally:
+            self.loading_values = False
+        if wf.configuration_from_json(data) is not data:                   # what a run wrote: its folders come with it
+            self.status.configure(text=f"Settings of the run loaded from {path}. The results folder is the one of that run: "
+                                       f"{values['INPUTS.results_folder']}", style='Muted.TLabel')
+        else:
+            self.status.configure(text=f"Profile loaded from {path}", style='Muted.TLabel')
         return True
 
     def save_profile_as(self):
@@ -1231,24 +1289,30 @@ class RadiometricFrame:
 
     # --- checks and actions ---------------------------------------------------------------------------------
 
-    def problems(self):
-        """ All the problems of the current inputs: unreadable values first, then the checks of the workflow """
+    def problems(self, for_the_tool=False):
+        """
+        All the problems of the current inputs: unreadable values first, then the checks of the workflow
+        for_the_tool: the file of the panel regions may not exist yet (the tool that draws the regions creates it)
+        """
         config, errors = self.model.config()
         table = [message for _, _, message in self.band_table.problems()]
         if table:
             return config, ['Bands of the camera: ' + message for message in table]
         if errors:
             return config, [f"{self.model.fields[key]['label']} ({key}): {message}" for key, message in errors.items()]
-        return config, wf.validate_config(config, self.root_folder)
+        return config, wf.validate_config(config, self.root_folder, regions_file_may_be_missing=for_the_tool)
 
     def check_inputs_here(self):
         """ Check the inputs and show the result next to the tool, without leaving the page. Returns (config, problems) """
-        config, problems = self.problems()
+        config, problems = self.problems(for_the_tool=True)
         if problems:
             self.inputs_status.configure(text='\n'.join(problems), style='Error.TLabel')
         else:
-            self.inputs_status.configure(text='The inputs are valid: the folders, the panel capture, the bands and the '
-                                              'other values can be used.', style='Ok.TLabel')
+            text = 'The inputs are valid: the folders, the panel capture, the bands and the other values can be used.'
+            regions = config['PANEL.manual_regions_file']
+            if regions and not wf.resolve_path(self.root_folder, regions).is_file():
+                text += ' The file of the regions does not exist yet: Save and close in the tool creates it.'
+            self.inputs_status.configure(text=text, style='Ok.TLabel')
         return config, problems
 
     def check_inputs(self):

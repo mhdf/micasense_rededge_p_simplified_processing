@@ -474,6 +474,7 @@ def _jsonable(value):
 
 # Two panel captures (before and after the flight)
 PANELS_USED = ('first', 'mean', 'interpolate_time', 'nearest_time', 'nearest_illumination', 'interpolate_illumination')
+PANELS_BY_ILLUMINATION = ('nearest_illumination', 'interpolate_illumination')      # they compare the light read by the DLS
 ILLUMINATION_POWER = 2         # interpolate_illumination weighs each panel by 1 / distance ** ILLUMINATION_POWER
 
 
@@ -521,7 +522,7 @@ def panel_weight(mode, image_time=None, first_time=None, second_time=None, dista
     distances: (distance to the first panel, distance to the second panel) from illumination_distance, for the modes by
     illumination
     """
-    if mode in ('nearest_illumination', 'interpolate_illumination'):
+    if mode in PANELS_BY_ILLUMINATION:
         if distances is None:
             raise ValueError(f"panels_used {mode!r} needs the distances of the light of the image to the light of the panels")
         first, second = distances

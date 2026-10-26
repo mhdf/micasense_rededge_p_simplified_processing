@@ -31,6 +31,20 @@ def config_for(results_folder, **changes):
 
 class ConfigurationTests(unittest.TestCase):
 
+    def test_the_configuration_is_found_in_what_a_run_wrote(self):
+        values = {'PANEL.percent_inner_area': 0.5}
+        self.assertEqual(wf.configuration_from_json(values), values)                      # a configuration or a profile
+        self.assertEqual(wf.configuration_from_json({'status': 'completed', 'config': values}), values)       # the result file
+        self.assertEqual(wf.configuration_from_json({'method': 'panel_only', 'parameters': {'config': values}}), values)
+        self.assertEqual(wf.configuration_from_json({'parameters': {'levels': 1}}), {'parameters': {'levels': 1}})
+        self.assertEqual(wf.configuration_from_json([1, 2]), [1, 2])
+
+    def test_something_that_is_not_a_json_object_is_not_a_configuration(self):
+        with self.assertRaisesRegex(wf.ConfigError, 'json object'):
+            wf.merge_config([1, 2])
+        with self.assertRaisesRegex(wf.ConfigError, 'json object'):
+            wf.merge_config('text')
+
     def test_defaults_cover_every_field_and_survive_json(self):
         config = wf.default_config()
         self.assertEqual(list(config), wf.FIELD_KEYS)
@@ -155,6 +169,8 @@ class ConfigurationTests(unittest.TestCase):
     def test_regions_file_problems_are_reported_by_the_validation(self):
         config = wf.merge_config({'PANEL.manual_regions_file': 'missing.json'})
         self.assertIn('Panel regions file not found', '\n'.join(wf.validate_config(config, ROOT)))
+        self.assertEqual(wf.validate_config(config, ROOT, regions_file_may_be_missing=True), [])     # the tool creates it
+        self.assertIn('Check / draw panel regions', '\n'.join(wf.validate_config(config, ROOT)))      # and says what to do
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'regions.json'
             wf.save_panel_regions(path, 'IMG_0005', {'Infrared': [[1, 2], [30, 2], [30, 40]]})
@@ -304,13 +320,25 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_a_second_panel_is_needed_to_use_two_panels(self):
         for mode in ('mean', 'interpolate_time', 'nearest_time', 'nearest_illumination', 'interpolate_illumination'):
-            config = wf.merge_config({'PANEL.panels_used': mode})
+            dls = {'CORRECTION.use_dls': mode in rct.PANELS_BY_ILLUMINATION}      # the choices by the light need the DLS
+            config = wf.merge_config({'PANEL.panels_used': mode, **dls})
             self.assertIn('there is no second panel capture', '\n'.join(wf.validate_config(config, ROOT)))
-            config = wf.merge_config({'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005'})
+            config = wf.merge_config({'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005', **dls})
             self.assertEqual(wf.validate_config(config, ROOT), [])
         self.assertEqual(wf.validate_config(wf.merge_config({'PANEL.panels_used': 'first'}), ROOT), [])
         self.assertIn('PANEL.panels_used must be one of', '\n'.join(wf.validate_config(
             wf.merge_config({'PANEL.panels_used': 'last'}), ROOT)))
+
+    def test_the_choices_of_the_panel_by_the_light_need_the_dls_correction(self):
+        for mode in rct.PANELS_BY_ILLUMINATION:
+            values = {'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005'}
+            problems = '\n'.join(wf.validate_config(wf.merge_config(dict(values, **{'CORRECTION.use_dls': False})), ROOT))
+            self.assertIn(f"PANEL.panels_used is '{mode}'", problems)
+            self.assertIn('CORRECTION.use_dls is off', problems)
+            self.assertEqual(wf.validate_config(wf.merge_config(dict(values, **{'CORRECTION.use_dls': True})), ROOT), [])
+        for mode in ('first', 'mean', 'interpolate_time', 'nearest_time'):             # the others do not
+            values = {'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005'}
+            self.assertEqual(wf.validate_config(wf.merge_config(values), ROOT), [])
 
     def test_irradiance_series_changes_names_the_capture(self):
         series = {'Blue': [('c1', 100.0), ('c2', 101.0), ('c3', 150.0), ('c4', 100.0), ('c5', 100.0)],
@@ -364,6 +392,25 @@ class RunTests(unittest.TestCase):
         self.assertEqual(provenance['method'], 'panel_only')
         self.assertEqual(provenance['parameters']['config']['PANEL.percent_inner_area'], 0.7)
         self.assertFalse((folder / (wf.RESULT_FILE_NAME + '.tmp')).exists())
+
+    def test_the_settings_of_a_run_can_be_read_back_from_its_result_and_provenance_files(self):
+        folder = self.folder / 'panel_only'
+        result = json.loads((folder / wf.RESULT_FILE_NAME).read_text(encoding='utf-8'))
+        self.assertEqual(wf.load_config(folder / wf.RESULT_FILE_NAME), result['config'])          # all the values of the run
+        self.assertEqual(wf.load_config(folder / 'IMG_0010_provenance.json'), result['config'])
+        self.assertEqual(wf.load_config(folder / wf.RESULT_FILE_NAME)['INPUTS.results_folder'], str(folder))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):                                                 # the command line repeats a run
+            code = wf.main(['--config', str(folder / wf.RESULT_FILE_NAME), '--root', str(ROOT), '--detect-bands'])
+        self.assertEqual(code, 0)
+        self.assertIn('Blue', output.getvalue())
+
+    def test_a_run_with_the_choice_of_the_panel_by_the_light_is_refused_without_the_dls_correction(self):
+        result = wf.run(config_for(self.folder / 'light_without_dls', **{
+            'PANEL.panels_used': 'nearest_illumination', 'INPUTS.reference_panel_capture_after': 'IMG_0005'}), ROOT)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('CORRECTION.use_dls is off', result['errors'][0])
+        self.assertEqual(result['outputs'], [])
 
     def test_the_reports_do_not_repeat_themselves(self):
         folder = self.folder / 'panel_only'
@@ -809,7 +856,7 @@ class RunTests(unittest.TestCase):
 
         values = {'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / name),
                   'INPUTS.reference_panel_capture': 'IMG_0005', 'INPUTS.reference_panel_capture_after': 'IMG_0007',
-                  'INPUTS.image_captures': 'IMG_0010', 'PANEL.panels_used': mode}
+                  'INPUTS.image_captures': 'IMG_0010', 'PANEL.panels_used': mode, 'CORRECTION.use_dls': True}
         values.update(changes)
         with mock.patch.object(wf, '_read_capture', changed):
             return wf.run(values, ROOT)

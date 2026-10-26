@@ -332,6 +332,36 @@ class WindowTests(unittest.TestCase):
         saved = json.loads(self.config_path.read_text(encoding='utf-8'))
         self.assertEqual(saved['PANEL.manual_regions_file'], str(path))
 
+    def test_a_regions_file_that_does_not_exist_yet_does_not_stop_the_tool_that_creates_it(self):
+        path = Path(self.results('new_regions')) / 'sub' / 'my_regions.json'
+        self.frame.set_value('INPUTS.results_folder', self.results('new_regions'))
+        self.frame.set_value('PANEL.manual_regions_file', str(path))
+        config, problems = self.frame.check_inputs_here()
+        self.assertEqual(problems, [])
+        self.assertIn('does not exist yet', self.frame.inputs_status.cget('text'))
+        self.assertEqual(str(self.frame.inputs_status.cget('style')), 'Ok.TLabel')
+        _, run_problems = self.frame.problems()                                      # a run does need the file
+        self.assertTrue(any('Panel regions file not found' in problem for problem in run_problems))
+        bands = list(wf.BAND_NAMES)
+        polygon = [[10, 10], [20, 10], [20, 20], [10, 20]]
+        selection = {'IMG_0005': self.accepted({band: polygon for band in bands}, {band: 'edited' for band in bands})}
+        with mock.patch('radiometric_app.panel_selector.select_panel_regions', return_value=selection) as selector:
+            self.frame.draw_regions()
+            self.pump(lambda: selector.called and not self.frame.running)
+        self.assertEqual(wf.load_panel_regions(path), {'IMG_0005': {band: polygon for band in bands}})   # created, with its folder
+        self.assertEqual(self.frame.problems()[1], [])                                # now a run can use it
+
+    def test_the_explanations_of_the_inner_area_and_of_the_profiles_say_what_they_do(self):
+        field = next(field for field in wf.FIELDS if field['key'] == 'PANEL.percent_inner_area')
+        text = rw.field_help(field)
+        self.assertIn('70 % of its width and of its height (49 % of its area)', text)
+        self.assertIn('# Why not all of it', text)
+        self.assertIn('exactly as it was saved', text)
+        save, profile = rw.PROFILE_NOTES['save'][1], rw.PROFILE_NOTES['profile'][1]
+        self.assertIn('done by itself when you run', save)
+        self.assertIn('Running does not make a profile', profile)
+        self.assertIn('radiometric_result.json', profile)
+
     def test_the_inner_area_of_the_tool_is_kept_in_the_configuration(self):
         from radiometric_app.panel_selector import SelectionResults
         self.frame.set_value('INPUTS.results_folder', self.results('inner'))
@@ -602,6 +632,44 @@ class WindowTests(unittest.TestCase):
             importer.invoke()                                                  # the preview of the file that is chosen
         self.assertEqual(dialog.call_args[0][1], str(path))
         self.assertIs(dialog.call_args[1]['detect'], False)
+
+    def test_the_settings_of_a_past_run_can_be_loaded_from_its_result_or_provenance_file(self):
+        folder = Path(self.folder.name)
+        values = dict(wf.default_config(), **{'INPUTS.results_folder': 'past_results', 'PANEL.percent_inner_area': 0.5,
+                                              'CORRECTION.use_dls': True})
+        result = folder / 'radiometric_result.json'
+        result.write_text(json.dumps({'status': 'completed', 'config': values, 'outputs': []}), encoding='utf-8')
+        self.assertTrue(self.frame.load_profile(result))
+        config = self.frame.model.config()[0]
+        self.assertEqual((config['INPUTS.results_folder'], config['PANEL.percent_inner_area'], config['CORRECTION.use_dls']),
+                         ('past_results', 0.5, True))
+        text = self.frame.status.cget('text')
+        self.assertIn('Settings of the run loaded', text)
+        self.assertIn('results folder is the one of that run', text)
+        self.assertIn('past_results', text)
+        other = dict(values, **{'PANEL.percent_inner_area': 0.9, 'CORRECTION.use_dls': False})
+        provenance = folder / 'IMG_0010_provenance.json'
+        provenance.write_text(json.dumps({'method': 'panel_only', 'parameters': {'config': other}}), encoding='utf-8')
+        self.assertTrue(self.frame.load_profile(provenance))
+        config = self.frame.model.config()[0]
+        self.assertEqual((config['PANEL.percent_inner_area'], config['CORRECTION.use_dls']), (0.9, False))
+        profile = folder / 'profile.json'                                                  # a profile is loaded as before
+        profile.write_text(json.dumps({'PANEL.percent_inner_area': 0.6}), encoding='utf-8')
+        self.assertTrue(self.frame.load_profile(profile))
+        self.assertIn('Profile loaded from', self.frame.status.cget('text'))
+        self.assertEqual(self.frame.model.config()[0]['PANEL.percent_inner_area'], 0.6)
+
+    def test_a_run_record_with_a_key_that_does_not_exist_any_more_is_refused_and_nothing_changes(self):
+        folder = Path(self.folder.name)
+        old = folder / 'old_result.json'
+        old.write_text(json.dumps({'config': dict(wf.default_config(), **{'OLD.key': 1})}), encoding='utf-8')
+        before = dict(self.frame.model.raw)
+        self.assertFalse(self.frame.load_profile(old))
+        self.assertIn('was not loaded', self.frame.status.cget('text'))
+        self.assertIn('OLD.key', self.frame.status.cget('text'))
+        self.assertEqual(self.frame.model.raw, before)
+        notes = rw.PROFILE_NOTES['profile'][1]
+        self.assertIn('radiometric_result.json of a past run', notes)
 
     def test_a_profile_saves_every_value_and_restores_them(self):
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0007')
@@ -972,11 +1040,82 @@ class WindowTests(unittest.TestCase):
         self.assertLess(lines.index('FLAG: IMG_0010: a flag'),
                         lines.index('Summary: 1 of 1 capture(s) corrected, 1 file(s) written, 1 flag(s).'))
 
+    def panel_labels(self):
+        return next(field for field in wf.FIELDS if field['key'] == 'PANEL.panels_used')['labels']
+
+    def pick(self, name):
+        """ Choose an item of the list of the panel selection approach, as a click does """
+        entry = self.frame.entries['PANEL.panels_used']
+        entry.set(self.panel_labels()[name])
+        entry.event_generate('<<ComboboxSelected>>')
+        self.root.update()
+
+    def test_the_panel_selection_approach_is_a_wide_list_with_descriptive_names(self):
+        entry = self.frame.entries['PANEL.panels_used']
+        labels = self.panel_labels()
+        self.assertEqual(set(labels), set(wf.rct.PANELS_USED))
+        self.assertEqual(entry.winfo_class(), 'TCombobox')
+        self.assertEqual(str(entry.cget('state')), 'readonly')                          # a list, not a box to type in
+        self.assertGreaterEqual(int(entry.cget('width')), max(map(len, labels.values())))
+        self.assertEqual(entry.get(), 'First panel only')
+        self.frame.set_value('PANEL.panels_used', 'nearest_time')
+        self.assertEqual(entry.get(), 'Nearest panel in time')
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'nearest_time')   # what is saved is the name
+        for name in ('nearest_illumination', 'interpolate_illumination'):
+            self.assertIn('needs the DLS', labels[name])
+        self.assertEqual(self.frame.entries['PANEL.reflectance_source'].winfo_class(), 'TCombobox')
+
+    def test_the_choices_by_the_light_are_listed_but_refused_while_the_dls_correction_is_off(self):
+        self.assertFalse(self.frame.variables['CORRECTION.use_dls'].get())
+        self.frame.set_value('PANEL.panels_used', 'mean')
+        self.pick('nearest_illumination')
+        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'mean')       # the previous choice came back
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'mean')
+        text = self.frame.status.cget('text')
+        self.assertIn("'Nearest panel in light (needs the DLS)' cannot be chosen while the DLS correction is off", text)
+        self.assertEqual(str(self.frame.status.cget('style')), 'Error.TLabel')
+        self.pick('interpolate_illumination')
+        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'mean')
+        self.pick('interpolate_time')                                                   # the others are chosen as always
+        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'interpolate_time')
+        self.frame.set_value('CORRECTION.use_dls', True)
+        self.pick('interpolate_illumination')
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'interpolate_illumination')
+        self.frame.set_value('CORRECTION.use_dls', False)                               # taken back, as before
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
+        self.pick('nearest_illumination')                                               # and refused again: back to 'first'
+        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'first')
+
+    def test_turning_the_dls_off_takes_back_a_choice_of_the_panel_by_the_light_and_says_so(self):
+        self.frame.set_value('CORRECTION.use_dls', True)
+        self.frame.set_value('PANEL.panels_used', 'interpolate_illumination')
+        self.frame.set_value('CORRECTION.use_dls', False)
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
+        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'first')
+        text = self.frame.status.cget('text')
+        self.assertIn("was 'Both panels, weighted by light (needs the DLS)' and is now 'First panel only'", text)
+        self.assertIn('needs the DLS correction', text)
+        self.frame.set_value('CORRECTION.use_dls', True)                         # turning it on changes nothing else
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
+        self.frame.set_value('PANEL.panels_used', 'mean')
+        self.frame.set_value('CORRECTION.use_dls', False)
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'mean')
+
+    def test_a_profile_that_has_the_choice_without_the_dls_is_not_changed_but_reported(self):
+        path = Path(self.folder.name) / 'inconsistent.json'
+        path.write_text(json.dumps({'PANEL.panels_used': 'nearest_illumination', 'CORRECTION.use_dls': False,
+                                    'INPUTS.reference_panel_capture_after': 'IMG_0005'}), encoding='utf-8')
+        self.assertTrue(self.frame.load_profile(path))
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'nearest_illumination')
+        _, problems = self.frame.problems()
+        self.assertTrue(any('CORRECTION.use_dls is off' in problem for problem in problems))
+
     def test_the_use_of_two_panels_is_a_choice_in_the_panel_page(self):
         self.assertTrue(self.inside(self.frame.entries['PANEL.panels_used'], 'PANEL'))
         self.assertEqual(self.frame.entries['PANEL.panels_used'].winfo_class(), 'TCombobox')
-        self.assertEqual(list(self.frame.entries['PANEL.panels_used'].cget('values')), ['first', 'mean', 'interpolate_time', 'nearest_time',
-                                                                                   'nearest_illumination', 'interpolate_illumination'])
+        labels = self.panel_labels()
+        self.assertEqual(list(self.frame.entries['PANEL.panels_used'].cget('values')),
+                         [labels[name] for name in wf.rct.PANELS_USED])                  # all of them, the DLS on or off
         self.frame.set_value('PANEL.panels_used', 'mean')
         _, problems = self.frame.problems()
         self.assertTrue(any('no second panel capture' in problem for problem in problems))

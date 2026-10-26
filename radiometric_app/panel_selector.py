@@ -1117,7 +1117,7 @@ def main(argv=None):
         print(f"ERROR: configuration file not found: {config_file}", file=sys.stderr)
         return 2
     config = wf.load_config(config_file) if config_file.is_file() else wf.default_config()
-    problems = wf.validate_config(config, arguments.root)
+    problems = wf.validate_config(config, arguments.root, regions_file_may_be_missing=True)    # this tool creates it
     if problems:
         for problem in problems:
             print(f"ERROR: {problem}", file=sys.stderr)

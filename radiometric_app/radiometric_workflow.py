@@ -149,7 +149,7 @@ FIELDS = [
      'help': ("A second capture of the panel, taken at the end of the flight (optional).\n"
                   "It is always compared with the first panel capture: a change of the panel factor of a band, or of "
                   "the DLS irradiance relative to the panel, larger than the panel drift tolerance raises a flag.\n"
-                  "Whether it also calibrates the images is chosen in 'Panels used when there are two' (Reference panel "
+                  "Whether it also calibrates the images is chosen in 'Panel selection approach' (Reference panel"
                   "page).")},
     {'key': 'INPUTS.image_captures', 'group': 'Images to correct', 'kind': 'text', 'default': '',
      'label': 'Select captures',
@@ -248,31 +248,46 @@ FIELDS = [
      'group': 'Reflectance of the panel', 'label': 'Smallest covered part of a band window',
      'help': 'Fraction (0 to 1] of the window of a band that must have valid samples in the file.'},
     {'key': 'PANEL.panels_used', 'kind': 'choice', 'choices': list(rct.PANELS_USED), 'default': 'first',
-     'group': 'Panel measurement', 'label': 'Panels used when there are two',
-     'help': ("Only used when there is a second panel capture.\n"
-                  "# Choices\n"
-                  "- first: only the first panel calibrates the images; the second is only compared with it.\n"
-                  "- mean: the average of the two panels.\n"
-                  "- interpolate_time: each image is weighted by its time between the two panel captures (times from "
-                  "EXIF:DateTimeOriginal).\n"
-                  "- nearest_time: each image uses the panel captured closest in time to it.\n"
-                  "- nearest_illumination: each image uses the panel whose light was the most like its own, compared "
-                  "with the DLS irradiance of all the bands (their level and how it is spread over the bands). It needs "
-                  "the DLS data in the images and in both panel captures, but not the DLS correction.\n"
-                  "- interpolate_illumination: the same comparison, but both panels are used, each weighted by "
-                  "1 / (difference of the light) squared: a panel with the light of the image counts alone, and the "
-                  "weight changes smoothly with the light, so there is no step between neighbouring images that would "
-                  "use different panels.\n"
+     'labels': {'first': 'First panel only', 'mean': 'Average of the two panels',
+                'interpolate_time': 'Both panels, weighted by time', 'nearest_time': 'Nearest panel in time',
+                'nearest_illumination': 'Nearest panel in light (needs the DLS)',
+                'interpolate_illumination': 'Both panels, weighted by light (needs the DLS)'},
+     'group': 'Panel measurement', 'label': 'Panel selection approach',
+     'help': ("How the panel captures calibrate the images when there are two (before and after the flight). Only used "
+                  "when there is a second panel capture.\n"
+                  "# Choices (the name that is saved is in brackets)\n"
+                  "- First panel only (first): only the first panel calibrates the images; the second is only compared "
+                  "with it.\n"
+                  "- Average of the two panels (mean).\n"
+                  "- Both panels, weighted by time (interpolate_time): each image is weighted by its time between the two "
+                  "panel captures (times from EXIF:DateTimeOriginal).\n"
+                  "- Nearest panel in time (nearest_time): each image uses the panel captured closest in time to it.\n"
+                  "- Nearest panel in light (nearest_illumination): each image uses the panel whose light was the most "
+                  "like its own, compared with the DLS irradiance of all the bands (their level and how it is spread over "
+                  "the bands).\n"
+                  "- Both panels, weighted by light (interpolate_illumination): the same comparison, but both panels are "
+                  "used, each weighted by 1 / (difference of the light) squared: a panel with the light of the image counts "
+                  "alone, and the weight changes smoothly with the light, so there is no step between neighbouring images "
+                  "that would use different panels.\n"
+                  "The two choices by the light use the DLS data of the images and of both panel captures, so they can be "
+                  "chosen only while 'Correct illumination changes with the DLS' is on (DLS page); with it off they are "
+                  "in the list, marked, and are refused.\n"
                   "This choice changes the result: it decides which panel data are used.\n"
                   "With the DLS correction each panel is used with its own DLS irradiance, so the result does not "
                   "depend on a 'reference panel' of the DLS: only the panels that are used matter.")},
     {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
-     'label': 'Inner area of the panel', 'help': ("Fraction (0 to 1] of the panel region that is used to measure its radiance.\n"
-                  "The edge of the region is left out, because it can include the border of the panel or the ground. "
-                  "With 0.7 the central 70 % is used.\n"
-                  "It decides the region that is found from the QR code, and only where no region was accepted: a band "
-                  "whose region was accepted or drawn in Check / draw panel regions uses that region as it is. The tool "
-                  "has this value too, and shows the region that it gives.")},
+     'label': 'Inner area of the panel', 'help': ("The size of the square that is measured on the panel, as a fraction of the "
+                  "side of the panel: above 0 and up to 1. With 0.7 it is a square in the middle of the panel with 70 % "
+                  "of its width and of its height (49 % of its area); with 1 it is about the whole panel.\n"
+                  "# Why not all of it\n"
+                  "The edge of the panel can include its border, a shadow or the ground, which would change the radiance "
+                  "that is measured. A smaller square in the middle avoids that, as long as it still has enough pixels.\n"
+                  "# Where it is used\n"
+                  "- The region that is found from the QR code is drawn with this size. A band that has no accepted region "
+                  "is measured on it.\n"
+                  "- A band whose region was accepted or drawn in Check / draw panel regions is measured on that region, "
+                  "exactly as it was saved: this value does not change it.\n"
+                  "- The tool has the same value: change it there to see the region that it gives before you accept it.")},
     {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000, 'group': 'Panel measurement',
      'label': 'Saturation threshold', 'help': ("Pixels above this value are left out of the panel radiance: they are saturated and do not measure "
                   "the light correctly.\n"
@@ -342,7 +357,7 @@ FIELDS = [
                   "DLS followed the light that the panel received, and it is not when the DLS was tilted or shaded in "
                   "one of the photos.\n"
                   "Only used with a second panel capture. A flag does not change the result; whether the second panel "
-                  "also calibrates the images is chosen in 'Panels used when there are two'.")},
+                  "also calibrates the images is chosen in 'Panel selection approach'.")},
     {'key': 'CHECKS.panel_illumination_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
      'default': rct.DLS_CHECKS['panel_illumination_tolerance'], 'label': 'Light of the panel: largest difference',
      'help': ("Only used when the panels are chosen by their light (nearest_illumination or interpolate_illumination). "
@@ -387,13 +402,33 @@ def default_config():
     return json.loads(json.dumps({field['key']: field['default'] for field in FIELDS}))
 
 
+def configuration_from_json(data):
+    """
+    The values of a configuration in what a json file holds: the values themselves (a configuration or a profile) or what a
+    run wrote with them: radiometric_result.json ('config') or the provenance record of a capture (<capture>_provenance.json,
+    'parameters' / 'config'), so that the settings of a past run can be used again
+    """
+    if isinstance(data, dict):
+        if isinstance(data.get('config'), dict):
+            return data['config']
+        parameters = data.get('parameters')
+        if isinstance(parameters, dict) and isinstance(parameters.get('config'), dict):
+            return parameters['config']
+    return data
+
+
 def load_config(path):
-    """ Default configuration with the values of a json file on top; unknown keys are an error """
-    saved = json.loads(Path(path).read_text(encoding='utf-8'))
+    """
+    Default configuration with the values of a json file on top (a configuration, a profile, or the result or provenance file
+    of a run: see configuration_from_json); unknown keys are an error
+    """
+    saved = configuration_from_json(json.loads(Path(path).read_text(encoding='utf-8')))
     return merge_config(saved)
 
 
 def merge_config(values):
+    if not isinstance(values, dict):
+        raise ConfigError("A configuration is a json object with the keys of the configuration")
     unknown = sorted(set(values) - set(FIELD_KEYS))
     if unknown:
         raise ConfigError(f"Unknown configuration keys: {unknown}")
@@ -581,8 +616,12 @@ def save_panel_regions(path, capture, regions, origins=None):
     return path
 
 
-def validate_config(config, root='.'):
-    """ Return the list of problems of a configuration (empty if it is valid). Paths are resolved from root """
+def validate_config(config, root='.', regions_file_may_be_missing=False):
+    """
+    Return the list of problems of a configuration (empty if it is valid). Paths are resolved from root
+    regions_file_may_be_missing: the file of the panel regions (PANEL.manual_regions_file) does not have to exist yet, for the
+    tool that creates it; a run needs it
+    """
     problems = []
     for key in sorted(set(config) - set(FIELD_KEYS)):
         problems.append(f"Unknown configuration key {key}")
@@ -616,6 +655,10 @@ def validate_config(config, root='.'):
     if config['PANEL.panels_used'] != 'first' and not config['INPUTS.reference_panel_capture_after'].strip():
         problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}' but there is no second panel capture "
                         "(INPUTS.reference_panel_capture_after)")
+    if config['PANEL.panels_used'] in rct.PANELS_BY_ILLUMINATION and not config['CORRECTION.use_dls']:
+        problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}', which chooses the panel by the light read "
+                        "by the DLS, but CORRECTION.use_dls is off: turn the DLS correction on or choose another way to "
+                        "use the panels")
     if not 0 < config['PANEL.spectral_min_coverage'] <= 1:
         problems.append("PANEL.spectral_min_coverage must be in (0, 1]")
     band_sets = {frozenset(config[key]) for key in ('PANEL.reflectance_by_band', 'PANEL.band_center_wavelengths',
@@ -676,7 +719,9 @@ def validate_config(config, root='.'):
     if config['PANEL.manual_regions_file']:
         regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
         if not regions_file.is_file():
-            problems.append(f"Panel regions file not found: {regions_file}")
+            if not regions_file_may_be_missing:
+                problems.append(f"Panel regions file not found: {regions_file} (draw and accept the regions with Check / "
+                                "draw panel regions, or empty the field to find the panel from its QR code)")
         else:
             try:
                 regions = load_panel_regions(regions_file)
@@ -788,7 +833,7 @@ def _second_panel_weight(mode, second_present, image, first_panel, second_panel,
     """
     if not second_present or mode == 'first':
         return 0.0, None
-    if mode in ('nearest_illumination', 'interpolate_illumination'):
+    if mode in rct.PANELS_BY_ILLUMINATION:
         light = _light(image, names[0])
         distances = (rct.illumination_distance(light, _light(first_panel, names[1])),
                      rct.illumination_distance(light, _light(second_panel, names[2])))
@@ -1154,7 +1199,8 @@ def _write_result(path, result):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Radiometric correction of Micasense RedEdge-P captures")
-    parser.add_argument('--config', help="json file with the values to change from the defaults")
+    parser.add_argument('--config', help="json file with the values to change from the defaults (also the "
+                                         "radiometric_result.json or a provenance file of a past run, to repeat it)")
     parser.add_argument('--request-json', help="json request: {'version': 1, 'root': folder, 'config': {...}}")
     parser.add_argument('--root', help="folder from which the relative paths are resolved (default: current folder)")
     parser.add_argument('--write-default-config', metavar='PATH', help="write the default configuration and exit")
@@ -1174,7 +1220,7 @@ def main(argv=None):
                 raise ConfigError(f"Unsupported request version {request.get('version')!r}")
             root, values = request.get('root', root), request.get('config', {})
         elif arguments.config:
-            values = json.loads(Path(arguments.config).read_text(encoding='utf-8'))
+            values = configuration_from_json(json.loads(Path(arguments.config).read_text(encoding='utf-8')))
     except (OSError, ValueError) as error:
         print(f"Invalid input: {error}", file=sys.stderr)
         return 2

@@ -425,24 +425,95 @@ def band_record(output_path, panel_image, image, reflectance, second_panel=None,
                                 'image_irradiance_scale_to_si': image.irradiance_scale_to_si } })
 
 
+# What the panel audit says that is written somewhere else already: the file (in the record of the band), the band, the
+# geometry, and the parameters of the run (in the configuration)
+_AUDIT_OMITTED = ('image_path', 'band_name', 'geometry', 'sat_threshold', 'percent_inner_area')
+
+
+def compact_panel_audit(audit):
+    """ The audit of a panel (Image.panel_audit) without what is already in the record of the band or in the configuration """
+    if not audit:
+        return audit
+    compact = {key: value for key, value in audit.items() if key not in _AUDIT_OMITTED}
+    if compact.get('barcode_data') is None:
+        compact.pop('barcode_data', None)
+    return compact
+
+
+def _number(value):
+    """ A value written as text in the metadata (for example '0.798') as a number, when it is one """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def compact_band_records(band_records):
+    """
+    The records of the bands of one capture (see band_record) without repetitions
+    Outputs: (what is the same in all the bands: the ids of the captures and the attitude of the camera, the records without
+             it and without what is empty or not used: the second panel when it was not used, the DLS ratio when the DLS was
+             not used, the audits without what the configuration says)
+    """
+    records = json.loads(json.dumps(band_records))
+    capture = {}
+    for key in ('image_capture_id', 'panel_capture_id'):
+        values = {record.get(key) for record in records}
+        if len(values) == 1:
+            capture[key] = values.pop()
+            for record in records:
+                record.pop(key, None)
+    attitudes = [json.dumps(record['dls'].get('attitude_as_written'), sort_keys=True) for record in records]
+    if records and len(set(attitudes)) == 1 and records[0]['dls'].get('attitude_as_written'):
+        capture['camera_attitude_as_written'] = {key: _number(value) for key, value
+                                                 in records[0]['dls']['attitude_as_written'].items()}
+    for record in records:
+        record['dls'].pop('attitude_as_written', None)
+        record['dls'].pop('sun_angle_discrepancy_deg', None)              # it is in the checks, once for the capture
+        record['dls'].pop('ratio_source', None)
+        if not record['dls'].get('used'):
+            record['dls'].pop('ratio_panel_over_image', None)
+        for key in ('panel_irradiance_scale_to_si', 'image_irradiance_scale_to_si'):
+            if record['dls'].get(key) is None:
+                record['dls'].pop(key, None)
+        record['panel'] = compact_panel_audit(record.get('panel'))
+        if record.get('second_panel_file') is None:
+            for key in ('second_panel_file', 'second_panel', 'second_panel_weight', 'effective_factor'):
+                record.pop(key, None)
+        else:
+            record['second_panel'] = compact_panel_audit(record.get('second_panel'))
+    return capture, records
+
+
+def compact_checks(checks):
+    """ The checks of a capture without what says nothing: the source of the ratios (always the metadata) and the empty list """
+    compact = {key: value for key, value in (checks or {}).items() if key != 'ratio_sources'}
+    if not compact.get('unavailable'):
+        compact.pop('unavailable', None)
+    return compact
+
+
 def write_provenance(path, band_records, parameters=None, checks=None):
     """
     Save a json file with the records of the bands (see band_record), the parameters of the run and the software used
-    The module is identified by the hash of its text (line endings normalized), so changes in the code are noticed
+    The module is identified by the hash of its text (line endings normalized), so changes in the code are noticed.
+    What is the same in all the bands is written once (the ids of the captures and the attitude of the camera), what is
+    empty or not used is left out, and the limits of the checks are those of the configuration saved in the parameters
     """
     import cv2
     code = Path(__file__).read_bytes().replace(b'\r\n', b'\n')
     dls_used = any(record['dls']['used'] for record in band_records)
+    capture, bands = compact_band_records(band_records)
     record = { 'created_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
                'method': 'panel_and_dls' if dls_used else 'panel_only',
                'software': { 'radiometric_correction_tools_sha256': hashlib.sha256(code).hexdigest(),
                              'python': platform.python_version(),
                              'numpy': np.__version__,
                              'opencv': cv2.__version__ },
+               'capture': capture,
                'parameters': _jsonable(parameters or {}),
-               'dls_checks_limits': _jsonable(DLS_CHECKS),
-               'checks': _jsonable(checks or {}),
-               'bands': band_records }
+               'checks': _jsonable(compact_checks(checks)),
+               'bands': bands }
     path = Path(path)
     path.write_text(json.dumps(record, indent=2), encoding='utf-8')
     return path

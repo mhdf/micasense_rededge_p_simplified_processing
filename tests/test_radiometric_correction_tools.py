@@ -601,7 +601,8 @@ class ExampleImageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             saved = json.loads(rct.write_provenance(Path(folder) / 'p.json', [record], checks=checks).read_text(encoding='utf-8'))
         self.assertEqual(saved['checks']['flags'], checks['flags'])
-        self.assertEqual(saved['dls_checks_limits']['ratio_range'], [0.5, 2.0])
+        self.assertNotIn('dls_checks_limits', saved)                              # the limits are in the configuration
+        self.assertNotIn('ratio_sources', saved['checks'])
 
     # --- Provenance record ------------------------------------------------------------------------------------
 
@@ -634,6 +635,46 @@ class ExampleImageTests(unittest.TestCase):
         self.assertEqual(saved['parameters']['percent_inner_area'], 0.7)
         self.assertEqual(len(saved['software']['radiometric_correction_tools_sha256']), 64)
         self.assertEqual(saved['bands'][0]['panel']['panel_bounds'], record['panel']['panel_bounds'])
+
+    def test_the_records_of_the_bands_are_written_without_repetitions(self):
+        import copy
+        first = {'band': 'Blue', 'image_capture_id': 'a', 'panel_capture_id': 'p', 'second_panel_file': None,
+                 'second_panel': None, 'second_panel_weight': 0.0, 'effective_factor': None,
+                 'panel': {'image_path': 'p1.tif', 'band_name': 'Blue', 'geometry': 'undistorted', 'sat_threshold': 1,
+                           'percent_inner_area': 0.7, 'barcode_data': None, 'n_pixels': 5},
+                 'dls': {'used': False, 'ratio_panel_over_image': None, 'ratio_source': None,
+                         'attitude_as_written': {'Roll': 1.0, 'Pitch': '0.5', 'Yaw': 2.0}, 'sun_angle_discrepancy_deg': 3.0,
+                         'panel_irradiance_scale_to_si': None, 'image_irradiance_scale_to_si': None,
+                         'panel_horizontal_irradiance': 100.0, 'image_horizontal_irradiance': 110.0}}
+        second = copy.deepcopy(first)
+        second['band'] = 'Green'
+        capture, bands = rct.compact_band_records([first, second])
+        self.assertEqual(capture, {'image_capture_id': 'a', 'panel_capture_id': 'p',
+                                   'camera_attitude_as_written': {'Roll': 1.0, 'Pitch': 0.5, 'Yaw': 2.0}})
+        self.assertEqual(bands[0]['panel'], {'n_pixels': 5})
+        self.assertEqual(bands[0]['dls'], {'used': False, 'panel_horizontal_irradiance': 100.0,
+                                           'image_horizontal_irradiance': 110.0})
+        self.assertEqual(set(bands[0]), {'band', 'panel', 'dls'})
+        self.assertEqual(first['dls']['ratio_source'], None)                     # the records that were given are not changed
+        # what is not the same in all the bands stays where it is
+        second['image_capture_id'] = 'b'
+        capture, bands = rct.compact_band_records([first, second])
+        self.assertNotIn('image_capture_id', capture)
+        self.assertEqual((bands[0]['image_capture_id'], bands[1]['image_capture_id']), ('a', 'b'))
+        # a second panel that was used is kept
+        used = copy.deepcopy(first)
+        used.update({'second_panel_file': 'p2.tif', 'second_panel': dict(first['panel']), 'second_panel_weight': 0.3,
+                     'effective_factor': 2.0})
+        capture, bands = rct.compact_band_records([used])
+        self.assertEqual((bands[0]['second_panel_file'], bands[0]['second_panel_weight'], bands[0]['effective_factor']),
+                         ('p2.tif', 0.3, 2.0))
+        self.assertEqual(bands[0]['second_panel'], {'n_pixels': 5})
+
+    def test_the_checks_are_written_without_what_says_nothing(self):
+        checks = {'band_ratios': {'Blue': 0.9}, 'ratio_sources': {'Blue': 'metadata'}, 'unavailable': [], 'flags': []}
+        self.assertEqual(rct.compact_checks(checks), {'band_ratios': {'Blue': 0.9}, 'flags': []})
+        self.assertEqual(rct.compact_checks({'unavailable': ['x'], 'flags': []}), {'unavailable': ['x'], 'flags': []})
+        self.assertEqual(rct.compact_checks(None), {})
 
     def test_method_is_panel_only_without_dls(self):
         import json, tempfile

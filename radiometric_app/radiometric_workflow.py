@@ -731,11 +731,21 @@ def _read_capture(images_folder, name, bands, exiftool_path, pattern=None, ignor
     return {band: rct.Image(*files[band]) for band in bands}
 
 
+def compact_reflectance_info(info):
+    """ What the reports say about where the reflectance of the panel came from, without what the configuration says """
+    compact = {key: value for key, value in info.items() if key not in ('format', 'min_coverage', 'bands')}
+    if 'bands' in info:
+        compact['bands'] = {band: {key: values[key] for key in ('samples', 'coverage')}
+                            for band, values in info['bands'].items()}
+    return compact
+
+
 def _run_stages(config, root, results_folder, result, progress):
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
     exiftool_path = exiftool_executable(config, root)
     ignored = capture_names(config['INPUTS.ignored_bands'])
     levels, reflectance_info = panel_reflectance_levels(config, root)
+    reflectance_info = compact_reflectance_info(reflectance_info)
     result['panel']['reflectance'] = rct._jsonable({'levels': levels, **reflectance_info})
     bands = list(levels)
     use_dls = config['CORRECTION.use_dls']
@@ -769,7 +779,7 @@ def _run_stages(config, root, results_folder, result, progress):
             except Exception as error:
                 raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
         panels[label] = objects
-        result['panel'][label] = {'capture': name, 'bands': {band: rct._jsonable(image.panel_audit)
+        result['panel'][label] = {'capture': name, 'bands': {band: rct._jsonable(rct.compact_panel_audit(image.panel_audit))
                                                               for band, image in objects.items()}}
     if 'after' in panels:
         with warnings.catch_warnings(record=True) as caught:
@@ -783,8 +793,9 @@ def _run_stages(config, root, results_folder, result, progress):
     parameters = {'config': config, 'panel_reflectance_levels': levels, 'panel_reflectance_source': reflectance_info}
     for number, name in enumerate(names, start=1):
         _progress(progress, 'REFLECTANCE', f"Correcting {name}", number - 1, len(names))
-        entry = {'outputs': [], 'flags': [], 'errors': []}
+        entry = {'outputs': [], 'errors': []}
         result['captures'][name] = entry
+        written, flags = [], []
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter('always')
@@ -811,23 +822,25 @@ def _run_stages(config, root, results_folder, result, progress):
                     records.append(rct.band_record(output_path, panel, image, reflectance,
                                                    second[band] if weight > 0 else None, weight,
                                                    factor if weight > 0 else None))
-                    entry['outputs'].append(str(output_path))
+                    written.append(str(output_path))
+                    entry['outputs'].append(output_path.name)           # the files are in the results folder
                 checks = rct.check_dls_capture(panels['before'], objects, ratios or None)
-                entry['checks'] = rct._jsonable(checks)
-                entry['flags'] = list(checks['flags'])
+                flags = list(checks['flags'])
+                entry['dls'] = rct._jsonable({key: checks[key] for key in ('median_ratio', 'sun_angle_discrepancy_deg')
+                                              if key in checks})
                 provenance = rct.write_provenance(results_folder / (name + '_provenance.json'), records,
                                                   parameters=parameters, checks=checks)
-                entry['provenance'] = str(provenance)
+                entry['provenance'] = Path(provenance).name
             for band in bands:
                 try:
                     series[band].append((name, objects[band].dls_irradiance()))
                 except rct.MetadataError:
                     pass
-            result['outputs'].extend(entry['outputs'])
+            result['outputs'].extend(written)
         except Exception as error:
             entry['errors'].append(f"{type(error).__name__}: {error}")
             result['errors'].append(f"{name}: {error}")
-        result['flags'].extend(f"{name}: {flag}" for flag in entry['flags'])
+        result['flags'].extend(f"{name}: {flag}" for flag in flags)
 
     _progress(progress, 'DLS_CHECKS', "Checking the irradiance along the captures", len(names), len(names))
     result['irradiance_changes'] = irradiance_series_changes(series, config['CHECKS.jump_threshold'])

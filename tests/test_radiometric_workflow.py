@@ -365,6 +365,42 @@ class RunTests(unittest.TestCase):
         self.assertEqual(provenance['parameters']['config']['PANEL.percent_inner_area'], 0.7)
         self.assertFalse((folder / (wf.RESULT_FILE_NAME + '.tmp')).exists())
 
+    def test_the_reports_do_not_repeat_themselves(self):
+        folder = self.folder / 'panel_only'
+        text = (folder / wf.RESULT_FILE_NAME).read_text(encoding='utf-8')
+        flag = 'sun angle differs'
+        self.assertEqual(text.count(flag), 1)                                   # the flag is in the result once
+        saved = json.loads(text)
+        self.assertEqual(len(saved['flags']), 1)
+        entry = saved['captures']['IMG_0010']
+        for key in ('flags', 'checks'):
+            self.assertNotIn(key, entry)                                        # they are in the provenance record
+        self.assertEqual(entry['outputs'], [f'IMG_0010_{number}.tif' for number in (1, 2, 6, 3, 5, 4)])
+        self.assertEqual(entry['provenance'], 'IMG_0010_provenance.json')
+        self.assertEqual(sorted(entry['dls']['sun_angle_discrepancy_deg']), ['image', 'panel'])
+        self.assertIn('median_ratio', entry['dls'])
+        for audit in saved['panel']['before']['bands'].values():
+            for key in ('image_path', 'band_name', 'sat_threshold', 'percent_inner_area', 'geometry'):
+                self.assertNotIn(key, audit)
+        for key in ('format', 'min_coverage'):
+            self.assertNotIn(key, saved['panel']['reflectance'])
+        provenance_text = (folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8')
+        self.assertEqual(provenance_text.count(flag), 1)
+        provenance = json.loads(provenance_text)
+        self.assertNotIn('dls_checks_limits', provenance)
+        self.assertNotIn('ratio_sources', provenance['checks'])
+        self.assertNotIn('unavailable', provenance['checks'])
+        self.assertEqual(set(provenance['capture']), {'image_capture_id', 'panel_capture_id', 'camera_attitude_as_written'})
+        self.assertIsInstance(provenance['capture']['camera_attitude_as_written']['Pitch'], float)
+        for band in provenance['bands']:
+            for key in ('image_capture_id', 'panel_capture_id', 'second_panel', 'effective_factor'):
+                self.assertNotIn(key, band)
+            for key in ('attitude_as_written', 'sun_angle_discrepancy_deg', 'ratio_panel_over_image'):
+                self.assertNotIn(key, band['dls'])
+            self.assertNotIn('image_path', band['panel'])
+            self.assertIn('radiance_to_reflectance_factor', band['panel'])
+            self.assertIn('image_horizontal_irradiance', band['dls'])           # what the DLS read is still there
+
     def test_dls_run_corrects_every_band_including_panchro(self):
         folder = self.folder / 'dls'
         provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
@@ -555,7 +591,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['captures']['IMG_0010']['panels'], {'used': 'first', 'weight_of_the_second_panel': 0.0})
         self.assertIn('comparison', result['panel'])
         provenance = json.loads((self.folder / 'first_panel' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
-        self.assertIsNone(provenance['bands'][0]['second_panel_file'])
+        self.assertNotIn('second_panel_file', provenance['bands'][0])             # a panel that was not used is not repeated
 
     def test_a_second_panel_that_is_not_used_when_there_is_only_one(self):
         entry = self.panel_only['captures']['IMG_0010']

@@ -304,6 +304,7 @@ class TwoPanelsTests(unittest.TestCase):
 
     def test_the_weight_of_the_second_panel(self):
         self.assertEqual(rct.panel_weight('first', 50, 0, 100), 0.0)
+        self.assertEqual(rct.panel_weight('last', 50, 0, 100), 1.0)                       # only the second panel
         self.assertEqual(rct.panel_weight('mean', 50, 0, 100), 0.5)
         self.assertEqual(rct.panel_weight('interpolate_time', 0, 0, 100), 0.0)
         self.assertEqual(rct.panel_weight('interpolate_time', 100, 0, 100), 1.0)
@@ -328,7 +329,7 @@ class TwoPanelsTests(unittest.TestCase):
 
     def test_an_unknown_mode_is_an_error(self):
         with self.assertRaisesRegex(ValueError, 'panels_used'):
-            rct.panel_weight('last', 1, 0, 2)
+            rct.panel_weight('later', 1, 0, 2)
 
     def test_the_light_of_a_capture_is_compared_with_that_of_a_panel(self):
         light = {'Blue': 140.0, 'Green': 120.0, 'Red': 100.0}

@@ -715,7 +715,9 @@ class RadiometricFrame:
                 _, bad = self.model.parse({'kind': 'float'}, self.model.get(key)[band])
                 entry.configure(style='Invalid.TEntry' if bad else 'TEntry')
         elif key in self.entries:
-            self.entries[key].configure(style='Invalid.TEntry' if message else 'TEntry')
+            widget = self.entries[key]
+            base = widget.winfo_class()                       # TEntry, or TCombobox (which has its arrow)
+            widget.configure(style=('Invalid.' if message else '') + base)
 
     def _changed(self, key, raw):
         self.model.set(key, raw)
@@ -955,17 +957,17 @@ class RadiometricFrame:
 
     def _panels_selected(self):
         """
-        A choice made in the list of the panel selection approach. Those by the light are in the list, marked, but they are
-        refused while the DLS correction is off (the previous choice comes back, and the status line says why)
+        A choice made in the list of the panel selection approach. Those by the light use the DLS data, so choosing one turns
+        the DLS correction on (the status line says so)
         """
         chosen = self.variables['PANEL.panels_used']
+        self.panels_used_ok = chosen.get()
         if self._panels_used_allowed(chosen.get()):
-            self.panels_used_ok = chosen.get()
             return
-        refused, labels = chosen.get(), self.model.fields['PANEL.panels_used']['labels']
-        chosen.set(self.panels_used_ok)
-        self.status.configure(text=f"'{labels[refused]}' cannot be chosen while the DLS correction is off: turn on 'Correct "
-                                   "illumination changes with the DLS' (DLS page) first.", style='Error.TLabel')
+        self.variables['CORRECTION.use_dls'].set(True)
+        label = self.model.fields['PANEL.panels_used']['labels'][chosen.get()]
+        self.status.configure(text=f"'{label}' uses the DLS data: 'Correct illumination changes with the DLS' (DLS page) was "
+                                   "turned on.", style='Muted.TLabel')
 
     def _dls_correction_changed(self):
         """ Turning the DLS correction off while a choice that needs it is made goes back to 'first', and says so """
@@ -1106,12 +1108,21 @@ class RadiometricFrame:
         self.log(f"The panel reflectance will be computed from {result['file']}.")
 
     def _browse(self, key, kind):
-        from tkinter import filedialog
+        """
+        Choose a folder or a file for a field. A folder is chosen in a window that lists its files and shows a picture of
+        the image that is selected (folder_browser), to recognise the folder of the raw images or the one of the results
+        """
         current = self.model.get(key)
         start = wf.resolve_path(self.root_folder, current) if current else self.root_folder
         initial = start if start.is_dir() else start.parent
-        chosen = (filedialog.askdirectory(initialdir=initial) if kind == 'folder'
-                  else filedialog.askopenfilename(initialdir=initial))
+        if kind == 'folder':
+            from .folder_browser import ask_folder
+            while not initial.is_dir() and initial != initial.parent:          # a results folder that does not exist yet
+                initial = initial.parent
+            chosen = ask_folder(self.parent.winfo_toplevel(), self.model.fields[key]['label'], initial)
+        else:
+            from tkinter import filedialog
+            chosen = filedialog.askopenfilename(initialdir=initial)
         if chosen:
             self.variables[key].set(chosen)
 

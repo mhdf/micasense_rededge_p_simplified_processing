@@ -242,6 +242,32 @@ class WindowTests(unittest.TestCase):
             self.pump(lambda: 'needs Python 3.10' in frame.python_status.cget('text'))
         self.assertEqual(wf.environment.read_python_environment(self.folder.name), {'python': r'C:\envs\a\python.exe'})
 
+    def test_a_folder_is_chosen_in_the_window_with_the_picture_of_the_images_and_a_file_in_the_dialog_of_the_system(self):
+        images = Path(self.folder.name) / 'flight' / 'raw'
+        images.mkdir(parents=True)
+        self.frame.set_value('INPUTS.images_folder', str(images))
+        with mock.patch('radiometric_app.folder_browser.ask_folder', return_value=str(images.parent)) as ask:
+            self.frame._browse('INPUTS.images_folder', 'folder')
+        arguments = ask.call_args[0]
+        self.assertEqual((arguments[1], arguments[2]), ('Images folder', images))
+        self.assertIs(arguments[0], self.frame.parent.winfo_toplevel())
+        self.assertEqual(self.frame.variables['INPUTS.images_folder'].get(), str(images.parent))
+        with mock.patch('radiometric_app.folder_browser.ask_folder', return_value='') as ask:       # cancelled: nothing changes
+            self.frame._browse('INPUTS.images_folder', 'folder')
+        self.assertEqual(self.frame.variables['INPUTS.images_folder'].get(), str(images.parent))
+        missing = Path(self.folder.name) / 'not_yet' / 'results'                                    # it does not exist yet
+        self.frame.set_value('INPUTS.results_folder', str(missing))
+        with mock.patch('radiometric_app.folder_browser.ask_folder', return_value='') as ask:
+            self.frame._browse('INPUTS.results_folder', 'folder')
+        self.assertEqual(ask.call_args[0][1], 'Results folder')
+        self.assertEqual(ask.call_args[0][2], Path(self.folder.name))                               # the nearest one that exists
+        with mock.patch('tkinter.filedialog.askdirectory') as system_folder, \
+                mock.patch('tkinter.filedialog.askopenfilename', return_value=str(images / 'x.exe')) as system_file:
+            self.frame._browse('INPUTS.exiftool_path', 'file')
+        system_folder.assert_not_called()
+        system_file.assert_called_once()
+        self.assertEqual(self.frame.variables['INPUTS.exiftool_path'].get(), str(images / 'x.exe'))
+
     def test_browse_for_the_python_fills_the_field(self):
         with mock.patch('tkinter.filedialog.askopenfilename', return_value=r'D:\p\python.exe'):
             self.frame.browse_python()
@@ -1062,29 +1088,44 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(entry.get(), 'Nearest panel in time')
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'nearest_time')   # what is saved is the name
         for name in ('nearest_illumination', 'interpolate_illumination'):
-            self.assertIn('needs the DLS', labels[name])
+            self.assertIn('uses the DLS', labels[name])
         self.assertEqual(self.frame.entries['PANEL.reflectance_source'].winfo_class(), 'TCombobox')
 
-    def test_the_choices_by_the_light_are_listed_but_refused_while_the_dls_correction_is_off(self):
-        self.assertFalse(self.frame.variables['CORRECTION.use_dls'].get())
+    def test_choosing_a_panel_selection_by_the_light_turns_the_dls_correction_on(self):
+        use = self.frame.variables['CORRECTION.use_dls']
+        self.assertFalse(use.get())
         self.frame.set_value('PANEL.panels_used', 'mean')
-        self.pick('nearest_illumination')
-        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'mean')       # the previous choice came back
-        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'mean')
-        text = self.frame.status.cget('text')
-        self.assertIn("'Nearest panel in light (needs the DLS)' cannot be chosen while the DLS correction is off", text)
-        self.assertEqual(str(self.frame.status.cget('style')), 'Error.TLabel')
-        self.pick('interpolate_illumination')
-        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'mean')
-        self.pick('interpolate_time')                                                   # the others are chosen as always
+        self.pick('interpolate_time')                                                   # the others change nothing else
+        self.assertFalse(use.get())
         self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'interpolate_time')
-        self.frame.set_value('CORRECTION.use_dls', True)
-        self.pick('interpolate_illumination')
-        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'interpolate_illumination')
-        self.frame.set_value('CORRECTION.use_dls', False)                               # taken back, as before
+        self.pick('nearest_illumination')
+        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'nearest_illumination')   # it stays chosen
+        self.assertTrue(use.get())                                                      # and the DLS correction is on
+        self.assertTrue(self.frame.model.config()[0]['CORRECTION.use_dls'])
+        text = self.frame.status.cget('text')
+        self.assertIn("'Nearest panel in light (uses the DLS)' uses the DLS data", text)
+        self.assertIn('was turned on', text)
+        self.frame.set_value('CORRECTION.use_dls', False)                               # turning it off takes it back
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
-        self.pick('nearest_illumination')                                               # and refused again: back to 'first'
-        self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'first')
+        self.pick('interpolate_illumination')
+        self.assertTrue(use.get())
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'interpolate_illumination')
+        problems = ' '.join(self.frame.problems()[1])
+        self.assertIn('no second panel capture', problems)                              # still needs the second panel
+        self.assertNotIn('CORRECTION.use_dls', problems)                                # but not the DLS correction
+
+    def test_a_dropdown_keeps_its_arrow_after_a_choice_is_made(self):
+        self.assertIn(str(self.frame.entries['PANEL.panels_used'].cget('style')), ('', 'TCombobox'))   # the default style
+        self.pick('mean')
+        self.frame.set_value('PANEL.reflectance_source', 'spectral_file')
+        for key in ('PANEL.panels_used', 'PANEL.reflectance_source'):
+            entry = self.frame.entries[key]
+            self.assertEqual(entry.winfo_class(), 'TCombobox', key)
+            self.assertEqual(str(entry.cget('style')), 'TCombobox', key)               # not the style of a box to type in
+        entry = self.frame.entries['PANEL.panels_used']
+        entry.configure(style='Invalid.TCombobox')                                      # the style for a wrong value exists
+        self.assertEqual(self.frame.ttk.Style(self.root).lookup('Invalid.TCombobox', 'fieldbackground', ('readonly',)),
+                         '#6b3f36')
 
     def test_turning_the_dls_off_takes_back_a_choice_of_the_panel_by_the_light_and_says_so(self):
         self.frame.set_value('CORRECTION.use_dls', True)
@@ -1093,7 +1134,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
         self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'first')
         text = self.frame.status.cget('text')
-        self.assertIn("was 'Both panels, weighted by light (needs the DLS)' and is now 'First panel only'", text)
+        self.assertIn("was 'Both panels, weighted by light (uses the DLS)' and is now 'First panel only'", text)
         self.assertIn('needs the DLS correction', text)
         self.frame.set_value('CORRECTION.use_dls', True)                         # turning it on changes nothing else
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')

@@ -95,6 +95,8 @@ def apply_dark_theme(root):
     style.map('TEntry', fieldbackground=[('readonly', c['input']), ('disabled', c['panel'])],
               background=[('readonly', c['background'])], foreground=[('disabled', c['disabled'])])
     style.configure('Invalid.TEntry', fieldbackground='#6b3f36')
+    style.configure('Invalid.TCombobox', fieldbackground='#6b3f36')
+    style.map('Invalid.TCombobox', fieldbackground=[('readonly', '#6b3f36')])
     style.configure('TCheckbutton', background=c['background'], foreground=c['foreground'], font=FONT,
                     indicatorbackground=c['input'], indicatorforeground=c['foreground'], upperbordercolor=c['border'],
                     lowerbordercolor=c['border'])

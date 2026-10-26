@@ -248,16 +248,18 @@ FIELDS = [
      'group': 'Reflectance of the panel', 'label': 'Smallest covered part of a band window',
      'help': 'Fraction (0 to 1] of the window of a band that must have valid samples in the file.'},
     {'key': 'PANEL.panels_used', 'kind': 'choice', 'choices': list(rct.PANELS_USED), 'default': 'first',
-     'labels': {'first': 'First panel only', 'mean': 'Average of the two panels',
+     'labels': {'first': 'First panel only', 'last': 'Last panel only', 'mean': 'Average of the two panels',
                 'interpolate_time': 'Both panels, weighted by time', 'nearest_time': 'Nearest panel in time',
-                'nearest_illumination': 'Nearest panel in light (needs the DLS)',
-                'interpolate_illumination': 'Both panels, weighted by light (needs the DLS)'},
+                'nearest_illumination': 'Nearest panel in light (uses the DLS)',
+                'interpolate_illumination': 'Both panels, weighted by light (uses the DLS)'},
      'group': 'Panel measurement', 'label': 'Panel selection approach',
      'help': ("How the panel captures calibrate the images when there are two (before and after the flight). Only used "
                   "when there is a second panel capture.\n"
                   "# Choices (the name that is saved is in brackets)\n"
                   "- First panel only (first): only the first panel calibrates the images; the second is only compared "
                   "with it.\n"
+                  "- Last panel only (last): only the second panel, the one after the flight, calibrates the images; the "
+                  "first is only compared with it.\n"
                   "- Average of the two panels (mean).\n"
                   "- Both panels, weighted by time (interpolate_time): each image is weighted by its time between the two "
                   "panel captures (times from EXIF:DateTimeOriginal).\n"
@@ -269,9 +271,9 @@ FIELDS = [
                   "used, each weighted by 1 / (difference of the light) squared: a panel with the light of the image counts "
                   "alone, and the weight changes smoothly with the light, so there is no step between neighbouring images "
                   "that would use different panels.\n"
-                  "The two choices by the light use the DLS data of the images and of both panel captures, so they can be "
-                  "chosen only while 'Correct illumination changes with the DLS' is on (DLS page); with it off they are "
-                  "in the list, marked, and are refused.\n"
+                  "The two choices by the light use the DLS data of the images and of both panel captures: choosing one "
+                  "turns on 'Correct illumination changes with the DLS' (DLS page), and turning that off takes the choice "
+                  "back to the first panel.\n"
                   "This choice changes the result: it decides which panel data are used.\n"
                   "With the DLS correction each panel is used with its own DLS irradiance, so the result does not "
                   "depend on a 'reference panel' of the DLS: only the panels that are used matter.")},

@@ -319,7 +319,8 @@ class ConfigurationTests(unittest.TestCase):
             wf.detect_bands(wf.default_config(), ROOT, 'IMG_9999')
 
     def test_a_second_panel_is_needed_to_use_two_panels(self):
-        for mode in ('mean', 'interpolate_time', 'nearest_time', 'nearest_illumination', 'interpolate_illumination'):
+        for mode in ('last', 'mean', 'interpolate_time', 'nearest_time', 'nearest_illumination',
+                     'interpolate_illumination'):
             dls = {'CORRECTION.use_dls': mode in rct.PANELS_BY_ILLUMINATION}      # the choices by the light need the DLS
             config = wf.merge_config({'PANEL.panels_used': mode, **dls})
             self.assertIn('there is no second panel capture', '\n'.join(wf.validate_config(config, ROOT)))
@@ -327,7 +328,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(wf.validate_config(config, ROOT), [])
         self.assertEqual(wf.validate_config(wf.merge_config({'PANEL.panels_used': 'first'}), ROOT), [])
         self.assertIn('PANEL.panels_used must be one of', '\n'.join(wf.validate_config(
-            wf.merge_config({'PANEL.panels_used': 'last'}), ROOT)))
+            wf.merge_config({'PANEL.panels_used': 'later'}), ROOT)))
 
     def test_the_choices_of_the_panel_by_the_light_need_the_dls_correction(self):
         for mode in rct.PANELS_BY_ILLUMINATION:
@@ -336,7 +337,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertIn(f"PANEL.panels_used is '{mode}'", problems)
             self.assertIn('CORRECTION.use_dls is off', problems)
             self.assertEqual(wf.validate_config(wf.merge_config(dict(values, **{'CORRECTION.use_dls': True})), ROOT), [])
-        for mode in ('first', 'mean', 'interpolate_time', 'nearest_time'):             # the others do not
+        for mode in ('first', 'last', 'mean', 'interpolate_time', 'nearest_time'):     # the others do not
             values = {'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005'}
             self.assertEqual(wf.validate_config(wf.merge_config(values), ROOT), [])
 
@@ -752,6 +753,28 @@ class RunTests(unittest.TestCase):
         self.assertEqual(blue['second_panel_weight'], 0.5)
         self.assertTrue(blue['second_panel_file'].endswith('IMG_0005_1.tif'))
         self.assertEqual(blue['effective_factor'], blue['panel']['radiance_to_reflectance_factor'])
+
+    def test_the_last_panel_alone_calibrates_the_images(self):
+        result = self.run_with_two_panels('last_panel', 'last')
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertEqual(result['captures']['IMG_0010']['panels'], {'used': 'last', 'weight_of_the_second_panel': 1.0})
+        self.assertEqual(result['summary']['panel_weights'], {'mode': 'last', 'first_only': 0, 'second_only': 1, 'both': 0})
+        for number in range(1, 7):                                               # the second panel is a copy of the first
+            self.assertTrue(np.array_equal(tifffile.imread(self.folder / 'last_panel' / f'IMG_0010_{number}.tif'),
+                                           tifffile.imread(self.folder / 'panel_only' / f'IMG_0010_{number}.tif')))
+        provenance = json.loads((self.folder / 'last_panel' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(provenance['bands'][0]['second_panel_weight'], 1.0)
+        single = self.run_with_two_panels('last_without_second', 'last', **{'INPUTS.reference_panel_capture_after': ''})
+        self.assertEqual(single['status'], 'failed')                              # there is no last panel to use
+        self.assertIn('there is no second panel capture', single['errors'][0])
+
+    def test_with_the_dls_the_last_panel_gives_the_reflectance_of_its_own_light(self):
+        result = self.run_with_a_second_light('last_dls', 'last', 0.5)            # the second panel read half the irradiance
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        for number in range(1, 7):
+            last = tifffile.imread(self.folder / 'last_dls' / f'IMG_0010_{number}.tif')
+            first = tifffile.imread(self.folder / 'dls' / f'IMG_0010_{number}.tif')
+            self.assertTrue(np.allclose(last, 0.5 * first, rtol=0.01, atol=0), number)    # R = L f E_panel / E_image
 
     def test_the_mean_with_the_dls_uses_the_irradiance_of_each_panel(self):
         result = self.run_with_two_panels('mean_dls', 'mean', **{'CORRECTION.use_dls': True})

@@ -473,7 +473,8 @@ def _jsonable(value):
 
 
 # Two panel captures (before and after the flight)
-PANELS_USED = ('first', 'mean', 'interpolate_time', 'nearest_time', 'nearest_illumination', 'interpolate_illumination')
+PANELS_USED = ('first', 'last', 'mean', 'interpolate_time', 'nearest_time', 'nearest_illumination',
+               'interpolate_illumination')
 PANELS_BY_ILLUMINATION = ('nearest_illumination', 'interpolate_illumination')      # they compare the light read by the DLS
 ILLUMINATION_POWER = 2         # interpolate_illumination weighs each panel by 1 / distance ** ILLUMINATION_POWER
 
@@ -512,7 +513,7 @@ def illumination_distance(image_irradiances, panel_irradiances):
 def panel_weight(mode, image_time=None, first_time=None, second_time=None, distances=None):
     """
     Weight of the second panel in the calibration of an image
-    mode: 'first' (0: only the first panel), 'mean' (0.5), 'interpolate_time' (the position in time of the image between
+    mode: 'first' (0: only the first panel), 'last' (1: only the second one, the one after the flight), 'mean' (0.5), 'interpolate_time' (the position in time of the image between
     the two panel captures, from 0 at the first to 1 at the second; outside them the nearest panel is used),
     'nearest_time' (0 or 1: the panel captured closest in time to the image; the first one if they are equally close or
     were captured at the same time), 'nearest_illumination' (0 or 1: the panel whose light is the most like that of the
@@ -532,6 +533,8 @@ def panel_weight(mode, image_time=None, first_time=None, second_time=None, dista
         return 0.5 if first + second == 0 else float(first / (first + second))
     if mode == 'first':
         return 0.0
+    if mode == 'last':
+        return 1.0
     if mode == 'mean':
         return 0.5
     if mode == 'interpolate_time':

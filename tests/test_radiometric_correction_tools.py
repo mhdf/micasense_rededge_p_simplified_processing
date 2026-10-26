@@ -330,6 +330,44 @@ class TwoPanelsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'panels_used'):
             rct.panel_weight('last', 1, 0, 2)
 
+    def test_the_light_of_a_capture_is_compared_with_that_of_a_panel(self):
+        light = {'Blue': 140.0, 'Green': 120.0, 'Red': 100.0}
+        self.assertEqual(rct.illumination_distance(light, dict(light)), 0.0)
+        brighter = {band: 1.1 * value for band, value in light.items()}                 # 10 % more in every band
+        self.assertAlmostEqual(rct.illumination_distance(brighter, light), np.log(1.1))
+        self.assertAlmostEqual(rct.illumination_distance(light, brighter), np.log(1.1))     # it does not matter which one
+        spread = dict(light, Red=120.0)                                                  # only one band is different
+        self.assertAlmostEqual(rct.illumination_distance(spread, light), np.sqrt(np.log(1.2) ** 2 / 3))
+        self.assertAlmostEqual(rct.illumination_distance(light, {'Red': 100.0, 'NIR': 3.0}), 0.0)    # the bands in both
+        with self.assertRaisesRegex(rct.MetadataError, 'no band in common'):
+            rct.illumination_distance(light, {'NIR': 50.0})
+        with self.assertRaisesRegex(rct.MetadataError, "band 'Blue'"):
+            rct.illumination_distance(light, dict(light, Blue=0.0))
+
+    def test_the_panel_with_the_most_similar_light_is_used_entirely(self):
+        self.assertEqual(rct.panel_weight('nearest_illumination', distances=(0.3, 0.02)), 1.0)
+        self.assertEqual(rct.panel_weight('nearest_illumination', distances=(0.02, 0.3)), 0.0)
+        self.assertEqual(rct.panel_weight('nearest_illumination', distances=(0.1, 0.1)), 0.0)    # equally like it: the first
+        self.assertEqual(rct.panel_weight('nearest_illumination', distances=(0.0, 0.0)), 0.0)
+
+    def test_the_weights_by_illumination_change_smoothly_with_the_light(self):
+        self.assertEqual(rct.panel_weight('interpolate_illumination', distances=(0.1, 0.1)), 0.5)
+        self.assertEqual(rct.panel_weight('interpolate_illumination', distances=(0.0, 0.0)), 0.5)
+        self.assertEqual(rct.panel_weight('interpolate_illumination', distances=(0.3, 0.0)), 1.0)    # the light of the second
+        self.assertEqual(rct.panel_weight('interpolate_illumination', distances=(0.0, 0.3)), 0.0)
+        self.assertAlmostEqual(rct.panel_weight('interpolate_illumination', distances=(0.3, 0.1)), 0.9)    # 1/d**2: 100 and 900
+        self.assertAlmostEqual(rct.panel_weight('interpolate_illumination', distances=(0.1, 0.3)), 0.1)
+        # the light of the image moves away from the second panel (its distance grows) and towards the first
+        weights = [rct.panel_weight('interpolate_illumination', distances=(0.3 - x, x)) for x in np.linspace(0.0, 0.3, 61)]
+        self.assertTrue(all(b <= a for a, b in zip(weights, weights[1:])))                         # no reversal
+        self.assertLess(max(abs(np.diff(weights))), 0.05)                                          # and no step
+
+    def test_the_modes_by_illumination_need_the_distances(self):
+        for mode in ('nearest_illumination', 'interpolate_illumination'):
+            self.assertIn(mode, rct.PANELS_USED)
+            with self.assertRaisesRegex(ValueError, 'distances'):
+                rct.panel_weight(mode)
+
     def test_the_time_of_a_capture_is_read_from_the_metadata(self):
         first = rct.capture_time({'EXIF:DateTimeOriginal': '2023:02:02 13:26:38'})
         second = rct.capture_time({'EXIF:DateTimeOriginal': '2023:02:02 13:30:11'})

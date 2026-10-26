@@ -303,7 +303,7 @@ class ConfigurationTests(unittest.TestCase):
             wf.detect_bands(wf.default_config(), ROOT, 'IMG_9999')
 
     def test_a_second_panel_is_needed_to_use_two_panels(self):
-        for mode in ('mean', 'interpolate_time', 'nearest_time'):
+        for mode in ('mean', 'interpolate_time', 'nearest_time', 'nearest_illumination', 'interpolate_illumination'):
             config = wf.merge_config({'PANEL.panels_used': mode})
             self.assertIn('there is no second panel capture', '\n'.join(wf.validate_config(config, ROOT)))
             config = wf.merge_config({'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005'})
@@ -784,6 +784,98 @@ class RunTests(unittest.TestCase):
             result = self.run_with_two_panels('no_time', 'interpolate_time')
         self.assertEqual(result['status'], 'failed')
         self.assertIn('IMG_0010: EXIF:DateTimeOriginal', result['captures']['IMG_0010']['errors'][0])
+
+    def run_with_a_second_light(self, name, mode, factor, remove_irradiance_of=None, **changes):
+        """
+        The second panel is IMG_0007, a copy of IMG_0005 whose DLS irradiance is multiplied by factor in every band: the
+        image IMG_0010 has 1.13 times the irradiance of IMG_0005 (the DLS ratio is 0.884)
+        """
+        images = self.folder / (name + '_images')
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            shutil.copy(path, images / path.name)
+            if path.name.startswith('IMG_0005'):
+                shutil.copy(path, images / path.name.replace('IMG_0005', 'IMG_0007'))
+        original = wf._read_capture
+
+        def changed(images_folder, capture, bands, exiftool_path, *arguments):
+            objects = original(images_folder, capture, bands, exiftool_path, *arguments)
+            for image in objects.values():
+                if capture == 'IMG_0007':
+                    image.metadata['XMP:HorizontalIrradiance'] = float(image.metadata['XMP:HorizontalIrradiance']) * factor
+                if capture == remove_irradiance_of:
+                    image.metadata['XMP:HorizontalIrradiance'] = None
+            return objects
+
+        values = {'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / name),
+                  'INPUTS.reference_panel_capture': 'IMG_0005', 'INPUTS.reference_panel_capture_after': 'IMG_0007',
+                  'INPUTS.image_captures': 'IMG_0010', 'PANEL.panels_used': mode}
+        values.update(changes)
+        with mock.patch.object(wf, '_read_capture', changed):
+            return wf.run(values, ROOT)
+
+    def test_the_panel_with_the_light_of_the_image_is_the_one_that_is_used(self):
+        near = self.run_with_a_second_light('light_near', 'nearest_illumination', 1.13)
+        self.assertEqual(near['status'], 'completed', near['errors'])
+        panels = near['captures']['IMG_0010']['panels']
+        self.assertEqual((panels['used'], panels['weight_of_the_second_panel']), ('nearest_illumination', 1.0))
+        self.assertGreater(panels['light_difference']['first'], 0.1)                  # IMG_0005 had 12 % less light
+        self.assertLess(panels['light_difference']['second'], 0.01)
+        soft = self.run_with_a_second_light('light_soft', 'interpolate_illumination', 1.13)
+        weight = soft['captures']['IMG_0010']['panels']['weight_of_the_second_panel']
+        first, second = (soft['captures']['IMG_0010']['panels']['light_difference'][key] for key in ('first', 'second'))
+        self.assertAlmostEqual(weight, first ** 2 / (first ** 2 + second ** 2))
+        self.assertGreater(weight, 0.99)
+        provenance = json.loads((self.folder / 'light_near' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(provenance['bands'][0]['second_panel_weight'], 1.0)
+        self.assertEqual(sorted(provenance['checks']['panel_light_difference']), ['first', 'second'])
+
+    def test_a_panel_with_other_light_is_not_used(self):
+        far = self.run_with_a_second_light('light_far', 'nearest_illumination', 0.5)
+        self.assertEqual(far['captures']['IMG_0010']['panels']['weight_of_the_second_panel'], 0.0)
+        soft = self.run_with_a_second_light('light_far_soft', 'interpolate_illumination', 0.5)
+        panels = soft['captures']['IMG_0010']['panels']
+        first, second = panels['light_difference']['first'], panels['light_difference']['second']
+        self.assertGreater(second, 0.5)
+        self.assertAlmostEqual(panels['weight_of_the_second_panel'], first ** 2 / (first ** 2 + second ** 2))
+        self.assertLess(panels['weight_of_the_second_panel'], 0.05)
+
+    def test_with_the_light_of_the_image_the_dls_and_the_panel_alone_give_the_same_reflectance(self):
+        result = self.run_with_a_second_light('light_dls', 'nearest_illumination', 1.13, **{'CORRECTION.use_dls': True})
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        for number in range(1, 7):
+            with_dls = tifffile.imread(self.folder / 'light_dls' / f'IMG_0010_{number}.tif')
+            panel_only = tifffile.imread(self.folder / 'panel_only' / f'IMG_0010_{number}.tif')
+            self.assertTrue(np.allclose(with_dls, panel_only, rtol=0.01, atol=0), number)    # the DLS ratio is about 1
+
+    def test_a_capture_far_from_every_panel_is_flagged_and_the_limit_can_be_changed(self):
+        quiet = self.run_with_a_second_light('light_default', 'nearest_illumination', 0.5)
+        self.assertFalse([flag for flag in quiet['flags'] if 'nearest panel capture' in flag])    # 12 % is within 15 %
+        strict = self.run_with_a_second_light('light_strict', 'nearest_illumination', 0.5,
+                                              **{'CHECKS.panel_illumination_tolerance': 0.05})
+        flags = [flag for flag in strict['flags'] if 'nearest panel capture' in flag]
+        self.assertEqual(len(flags), 1)
+        self.assertRegex(flags[0], r'^Light more than 5 % different from the nearest panel capture in 1 of 1 capture '
+                                   r'\(difference 12\.\d %\): IMG_0010$')
+        self.assertIn('panel_illumination', [group['criterion'] for group in strict['flag_groups']])
+        self.assertEqual(rct.DLS_CHECKS['panel_illumination_tolerance'], 0.15)                    # restored after the run
+
+    def test_the_summary_says_which_panels_were_used(self):
+        result = self.run_with_a_second_light('light_summary', 'nearest_illumination', 1.13)
+        self.assertEqual(result['summary']['panel_weights'], {'mode': 'nearest_illumination', 'first_only': 0,
+                                                              'second_only': 1, 'both': 0})
+        self.assertIn('Panels (nearest_illumination): the first panel alone in 0 capture(s), the second alone in 1, both in 0.',
+                      wf.summary_lines(result))
+        soft = self.run_with_a_second_light('light_summary_soft', 'interpolate_illumination', 0.9)
+        self.assertEqual(soft['summary']['panel_weights']['both'], 1)
+        self.assertIsNone(self.panel_only['summary']['panel_weights'])                          # one panel: nothing to say
+
+    def test_the_dls_data_are_needed_to_compare_the_light(self):
+        result = self.run_with_a_second_light('light_missing', 'nearest_illumination', 1.0, remove_irradiance_of='IMG_0010')
+        self.assertEqual(result['status'], 'failed')
+        error = result['captures']['IMG_0010']['errors'][0]
+        self.assertIn('IMG_0010', error)
+        self.assertIn('HorizontalIrradiance', error)
 
     def test_progress_reports_the_stages_in_order(self):
         events = []

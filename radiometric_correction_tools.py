@@ -186,7 +186,9 @@ DLS_CHECKS = { 'ratio_range': (0.5, 2.0),            # plausible E_panel / E_ima
                 'band_ratio_tolerance': 0.03,         # largest relative departure of a band from the median ratio
                 'max_sun_angle_discrepancy_deg': 10.0,  # see Image.dls_sun_angle_discrepancy_deg
                 'jump_threshold': 0.10,               # relative change between consecutive captures
-                'panel_drift_tolerance': 0.05 }       # relative change of the panel factor (and of E_DLS / E_panel_estimate)
+                'panel_drift_tolerance': 0.05,        # relative change of the panel factor (and of E_DLS / E_panel_estimate)
+                'panel_illumination_tolerance': 0.15 }  # how different the light of a capture may be from that of the nearest panel
+                                                        # (see illumination_distance; 0.15 is about 15 %)
                                                       # between two panel captures
 
 
@@ -471,7 +473,8 @@ def _jsonable(value):
 
 
 # Two panel captures (before and after the flight)
-PANELS_USED = ('first', 'mean', 'interpolate_time', 'nearest_time')
+PANELS_USED = ('first', 'mean', 'interpolate_time', 'nearest_time', 'nearest_illumination', 'interpolate_illumination')
+ILLUMINATION_POWER = 2         # interpolate_illumination weighs each panel by 1 / distance ** ILLUMINATION_POWER
 
 
 def capture_time(metadata, name='image'):
@@ -484,14 +487,48 @@ def capture_time(metadata, name='image'):
         raise MetadataError(f"{name}: EXIF:DateTimeOriginal is missing or not a date: {text!r}")
 
 
-def panel_weight(mode, image_time=None, first_time=None, second_time=None):
+def illumination_distance(image_irradiances, panel_irradiances):
+    """
+    How different the light of a capture is from the light of a panel capture: the root mean square, over the bands, of
+    the natural logarithm of the ratio of the horizontal irradiances of the DLS (so 0.1 is about a 10 % difference, in the
+    level of the light and in how it is spread over the bands; 0 is the same light)
+    Inputs: {band: irradiance} of the capture and of the panel capture (the bands that are in both are compared)
+    Outputs: the distance; MetadataError if there is no band in common or an irradiance is not positive
+    """
+    bands = [band for band in image_irradiances if band in panel_irradiances]
+    if not bands:
+        raise MetadataError("the capture and the panel capture have no band in common to compare their light")
+    ratios = []
+    for band in bands:
+        image, panel = image_irradiances[band], panel_irradiances[band]
+        if not (np.isfinite(image) and np.isfinite(panel) and image > 0 and panel > 0):
+            raise MetadataError(f"band '{band}': the irradiances to compare the light must be positive numbers, "
+                                f"got {image!r} and {panel!r}")
+        ratios.append(np.log(image / panel))
+    return float(np.sqrt(np.mean(np.square(ratios))))
+
+
+def panel_weight(mode, image_time=None, first_time=None, second_time=None, distances=None):
     """
     Weight of the second panel in the calibration of an image
     mode: 'first' (0: only the first panel), 'mean' (0.5), 'interpolate_time' (the position in time of the image between
-    the two panel captures, from 0 at the first to 1 at the second; outside them the nearest panel is used) or
+    the two panel captures, from 0 at the first to 1 at the second; outside them the nearest panel is used),
     'nearest_time' (0 or 1: the panel captured closest in time to the image; the first one if they are equally close or
-    were captured at the same time)
+    were captured at the same time), 'nearest_illumination' (0 or 1: the panel whose light is the most like that of the
+    image, the first one if they are equally like it) or 'interpolate_illumination' (both panels, each weighted by
+    1 / distance ** 2, so a panel with the light of the image counts alone, and the weight changes smoothly with the
+    light, without steps; 0.5 if both distances are the same, also if both are 0)
+    distances: (distance to the first panel, distance to the second panel) from illumination_distance, for the modes by
+    illumination
     """
+    if mode in ('nearest_illumination', 'interpolate_illumination'):
+        if distances is None:
+            raise ValueError(f"panels_used {mode!r} needs the distances of the light of the image to the light of the panels")
+        first, second = distances
+        if mode == 'nearest_illumination':
+            return 1.0 if second < first else 0.0
+        first, second = first ** ILLUMINATION_POWER, second ** ILLUMINATION_POWER
+        return 0.5 if first + second == 0 else float(first / (first + second))
     if mode == 'first':
         return 0.0
     if mode == 'mean':

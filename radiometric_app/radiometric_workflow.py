@@ -262,6 +262,13 @@ FIELDS = [
                   "- interpolate_time: each image is weighted by its time between the two panel captures (times from "
                   "EXIF:DateTimeOriginal).\n"
                   "- nearest_time: each image uses the panel captured closest in time to it.\n"
+                  "- nearest_illumination: each image uses the panel whose light was the most like its own, compared "
+                  "with the DLS irradiance of all the bands (their level and how it is spread over the bands). It needs "
+                  "the DLS data in the images and in both panel captures, but not the DLS correction.\n"
+                  "- interpolate_illumination: the same comparison, but both panels are used, each weighted by "
+                  "1 / (difference of the light) squared: a panel with the light of the image counts alone, and the "
+                  "weight changes smoothly with the light, so there is no step between neighbouring images that would "
+                  "use different panels.\n"
                   "This choice changes the result: it decides which panel data are used.\n"
                   "With the DLS correction each panel is used with its own DLS irradiance, so the result does not "
                   "depend on a 'reference panel' of the DLS: only the panels that are used matter.")},
@@ -332,6 +339,13 @@ FIELDS = [
                   "one of the photos.\n"
                   "Only used with a second panel capture. A flag does not change the result; whether the second panel "
                   "also calibrates the images is chosen in 'Panels used when there are two'.")},
+    {'key': 'CHECKS.panel_illumination_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
+     'default': rct.DLS_CHECKS['panel_illumination_tolerance'], 'label': 'Light of the panel: largest difference',
+     'help': ("Only used when the panels are chosen by their light (nearest_illumination or interpolate_illumination). "
+                  "Largest difference accepted (0.15 = about 15 %) between the DLS irradiance of an image and that of the "
+                  "panel that is the most like it. A capture beyond it is flagged: no panel was photographed in light "
+                  "like its own, and another panel capture under that light would help. A flag does not change the "
+                  "result.")},
     {'key': 'CHECKS.max_camera_tilt_deg', 'group': 'Acquisition geometry (limits)', 'kind': 'float', 'default': rct.GEOMETRY_CHECKS['max_camera_tilt_deg'],
      'label': 'Largest camera tilt (deg)',
      'help': ("Largest angle accepted between the optical axis of the camera and the vertical, in degrees, in the "
@@ -629,7 +643,8 @@ def validate_config(config, root='.'):
     if config['PANEL.saturation_threshold'] <= 0:
         problems.append("PANEL.saturation_threshold must be positive")
     for key in ('CHECKS.band_ratio_tolerance', 'CHECKS.max_sun_angle_discrepancy_deg', 'CHECKS.jump_threshold',
-                'CHECKS.panel_drift_tolerance', 'CHECKS.ratio_range_min', 'CHECKS.ratio_range_max'):
+                'CHECKS.panel_drift_tolerance', 'CHECKS.panel_illumination_tolerance', 'CHECKS.ratio_range_min',
+                'CHECKS.ratio_range_max'):
         if config[key] <= 0:
             problems.append(f"{key} must be positive")
     if config['CHECKS.ratio_range_min'] >= config['CHECKS.ratio_range_max']:
@@ -732,7 +747,8 @@ def run(config, root='.', progress=None):
                                'ratio_range': (config['CHECKS.ratio_range_min'], config['CHECKS.ratio_range_max']),
                                'max_sun_angle_discrepancy_deg': config['CHECKS.max_sun_angle_discrepancy_deg'],
                                'jump_threshold': config['CHECKS.jump_threshold'],
-                               'panel_drift_tolerance': config['CHECKS.panel_drift_tolerance']})
+                               'panel_drift_tolerance': config['CHECKS.panel_drift_tolerance'],
+                               'panel_illumination_tolerance': config['CHECKS.panel_illumination_tolerance']})
         rct.GEOMETRY_CHECKS.update({key: config['CHECKS.' + key] for key in geometry_limits})
         _run_stages(config, root, results_folder, result, progress)
     except Exception as error:   # the result must always say what happened
@@ -750,14 +766,35 @@ def run(config, root='.', progress=None):
     return result
 
 
+def _light(images, name):
+    """ {band: DLS irradiance} of a capture; MetadataError that names the capture if a band has none """
+    try:
+        return {band: image.dls_irradiance() for band, image in images.items()}
+    except rct.MetadataError as error:
+        raise rct.MetadataError(f"{name}: {error}") from error
+
+
 def _second_panel_weight(mode, second_present, image, first_panel, second_panel, names):
-    """ Weight of the second panel for one image (see rct.panel_weight); names are those of the image and the two panels """
+    """
+    Weight of the second panel for one image (see rct.panel_weight)
+    Inputs: the mode, whether there is a second panel, and the capture, the first panel and the second panel as
+            {band: rct.Image}; names are those of the three captures
+    Outputs: (weight, distances), where distances is {'first': ..., 'second': ...}, how different the light of the image is
+             from that of each panel (see rct.illumination_distance), for the modes by illumination, and None for the others
+    """
     if not second_present or mode == 'first':
-        return 0.0
+        return 0.0, None
+    if mode in ('nearest_illumination', 'interpolate_illumination'):
+        light = _light(image, names[0])
+        distances = (rct.illumination_distance(light, _light(first_panel, names[1])),
+                     rct.illumination_distance(light, _light(second_panel, names[2])))
+        return rct.panel_weight(mode, distances=distances), {'first': distances[0], 'second': distances[1]}
     if mode not in ('interpolate_time', 'nearest_time'):
-        return rct.panel_weight(mode)
-    return rct.panel_weight(mode, rct.capture_time(image.metadata, names[0]), rct.capture_time(first_panel.metadata, names[1]),
-                            rct.capture_time(second_panel.metadata, names[2]))
+        return rct.panel_weight(mode), None
+    band = next(iter(image))
+    return rct.panel_weight(mode, rct.capture_time(image[band].metadata, names[0]),
+                            rct.capture_time(first_panel[band].metadata, names[1]),
+                            rct.capture_time(second_panel[band].metadata, names[2])), None
 
 
 def _read_capture(images_folder, name, bands, exiftool_path, pattern=None, ignored=()):
@@ -842,11 +879,12 @@ def _run_stages(config, root, results_folder, result, progress):
                 objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
                 ratios = rct.capture_dls_ratios(panels['before'], objects) if use_dls else {}
                 second = panels.get('after')
-                weight = _second_panel_weight(config['PANEL.panels_used'], second is not None, objects[bands[0]],
-                                              panels['before'][bands[0]], second[bands[0]] if second else None,
-                                              (name, panel_name, panel_after_name))
+                weight, distances = _second_panel_weight(config['PANEL.panels_used'], second is not None, objects,
+                                                         panels['before'], second, (name, panel_name, panel_after_name))
                 entry['panels'] = {'used': config['PANEL.panels_used'] if second is not None else 'first',
                                    'weight_of_the_second_panel': weight}
+                if distances:
+                    entry['panels']['light_difference'] = distances
                 records = []
                 for band in bands:
                     image, panel = objects[band], panels['before'][band]
@@ -870,6 +908,14 @@ def _run_stages(config, root, results_folder, result, progress):
                 checks['flags'] = list(checks['flags']) + geometry['flags']
                 checks['unavailable'] = list(checks['unavailable']) + geometry['unavailable']
                 flags, details = list(checks['flags']), checks['flag_details'] + geometry['flag_details']
+                if distances:
+                    checks['panel_light_difference'] = distances
+                    nearest, tolerance = min(distances.values()), rct.DLS_CHECKS['panel_illumination_tolerance']
+                    if nearest > tolerance:
+                        flags.append(f"Light of the capture differs {100 * nearest:.0f} % from that of the nearest panel "
+                                     f"capture (limit {100 * tolerance:g} %)")
+                        details.append({'criterion': 'panel_illumination', 'scope': 'image', 'band': None,
+                                        'value': nearest, 'limit': tolerance})
                 checked += 1
                 entry['geometry'] = rct._jsonable(geometry['values'])
                 entry['dls'] = rct._jsonable({key: checks[key] for key in ('median_ratio',) if key in checks})
@@ -919,7 +965,9 @@ FLAG_CRITERIA = (                                # (criterion, label from the li
     ('dls_tilt', lambda limit: f"DLS tilt over {limit:g} deg", 'tilt of at least', ' deg', 1),
     ('ratio_range', lambda limit: f"DLS ratio outside {limit[0]:g} to {limit[1]:g}", 'ratio', '', 3),
     ('band_ratio_departure', lambda limit: f"DLS ratio of a band more than {100 * limit:g} % from the median of the bands",
-     'departure', ' %', 1))
+     'departure', ' %', 1),
+    ('panel_illumination', lambda limit: f"Light more than {100 * limit:g} % different from the nearest panel capture",
+     'difference', ' %', 1))
 
 
 def capture_list_text(names, order, texts=None):
@@ -958,7 +1006,7 @@ def group_flag_events(events, total, order):
         if not found:
             continue
         captures = sorted({capture for capture, _ in found}, key=order.index)
-        scale = 100 if criterion == 'band_ratio_departure' else 1
+        scale = 100 if criterion in ('band_ratio_departure', 'panel_illumination') else 1
         values = [abs(detail['value']) * scale for _, detail in found]
         bands = sorted({detail['band'] for _, detail in found if detail['band']})
         low, high = min(values), max(values)
@@ -1034,8 +1082,15 @@ def build_summary(result, config):
             images[name] = stats
     panels = {label: dict(result['panel'][label]['geometry'], capture=result['panel'][label]['capture'])
               for label in ('before', 'after') if result['panel'].get(label, {}).get('geometry')}
+    weights = [entry['panels']['weight_of_the_second_panel'] for entry in done if entry.get('panels')]
+    mode = config['PANEL.panels_used']
+    panel_weights = None
+    if weights and mode != 'first' and 'after' in result['panel']:
+        panel_weights = {'mode': mode, 'first_only': sum(weight == 0 for weight in weights),
+                         'second_only': sum(weight == 1 for weight in weights),
+                         'both': sum(0 < weight < 1 for weight in weights)}
     return {'captures': len(result['captures']), 'corrected': len(done), 'files': len(result['outputs']),
-            'flags': len(result['flags']),
+            'flags': len(result['flags']), 'panel_weights': panel_weights,
             'irradiance_changes': sum(len(events) for events in result.get('irradiance_changes', {}).values()),
             'limits': {'camera_tilt_deg': tilt_limit, 'heading_tolerance_deg': tolerance, 'dls_tilt_deg': dls_limit,
                        'dls_ratio': [low, high]},
@@ -1058,6 +1113,10 @@ def summary_lines(result):
                      f"{number(panel.get('heading_to_sun_deg'))} deg from the sun (0 = facing it, 180 = the back to it); "
                      f"DLS tilt {number(panel.get('dls_tilt_deg'), 1)} deg; sun elevation "
                      f"{number(panel.get('sun_elevation_deg'))} deg.")
+    used = summary.get('panel_weights')
+    if used:
+        lines.append(f"Panels ({used['mode']}): the first panel alone in {used['first_only']} capture(s), the second alone in "
+                     f"{used['second_only']}, both in {used['both']}.")
     images, limits = summary['images'], summary['limits']
     descriptions = (
         ('camera_tilt_deg', 1, "camera tilt (deg)", f"limit {limits['camera_tilt_deg']:g}"),

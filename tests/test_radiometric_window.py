@@ -707,7 +707,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.frame.scroll_pages['CORRECTION'].body.winfo_children()[0].cget('text'),
                          'DLS (Downwelling Light Sensor)')
         keys = ['CORRECTION.use_dls'] + [field['key'] for field in wf.FIELDS if field['key'].startswith('CHECKS.')]
-        self.assertEqual(len(keys), 11)
+        self.assertEqual(len(keys), 12)
         for key in keys:
             self.assertIn(key, self.frame.variables)
         for key in keys[1:]:
@@ -839,7 +839,8 @@ class WindowTests(unittest.TestCase):
     def test_the_use_of_two_panels_is_a_choice_in_the_panel_page(self):
         self.assertTrue(self.inside(self.frame.entries['PANEL.panels_used'], 'PANEL'))
         self.assertEqual(self.frame.entries['PANEL.panels_used'].winfo_class(), 'TCombobox')
-        self.assertEqual(list(self.frame.entries['PANEL.panels_used'].cget('values')), ['first', 'mean', 'interpolate_time', 'nearest_time'])
+        self.assertEqual(list(self.frame.entries['PANEL.panels_used'].cget('values')), ['first', 'mean', 'interpolate_time', 'nearest_time',
+                                                                                   'nearest_illumination', 'interpolate_illumination'])
         self.frame.set_value('PANEL.panels_used', 'mean')
         _, problems = self.frame.problems()
         self.assertTrue(any('no second panel capture' in problem for problem in problems))

@@ -218,6 +218,17 @@ class DialogTests(unittest.TestCase):
         self.assertTrue(any(line.startswith('Detected:') for line in dialog.message_lines()))
         self.assertEqual(dialog.use_button.instate(['disabled']), False)
 
+    def test_a_file_that_was_just_chosen_has_its_format_detected_when_the_dialog_opens(self):
+        from unittest import mock
+        path = write_curve(self.folder.name, header=True, separator=';', decimal=',')
+        with mock.patch.object(self.root, 'wait_window'), mock.patch.object(psd.ImportDialog, 'detect') as detect:
+            psd.import_spectrum(self.root, str(path), dict(delimiter='comma'), None, 0.5, detect=True)
+            detect.assert_called_once_with()
+            detect.reset_mock()
+            psd.import_spectrum(self.root, str(path), dict(delimiter='comma'), None, 0.5)             # the saved format is kept
+            psd.import_spectrum(self.root, '', None, None, 0.5, detect=True)                          # no file: nothing to detect
+            detect.assert_not_called()
+
     def test_every_reading_option_is_in_the_dialog(self):
         dialog = self.open(write_curve(self.folder.name))
         self.assertEqual(set(dialog.format_vars), set(ps.DEFAULT_FORMAT))

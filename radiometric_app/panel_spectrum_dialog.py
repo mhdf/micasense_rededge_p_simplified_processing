@@ -538,9 +538,10 @@ class ImportDialog:
                                font=('Segoe UI', 8))
 
 
-def import_spectrum(parent, path='', fmt=None, windows=None, min_coverage=0.5):
+def import_spectrum(parent, path='', fmt=None, windows=None, min_coverage=0.5, detect=False):
     """
     Open the dialog above a window and wait for the user
+    detect: guess the format from the file when the dialog opens (for a file that was just chosen), instead of using fmt
     Outputs: the dictionary described at the top of this file, or None if the user cancelled
     """
     import tkinter as tk
@@ -549,6 +550,8 @@ def import_spectrum(parent, path='', fmt=None, windows=None, min_coverage=0.5):
     window.transient(parent)
     apply_dark_theme(window)
     dialog = ImportDialog(window, ImportSession(path, fmt, windows, min_coverage))
+    if detect and path:
+        dialog.detect()
     window.grab_set()
     parent.wait_window(window)
     return dialog.result

@@ -496,10 +496,12 @@ class RadiometricFrame:
                     entry = ttk.Entry(line, textvariable=variable, width=12 if kind in ('float', 'int') else 56)
                 entry.pack(side='left', fill='x', expand=kind in ('folder', 'file', 'text'))
                 if kind in ('folder', 'file'):
-                    browse = ttk.Button(line, text='Browse...', command=lambda key=key, kind=kind: self._browse(key, kind))
+                    command = self.browse_spectrum if key == 'PANEL.spectral_file' else (
+                        lambda key=key, kind=kind: self._browse(key, kind))
+                    browse = ttk.Button(line, text='Browse...', command=command)
                     browse.pack(side='left', padx=(6, 0))
                     if key == 'PANEL.spectral_file':
-                        importer = ttk.Button(line, text='Import...', command=self.import_spectrum)
+                        importer = ttk.Button(line, text='Preview and format...', command=self.import_spectrum)
                         importer.pack(side='left', padx=(6, 0))
                         self.source_widgets['spectral_file'].extend([entry, browse, importer])
                 if key in CAPTURE_KEYS:
@@ -887,8 +889,27 @@ class RadiometricFrame:
                 self._spectral_info = ('Read from the spectral file', '\n'.join(lines))
         self.help_panel.refresh()
 
-    def import_spectrum(self):
-        """ Open the dialog to choose and preview the spectral response file, and apply what the user accepts """
+    def browse_spectrum(self):
+        """
+        Choose the spectral response file and open the import window on it, with its format detected; the choice (the
+        path and the format) is applied only when it is accepted there, so cancelling leaves everything as it was
+        """
+        from tkinter import filedialog
+        current = self.model.get('PANEL.spectral_file')
+        start = wf.resolve_path(self.root_folder, current) if current else self.root_folder
+        chosen = filedialog.askopenfilename(initialdir=start if start.is_dir() else start.parent,
+                                            filetypes=(('CSV files', '*.csv'), ('All files', '*.*')))
+        if not chosen:
+            return
+        known = wf.resolve_path(self.root_folder, current) if current else None
+        same = known is not None and known.is_file() and Path(chosen).resolve() == known.resolve()
+        self.import_spectrum(chosen, detect=not same)         # the file that is already the source keeps its format
+
+    def import_spectrum(self, path=None, detect=False):
+        """
+        Open the dialog to preview the spectral response file and its format, and apply what the user accepts
+        path: the file to show (default: the one of the configuration); detect: guess its format when the dialog opens
+        """
         from .panel_spectrum_dialog import import_spectrum
         config, errors = self.model.config()
         try:
@@ -897,9 +918,9 @@ class RadiometricFrame:
             fmt = None
         windows = {band: (center, config['PANEL.band_bandwidths'].get(band, 1.0))
                    for band, center in config['PANEL.band_center_wavelengths'].items()}
-        path = config['PANEL.spectral_file']
+        path = path or config['PANEL.spectral_file']
         result = import_spectrum(self.parent.winfo_toplevel(), str(wf.resolve_path(self.root_folder, path)) if path else '',
-                                 fmt, windows, config['PANEL.spectral_min_coverage'])
+                                 fmt, windows, config['PANEL.spectral_min_coverage'], detect=detect)
         if result is not None:
             self.apply_import(result)
 

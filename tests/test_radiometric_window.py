@@ -471,6 +471,48 @@ class WindowTests(unittest.TestCase):
             self.frame.import_spectrum()                                   # cancelled: nothing changes
         self.assertEqual(self.frame.model.config()[0]['PANEL.reflectance_source'], 'spectral_file')
 
+    def spectral_buttons(self):
+        entry, browse, importer = self.frame.source_widgets['spectral_file'][-3:]
+        return browse, importer
+
+    def test_browsing_for_the_spectral_file_opens_the_import_dialog_on_it_with_the_format_detected(self):
+        self.frame.set_value('PANEL.reflectance_source', 'spectral_file')           # the buttons belong to this source
+        browse, importer = self.spectral_buttons()
+        self.assertEqual((browse.cget('text'), importer.cget('text')), ('Browse...', 'Preview and format...'))
+        path = self.write_spectrum(level=0.48)
+        answer = self.result_of_the_dialog('use_file', path=path)
+        with mock.patch('tkinter.filedialog.askopenfilename', return_value=str(path)), \
+                mock.patch('radiometric_app.panel_spectrum_dialog.import_spectrum', return_value=None) as dialog:
+            browse.invoke()                                                    # cancelled in the dialog: nothing changes
+        self.assertEqual(dialog.call_args[0][1], str(path))
+        self.assertIs(dialog.call_args[1]['detect'], True)
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['PANEL.spectral_file'], '')
+        with mock.patch('tkinter.filedialog.askopenfilename', return_value=str(path)), \
+                mock.patch('radiometric_app.panel_spectrum_dialog.import_spectrum', return_value=answer):
+            browse.invoke()                                                    # accepted: the path and the format together
+        config = self.frame.model.config()[0]
+        self.assertEqual(Path(config['PANEL.spectral_file']).name, 'panel.csv')
+        self.assertEqual(config['PANEL.reflectance_source'], 'spectral_file')
+
+    def test_the_file_that_is_already_the_source_keeps_its_format_and_a_cancelled_choice_does_nothing(self):
+        self.frame.set_value('PANEL.reflectance_source', 'spectral_file')
+        browse, importer = self.spectral_buttons()
+        path = self.write_spectrum(level=0.48)
+        self.frame.set_value('PANEL.spectral_file', str(path))
+        with mock.patch('tkinter.filedialog.askopenfilename', return_value=str(path)), \
+                mock.patch('radiometric_app.panel_spectrum_dialog.import_spectrum', return_value=None) as dialog:
+            browse.invoke()
+        self.assertIs(dialog.call_args[1]['detect'], False)                    # the same file: the saved format is used
+        with mock.patch('tkinter.filedialog.askopenfilename', return_value=''), \
+                mock.patch('radiometric_app.panel_spectrum_dialog.import_spectrum') as dialog:
+            browse.invoke()                                                    # the file dialog was cancelled
+        dialog.assert_not_called()
+        with mock.patch('radiometric_app.panel_spectrum_dialog.import_spectrum', return_value=None) as dialog:
+            importer.invoke()                                                  # the preview of the file that is chosen
+        self.assertEqual(dialog.call_args[0][1], str(path))
+        self.assertIs(dialog.call_args[1]['detect'], False)
+
     def test_a_profile_saves_every_value_and_restores_them(self):
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0007')
         self.frame.set_value('CORRECTION.use_dls', True)

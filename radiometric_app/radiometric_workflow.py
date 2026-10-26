@@ -198,8 +198,9 @@ FIELDS = [
      'label': 'Spectral response file',
      'help': ("The spectral response of the panel: its reflectance at each wavelength, in a .csv file provided by "
                   "the manufacturer.\n"
-                  "Import... opens a dialog to choose the file and how to read it (delimiter, header rows, units, ...), "
-                  "with a preview and a plot.\n"
+                  "Browse... chooses the file and opens a window with a preview and a plot, where its format is detected "
+                  "and can be changed (delimiter, header rows, units, ...); nothing changes until the file is accepted "
+                  "there. Preview and format... opens the same window for the file that is already chosen.\n"
                   "The reflectance of a band is the mean of the curve over its spectral window: the center of the band "
                   "plus or minus half of its bandwidth, from the table of the bands.")},
     {'key': 'PANEL.spectral_delimiter', 'kind': 'choice', 'choices': list(panel_spectrum.DELIMITERS), 'dialog': True,

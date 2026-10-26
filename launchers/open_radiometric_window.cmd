@@ -1,13 +1,9 @@
 @echo off
-rem Opens the radiometric correction window (no console; use the _debug launcher to see errors)
-rem Edit PYTHON_DIR if the Python 3.10 environment with Tkinter, OpenCV, pyzbar and scikit-image is elsewhere.
-set "PYTHON_DIR=C:\path\to\your\Python310"
-if not exist "%PYTHON_DIR%\pythonw.exe" (
-    echo Python 3.10 window executable was not found: "%PYTHON_DIR%\pythonw.exe"
-    echo Edit PYTHON_DIR in this launcher.
-    pause
-    exit /b 1
-)
+rem Opens the radiometric correction window (no console; use the _debug launcher to see errors).
+rem The Python is the one saved in config\python_environment.json: select_python.cmd chooses it, and this launcher asks for it
+rem the first time. Before the window opens the computer is checked, and a message says what to install if something is missing.
 rem The project folder (the one above this launchers folder) is where the program runs and where the relative paths start
 cd /d "%~dp0.."
-start "Radiometric correction" "%PYTHON_DIR%\pythonw.exe" -m radiometric_app.radiometric_window --root .
+call "%~dp0_python.cmd"
+if errorlevel 1 exit /b 1
+start "Radiometric correction" "%PYTHONW_EXE%" -m radiometric_app window --root .

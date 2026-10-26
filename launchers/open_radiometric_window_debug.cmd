@@ -1,15 +1,10 @@
 @echo off
 rem Opens the radiometric correction window keeping this console open, to see messages and errors
-rem Edit PYTHON_DIR if the Python 3.10 environment with Tkinter, OpenCV, pyzbar and scikit-image is elsewhere.
-set "PYTHON_DIR=C:\path\to\your\Python310"
-if not exist "%PYTHON_DIR%\python.exe" (
-    echo Python 3.10 executable was not found: "%PYTHON_DIR%\python.exe"
-    echo Edit PYTHON_DIR in this launcher.
-    pause
-    exit /b 1
-)
+rem (the Python is the one of config\python_environment.json, see select_python.cmd)
 cd /d "%~dp0.."
-"%PYTHON_DIR%\python.exe" -X faulthandler -m radiometric_app.radiometric_window --root .
+call "%~dp0_python.cmd"
+if errorlevel 1 exit /b 1
+"%PYTHON_EXE%" -X faulthandler -m radiometric_app window --root .
 echo.
-echo The window was closed (exit code %ERRORLEVEL%).
+echo The window was closed, exit code %ERRORLEVEL%.
 pause

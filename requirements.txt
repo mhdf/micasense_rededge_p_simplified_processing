@@ -1,0 +1,16 @@
+# Python packages of the radiometric correction program. Python 3.10 or newer, with Tkinter (it comes with the Python of
+# python.org and conda; Linux: sudo apt install python3-tk). Install with:  python -m pip install -r requirements.txt
+# The versions are the ones the program was tested with (Python 3.10.20, Windows); older versions were not tested.
+#
+# ExifTool, the program that reads the metadata of the images, is NOT a Python package: see "Installing on a new computer"
+# in README.md. pyzbar needs the zbar library on macOS (brew install zbar) and Linux (sudo apt install libzbar0); the
+# Windows package brings it.
+numpy>=2.2.6
+opencv-python>=4.12.0,<5
+pillow>=12.0.0
+tifffile>=2025.5.10
+matplotlib>=3.10.8
+scikit-image>=0.25.2
+shapely>=2.1.2
+pyzbar>=0.1.9
+PyExifTool>=0.5.6

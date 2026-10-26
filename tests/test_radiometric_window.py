@@ -174,6 +174,29 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(frame.model.overrides(), {})
         self.assertTrue(any('was not used' in line for line in frame.log_lines()))
 
+    def test_check_environment_lists_the_computer_in_the_log(self):
+        def entry(name, status='ok', fix=None):
+            return {'name': name, 'status': status, 'version': '1.0', 'detail': 'what for', 'fix': fix, 'level': 'required'}
+        button = self.frame.buttons['environment']
+        self.assertEqual(button.cget('text'), 'Check environment')
+        items = [entry('Python'), entry('shapely', 'missing', 'pip install shapely')]
+        with mock.patch.object(rw.environment, 'check_environment', return_value=items) as check:
+            self.frame.check_environment()
+            self.assertIn('disabled', button.state())                                  # while it is asked
+            self.pump(lambda: self.frame.summary.cget('text') != '')
+        self.assertEqual(check.call_args.kwargs['deep'], True)
+        self.assertNotIn('disabled', button.state())
+        lines = self.frame.log_lines()
+        self.assertTrue(any(line.startswith('ok       Python') for line in lines))
+        self.assertTrue(any(line.startswith('MISSING  shapely') for line in lines))
+        self.assertTrue(any('pip install shapely' in line for line in lines))
+        self.assertIn('1 thing(s) to install or fix', self.frame.summary.cget('text'))
+        with mock.patch.object(rw.environment, 'check_environment', return_value=items[:1]):
+            self.frame.check_environment()
+            self.pump(lambda: self.frame.summary.cget('text') == 'The computer is ready.')
+        self.assertIn('Everything the program needs is in place.', self.frame.log_lines())
+        self.assertFalse(any('MISSING' in line for line in self.frame.log_lines()))    # the log was cleared first
+
     def test_check_inputs_accepts_the_example_and_names_the_problems(self):
         config, problems = self.frame.check_inputs()
         self.assertEqual(problems, [])
@@ -198,7 +221,7 @@ class WindowTests(unittest.TestCase):
         lines = '\n'.join(self.frame.log_lines())
         for stage in wf.STAGES[:4]:
             self.assertIn(f'[{stage}]', lines)
-        self.assertIn('FLAG: IMG_0010', lines)
+        self.assertIn('FLAG: DLS tilt over 10 deg in 1 of 1 capture', lines)
         self.assertIn('Status: completed. 6 image(s) written', self.frame.summary.cget('text'))
         self.assertEqual(str(self.frame.buttons['run'].cget('state')), 'normal')
         self.assertEqual(len(list(Path(self.results('run')).glob('IMG_0010_*.tif'))), 6)
@@ -708,7 +731,7 @@ class WindowTests(unittest.TestCase):
         self.assertLess(order.index('INPUTS.reference_panel_capture_after'), order.index('PANEL.manual_regions_file'))
         self.assertLess(order.index('PANEL.manual_regions_file'), order.index('INPUTS.image_captures'))
         run_page_buttons = [child.cget('text') for child in self.frame.pages['RUN'].winfo_children()[1].winfo_children()]
-        self.assertEqual(run_page_buttons, ['Check inputs', 'Run', 'Open results folder'])
+        self.assertEqual(run_page_buttons, ['Check inputs', 'Check environment', 'Run', 'Open results folder'])
 
     def test_the_inputs_page_has_headings_for_its_groups(self):
         headings = [child.cget('text') for child in self.frame.scroll_pages['INPUTS'].body.winfo_children()
@@ -1011,7 +1034,7 @@ class HelpColumnTests(unittest.TestCase):
         row = self.frame.band_table.rows[0]['widgets']['name']
         self.assertEqual(panel.explanation_of(row)[0], 'Bands of the camera')
         self.assertEqual(panel.explanation_of(self.frame.buttons['regions'])[0], 'Check inputs, Check / draw panel regions')
-        self.assertEqual(panel.explanation_of(self.frame.buttons['run'])[0], 'Check inputs, Run, Open results folder')
+        self.assertEqual(panel.explanation_of(self.frame.buttons['run'])[0], 'Check inputs, Check environment, Run, Open results folder')
         self.assertEqual(panel.explanation_of(self.frame.preset_box)[0], 'Camera preset')
 
     def test_the_note_of_a_part_is_not_repeated_under_each_of_its_fields(self):

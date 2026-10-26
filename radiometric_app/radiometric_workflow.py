@@ -30,7 +30,7 @@ from pathlib import Path
 import tifffile
 
 # Local Imports
-from . import panel_spectrum
+from . import environment, panel_spectrum
 import radiometric_correction_tools as rct
 
 REQUEST_VERSION = 1
@@ -393,8 +393,8 @@ def resolve_path(root, value):
     return path if path.is_absolute() else Path(root) / path
 
 
-CONFIG_FOLDER = 'config'                                   # in the project folder: the configuration, the profiles, the own presets
-DEFAULT_CONFIG_NAME = 'radiometric_inputs.json'
+CONFIG_FOLDER = environment.CONFIG_FOLDER                 # in the project folder: the configuration, the profiles, the own presets
+DEFAULT_CONFIG_NAME = environment.DEFAULT_CONFIG_NAME
 
 
 def default_config_path(root='.'):
@@ -420,30 +420,11 @@ def find_exiftool(config, root='.'):
     The ExifTool that will be used and where it was looked for, in this order: INPUTS.exiftool_path, the environment
     variable exiftoolpath, the system PATH. Returns (path, source); the path is None if it is not there
     """
-    configured = config['INPUTS.exiftool_path'].strip()
-    if configured:
-        path = resolve_path(root, configured)
-        return (str(path) if path.is_file() else None), 'INPUTS.exiftool_path'
-    from_environment = os.environ.get('exiftoolpath', '').strip()
-    if from_environment:
-        return (from_environment if Path(from_environment).is_file() else shutil.which(from_environment)), \
-            'the environment variable exiftoolpath'
-    return shutil.which('exiftool'), 'the system PATH'
+    return environment.locate_exiftool(config['INPUTS.exiftool_path'], root)
 
 
-def exiftool_version(path, timeout=30):
-    """ The version that 'exiftool -ver' prints, or None if the program cannot be run """
-    try:
-        done = subprocess.run([str(path), '-ver'], capture_output=True, text=True, timeout=timeout,
-                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return (done.stdout.strip() or None) if done.returncode == 0 else None
-
-
-def pyexiftool_installed():
-    """ Whether the Python package pyexiftool (import exiftool) is installed """
-    return importlib.util.find_spec('exiftool') is not None
+exiftool_version = environment.exiftool_version               # the version that 'exiftool -ver' prints, None if it cannot be run
+pyexiftool_installed = environment.pyexiftool_installed       # whether the Python package PyExifTool (import exiftool) is there
 
 
 def read_capture_images(config, root, capture, exiftool_path=None):

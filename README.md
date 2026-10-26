@@ -8,7 +8,7 @@ All functions are derived from the original [Micasense image processing reposito
 
 For processing, it is only required the path and metadata for the images and for the reference panel. Images metadata can be extracted for example using [ExifTool](https://exiftool.org/). The only caution needed here is to maintain the same field labels adopted in the original Exif information.
 
-**ExifTool must be installed before running.** The metadata (bands, panel QR code, DLS irradiance) is read with ExifTool, a separate program, through the Python package ```pyexiftool``` (```pip install pyexiftool```; both are needed). On Windows, download the "Windows Executable" from [exiftool.org](https://exiftool.org/), rename ```exiftool(-k).exe``` to ```exiftool.exe``` and keep it next to its ```exiftool_files``` folder. The program is found in this order: the ```INPUTS.exiftool_path``` field of the configuration (the "ExifTool executable" field of the window), the environment variable ```exiftoolpath```, the system PATH (it is enough that ```exiftool -ver``` works in a terminal). The field is only needed when it is not found by itself. The window looks for ExifTool and pyexiftool when it opens and whenever the field changes, and says in the help column what it found (the program, how it was found, its version, whether the package is installed); ```Check inputs``` and the runner report them as a problem when they are missing, and ```radiometric_workflow.find_exiftool``` gives the same answer from Python.
+**ExifTool must be installed before running.** The metadata (bands, panel QR code, DLS irradiance) is read with ExifTool, a separate program, through the Python package ```PyExifTool``` (```pip install PyExifTool```; both are needed; see "Installing on a new computer"). On Windows, download the "Windows Executable" from [exiftool.org](https://exiftool.org/), rename ```exiftool(-k).exe``` to ```exiftool.exe``` and keep it next to its ```exiftool_files``` folder. The program is found in this order: the ```INPUTS.exiftool_path``` field of the configuration (the "ExifTool executable" field of the window), the environment variable ```exiftoolpath```, the system PATH (it is enough that ```exiftool -ver``` works in a terminal). The field is only needed when it is not found by itself. The window looks for ExifTool and pyexiftool when it opens and whenever the field changes, and says in the help column what it found (the program, how it was found, its version, whether the package is installed); ```Check inputs``` and the runner report them as a problem when they are missing, and ```radiometric_workflow.find_exiftool``` gives the same answer from Python.
 
 An example of how the pre-processing would work in practice is presented below. It processes the example images in this repository (```images/raw```): the capture ```IMG_0005``` shows the reference panel and ```IMG_0010``` is the capture to be corrected.
 
@@ -191,6 +191,25 @@ With the DLS the choice of "the reference panel" does not exist as such: the pro
 
 How Metashape combines several panel images, and what its sun sensor option is referenced to, is not described in its manual (2.1) or in the forum threads of Agisoft that were read for this project; the photogrammetric workflow gives all the panel captures of the chunk to ```chunk.calibrateReflectance(use_reflectance_panels, use_sun_sensor)``` and cannot choose among them. Do not assume that it averages or follows the time: test it with panels of known different factors before relying on one behaviour.
 
+## Installing on a new computer
+
+What the program needs, and how to see whether the computer has it:
+
+1. **Python 3.10 or newer, with Tkinter** (the window). The Python of python.org and conda have it (python.org: keep "tcl/tk and IDLE" selected; Linux: ```sudo apt install python3-tk```). Windows 10 or 11 for the launchers; the program itself is plain Python.
+2. **The Python packages** of ```requirements.txt```: numpy, opencv-python, pillow, tifffile, matplotlib, scikit-image, shapely, pyzbar and PyExifTool (the versions in the file are the ones it was tested with: Python 3.10.20 on Windows, numpy 2.2.6, opencv 4.12.0, pillow 12.0.0, tifffile 2025.5.10, matplotlib 3.10.8, scikit-image 0.25.2, shapely 2.1.2, pyzbar 0.1.9, PyExifTool 0.5.6). In a terminal, in the project folder, with the Python that you chose:
+   - pip: ```python -m pip install -r requirements.txt```
+   - or conda, in its own environment: ```conda env create -f environment.yml``` (the environment is called ```radiometric```; the file was checked by solving it with conda-forge, but the environment was not created and used from scratch on another computer).
+   - pyzbar reads the QR code of the panel; the Windows package brings the zbar library it needs (and asks for the Microsoft Visual C++ Redistributable of 2013), macOS needs ```brew install zbar``` and Linux ```sudo apt install libzbar0```.
+3. **ExifTool**, the program (not a Python package): see the paragraph at the top. Without it the window opens but nothing can be read from the images.
+4. **Choose the Python** (Windows launchers): double-click ```launchers/select_python.cmd```. A window like the one of the photogrammetric workflow asks for the ```python.exe``` (Browse...), checks that it is Python 3.10 or newer with Tkinter, saves it in ```config/python_environment.json``` and then lists what else is missing. The other launchers use that file; the first time, with no file, they open the same window by themselves, and when the saved Python no longer exists they ask again. To change the Python, run ```select_python.cmd``` again. The file is plain json (```{"python": "C:\\...\\python.exe"}```) and is not kept in git.
+
+**The check of the computer** (```radiometric_app/environment.py```, only the standard library, so it works before anything is installed) lists the Python and its path, Tkinter, each package with its version and ExifTool with its version and how it was found (the ```INPUTS.exiftool_path``` of the configuration, ```exiftoolpath```, the PATH), and what to install for each thing that is missing, in one ```pip install``` command for the packages. It is used in four places:
+
+- Before the window or the panel tool opens (```python -m radiometric_app window```, which is what the launchers run): when something is missing a message box says what and what to install, and nothing is opened; when only ExifTool is missing the message asks whether to open the program anyway. A package that is installed but cannot be loaded (a damaged installation, a missing DLL) is named in the message instead of a traceback that nobody sees without a console.
+- The button "Check environment" on the "Run and results" page lists the same in the log (with every package imported, so a broken one shows).
+- ```launchers/check_environment.cmd``` or ```python -m radiometric_app check [--deep] [--json] [--quiet] [--root folder]```: the same list in a terminal, exit code 0 when all is in place and 1 when not (```--deep``` imports every package, ```--json``` gives the result for other programs).
+- From Python: ```environment.check_environment()``` returns one dictionary per thing (```name```, ```status``` ok, missing, broken or old, ```version```, ```detail```, ```fix```, ```level``` required or needed), and ```environment.install_text()``` and ```environment.message_text()``` write the instructions.
+
 ## Project layout
 
 ```
@@ -198,8 +217,9 @@ radiometric_correction_tools.py   the library (it keeps its name and its place: 
 radiometric_app/                  the program: configuration and runner, window, panel regions tool, capture picker, ...
     presets/                      the camera presets that come with the program
 tests/                            the tests
-launchers/                        launchers for Windows (double-click)
-config/                           your configuration, profiles and presets (not kept in git)
+launchers/                        launchers for Windows (double-click), the choice of the Python and the check of the computer
+config/                           your configuration, profiles, presets and chosen Python (not kept in git)
+requirements.txt, environment.yml the Python packages (pip) and the conda environment (see "Installing on a new computer")
 images/raw/, results/reflectance/ the example images and their results
 ```
 
@@ -265,11 +285,14 @@ The panel region of each band can be checked, accepted and, when it is wrong or 
 
 ## Launchers (Windows)
 
-Double-click one of these files in the ```launchers``` folder. They use the Python 3.10 environment at the top of each file (```PYTHON_DIR```; edit it if yours is elsewhere), and the project folder as ```--root```, so the relative paths of the configuration (for example ```images/raw```) are resolved from there.
+Double-click one of these files in the ```launchers``` folder. They use the Python saved in ```config/python_environment.json``` (chosen with ```select_python.cmd```, which they open by themselves if there is none) and the project folder as ```--root```, so the relative paths of the configuration (for example ```images/raw```) are resolved from there. Each one checks that the Python is 3.10 or newer with Tkinter; the packages and ExifTool are checked by the program before it opens (see "Installing on a new computer").
 
-- ```launchers/open_radiometric_window.cmd```: the window, without a console (like the launcher of the photogrammetric workflow).
+- ```launchers/open_radiometric_window.cmd```: the window, without a console (like the launcher of the photogrammetric workflow); it is ```pythonw -m radiometric_app window --root .```.
 - ```launchers/open_radiometric_window_debug.cmd```: the same window with the console kept open, to see messages and error traces while testing.
 - ```launchers/open_panel_selector.cmd```: only the dialog to draw the panel regions, using ```config/radiometric_inputs.json``` in the project folder if it exists, otherwise the defaults. Extra arguments are passed on (for example ```--capture IMG_0005```).
+- ```launchers/select_python.cmd```: choose the ```python.exe``` (window written in PowerShell, so that it works before any Python is chosen; ```select_python.ps1```) and check it.
+- ```launchers/check_environment.cmd```: list the Python, Tkinter, the packages with their versions and ExifTool, and what to install.
+- ```launchers/_python.cmd```: used by the others to find the Python; it is not run by itself.
 
 ## Window
 
@@ -283,7 +306,7 @@ python -m radiometric_app.radiometric_window [--config config/radiometric_inputs
 
 The pages (Inputs, Reference panel, DLS) are built from ```radiometric_workflow.FIELDS```, so a new key appears in the window without changes to it; the pages scroll when they are longer than the window. The bands of the camera are edited in a table (see above). A value that cannot be read is marked in red. "Save configuration" writes only the values that differ from the defaults (```radiometric_inputs.json``` in ```--root``` by default).
 
-The last page runs the workflow in a separate thread, so the window stays responsive: "Check inputs" lists every problem, "Check / draw panel regions..." (on the Inputs page, next to the panel captures and a "Check inputs" button) opens the tool above (and sets ```PANEL.manual_regions_file``` if it was empty), "Run" saves the configuration and shows the progress, the flags of the checks, the errors and the result file, and "Open results folder" opens the folder in the file explorer.
+The last page runs the workflow in a separate thread, so the window stays responsive: "Check inputs" lists every problem, "Check environment" lists the Python, Tkinter, the packages with their versions and ExifTool of the computer and what to install, "Check / draw panel regions..." (on the Inputs page, next to the panel captures and a "Check inputs" button) opens the tool above (and sets ```PANEL.manual_regions_file``` if it was empty), "Run" saves the configuration and shows the progress, the flags of the checks, the errors and the result file, and "Open results folder" opens the folder in the file explorer.
 
 - Load and Save profile (see above) are in the bottom bar. ```radiometric_window.RadiometricFrame``` builds its widgets in a ```ttk.Frame``` (```.widget```), so it can be placed in any window, for example as a page of another program's window. ```radiometric_app/ui_theme.py``` holds the colors and styles, which follow the dark window of the photogrammetric workflow.
 - ```ConfigModel``` (the text typed in each field, its conversion and the file) has no window and is tested without a display.

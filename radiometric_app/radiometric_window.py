@@ -24,7 +24,7 @@ import traceback
 from pathlib import Path
 
 # Local Imports
-from . import camera_presets
+from . import camera_presets, environment
 import radiometric_correction_tools as rct
 from . import radiometric_workflow as wf
 from .ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
@@ -103,8 +103,10 @@ REGIONS_NOTE = ("- Check inputs: tells whether the folders, the panel capture an
                 "The regions are saved in the file above; if it is empty, in panel_regions.json in the results folder, which "
                 "is then filled in above.")
 RUN_NOTES = {
-    'buttons': ("Check inputs, Run, Open results folder",
+    'buttons': ("Check inputs, Check environment, Run, Open results folder",
                 "- Check inputs: tells whether everything the correction needs is in place, without running it.\n"
+                "- Check environment: lists the Python, Tkinter, the Python packages (with their versions) and ExifTool of "
+                "this computer, and what to install when something is missing.\n"
                 "- Run: saves the configuration and corrects the captures in the background; the window stays usable.\n"
                 "- Open results folder: shows the corrected images and the provenance records."),
     'log': ("Log", "What the correction did: errors, flags raised by the checks of the DLS data, and the files written."),
@@ -541,6 +543,7 @@ class RadiometricFrame:
         buttons.pack(fill='x')
         self.help_panel.describe(buttons, *RUN_NOTES['buttons'])
         for name, text, command in (('check', 'Check inputs', self.check_inputs),
+                                    ('environment', 'Check environment', self.check_environment),
                                     ('run', 'Run', self.start_run),
                                     ('open', 'Open results folder', self.open_results)):
             self.buttons[name] = ttk.Button(buttons, text=text, command=command)
@@ -1141,6 +1144,29 @@ class RadiometricFrame:
         self.summary.configure(text='')
         return config, problems
 
+    def check_environment(self):
+        """ List the Python, Tkinter, the packages and ExifTool of this computer in the log (in another thread: ExifTool is run) """
+        self.show_page('RUN')
+        self.clear_log()
+        self.log('Checking the Python, the packages and ExifTool of this computer...')
+        self.summary.configure(text='')
+        configured = self.model.config()[0]['INPUTS.exiftool_path']
+        self.buttons['environment'].state(['disabled'])
+        threading.Thread(target=lambda: self.events.put(
+            ('environment', environment.check_environment(configured, self.root_folder, deep=True))), daemon=True).start()
+
+    def _show_environment(self, items):
+        self.buttons['environment'].state(['!disabled'])
+        for item, line in zip(items, environment.report_lines(items)):
+            self.log(line, 'ok' if item['status'] == 'ok' else 'error')
+        missing = environment.problems(items)
+        if missing:
+            self.log(environment.install_text(items), 'muted')
+            self.summary.configure(text=f"{len(missing)} thing(s) to install or fix (see the log).", style='Error.TLabel')
+        else:
+            self.log('Everything the program needs is in place.', 'ok')
+            self.summary.configure(text='The computer is ready.', style='Ok.TLabel')
+
     def _set_busy(self, busy):
         self.running = busy
         for name in ('check', 'check_here', 'regions', 'run'):
@@ -1267,6 +1293,8 @@ class RadiometricFrame:
                 if not version:
                     self._problem(self.exiftool_summary, f"{path} was found but it cannot be run.")
                 self.help_panel.refresh()
+        elif kind == 'environment':
+            self._show_environment(payload)
         elif kind == 'images':
             self._open_selector(payload)
         elif kind == 'bands':

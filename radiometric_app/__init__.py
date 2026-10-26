@@ -6,6 +6,8 @@ radiometric work, stays next to this folder, so that it keeps the name that othe
 
 Run from the project folder (the one with radiometric_correction_tools.py):
 
+    python -m radiometric_app [window | panels | check] [--config file] [--root folder]
+        (checks the computer first: Python, Tkinter, packages, ExifTool; see environment.py)
     python -m radiometric_app.radiometric_window [--config file] [--root folder]
     python -m radiometric_app.radiometric_workflow --config config/radiometric_inputs.json
     python -m radiometric_app.panel_selector [--config file] [--root folder]

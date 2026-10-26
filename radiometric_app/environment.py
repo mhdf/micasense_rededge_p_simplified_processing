@@ -191,22 +191,23 @@ def report_lines(items):
     return lines
 
 
-def install_text(items):
+def install_text(items, python=None):
     """
     What to install, as text for a message: the packages that are missing in one pip command (for the Python that was
-    checked) and the instructions for the rest. '' when there is nothing to do
+    checked: python, default the one that is running) and the instructions for the rest. '' when there is nothing to do
     """
     lines = []
     missing = [item['fix'][len('pip install '):] for item in items
                if item['status'] == 'missing' and (item['fix'] or '').startswith('pip install ')]
     if missing:
-        executable = sys.executable
-        if executable.lower().endswith('pythonw.exe'):             # the one without a console: pip would write nowhere
-            executable = executable[:-len('pythonw.exe')] + 'python.exe'
+        executable = str(normalized_python(python or sys.executable))     # python.exe: pythonw would write nowhere
         executable = f'"{executable}"' if ' ' in executable else executable
-        lines.append(f"Packages that are missing: {executable} -m pip install {' '.join(missing)}")
-        lines.append("(or, in the project folder: python -m pip install -r requirements.txt, or a new conda environment: "
-                     "conda env create -f environment.yml; then choose its python.exe with launchers\\select_python.cmd)")
+        lines.append("Use a dedicated environment for the packages, not the system Python: in the project folder, "
+                     "conda env create -f environment.yml, or python -m venv .venv and then "
+                     ".venv\\Scripts\\python.exe -m pip install -r requirements.txt; then choose its python.exe "
+                     "(launchers\\select_python.cmd, or the Python environment section of the window).")
+        lines.append(f"If the Python that was checked already is such an environment, the missing packages are installed "
+                     f"with: {executable} -m pip install {' '.join(missing)}")
     for item in problems(items):
         if item['fix'] and not (item['status'] == 'missing' and item['fix'].startswith('pip install ')):
             lines.append(f"{item['name']}: {item['fix']}")
@@ -275,11 +276,146 @@ def read_python_environment(root='.'):
 
 
 def save_python_environment(root, python):
-    """ Save the python.exe that the launchers use; returns the file written """
+    """ Save the python.exe that the launchers use (written whole or not at all); returns the file written """
     path = python_environment_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({'python': str(python)}, indent=2) + '\n', encoding='utf-8')
+    temporary = path.with_suffix('.tmp')
+    try:
+        temporary.write_text(json.dumps({'python': str(python)}, indent=2) + '\n', encoding='utf-8')
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
+
+
+# Another Python: how to start it, what it can do, and the choice of the one that the program uses
+CONFIRMED_VARIABLE = 'RADIOMETRIC_PYTHON_CONFIRMED'          # set for the Python that was started after the confirmation
+
+
+def normalized_python(executable):
+    """ The python.exe of a pythonw.exe (it can print what it finds), as a Path """
+    executable = Path(str(executable).strip().strip('"'))
+    if executable.name.lower() == 'pythonw.exe':
+        executable = executable.with_name('python.exe')
+    return executable
+
+
+def same_python(first, second):
+    """ Whether two paths are the same Python (python.exe and pythonw.exe of a folder count as one) """
+    def key(path):
+        try:
+            return os.path.normcase(str(normalized_python(path).resolve()))
+        except OSError:
+            return os.path.normcase(str(normalized_python(path)))
+    return key(first) == key(second)
+
+
+def process_environment(executable):
+    """
+    The environment variables to start another Python: its folder (and, for a conda environment, Library\\bin, where its
+    DLLs are) first in the PATH, and without the PYTHONHOME and PYTHONPATH of this one, which would mix the two
+    """
+    environment = os.environ.copy()
+    environment.pop('PYTHONHOME', None)
+    environment.pop('PYTHONPATH', None)
+    folder = Path(executable).parent
+    paths = [folder]
+    if (folder / 'Library' / 'bin').is_dir():
+        paths.insert(0, folder / 'Library' / 'bin')
+    environment['PATH'] = os.pathsep.join(map(str, paths)) + os.pathsep + environment.get('PATH', '')
+    return environment
+
+
+_PROBE = """
+import json, sys
+report = {'executable': sys.executable, 'version': sys.version.split()[0],
+          'python_compatible': sys.version_info >= (3, 10), 'tkinter': {'ok': False, 'detail': ''}}
+try:
+    import tkinter
+    root = tkinter.Tk()
+    root.withdraw()
+    root.update_idletasks()
+    root.destroy()
+    report['tkinter'] = {'ok': True, 'detail': 'Tk ' + str(tkinter.TkVersion)}
+except Exception as error:
+    report['tkinter'] = {'ok': False, 'detail': str(error)}
+print(json.dumps(report))
+"""
+
+
+def inspect_python(executable, timeout=25):
+    """
+    Run another Python to see its version and whether it can open a window (a Tk root is created, not only imported)
+    Outputs: {'executable', 'version', 'python_compatible' (3.10 or newer), 'tkinter': {'ok', 'detail'}}; FileNotFoundError
+    if the file does not exist, RuntimeError if it does not run or does not answer
+    """
+    executable = normalized_python(executable)
+    if not executable.is_file():
+        raise FileNotFoundError(f"Python executable does not exist: {executable}")
+    try:
+        done = subprocess.run([str(executable), '-c', _PROBE], env=process_environment(executable), capture_output=True,
+                              text=True, timeout=timeout, check=False,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"{executable} could not be run: {error}") from error
+    if done.returncode:
+        raise RuntimeError((done.stderr or done.stdout or "Python could not start").strip())
+    try:
+        report = json.loads(done.stdout.strip().splitlines()[-1])        # libraries may print a notice before the report
+        report['tkinter']['ok']
+    except (ValueError, IndexError, KeyError, TypeError) as error:
+        raise RuntimeError("Could not read the answer of the Python: " + done.stdout.strip()) from error
+    return report
+
+
+def remember_python(root, executable):
+    """
+    Save a Python as the one to use, only after it was run and found able to open a window (Python 3.10 or newer, working
+    Tkinter): a choice that works is never replaced by one that does not. Outputs: the report of inspect_python; ValueError
+    that says what is wrong, or what inspect_python raises
+    """
+    report = inspect_python(executable)
+    if not report['python_compatible']:
+        raise ValueError(f"The program needs Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer; this is "
+                         f"Python {report['version']}.")
+    if not report['tkinter']['ok']:
+        raise ValueError("The program needs a Python with working Tkinter. " + report['tkinter']['detail'])
+    save_python_environment(root, report['executable'])
+    return report
+
+
+def check_python_environment(executable, root='.', deep=True, timeout=180):
+    """
+    The check of this module (see check_environment) made by another Python: the list of its items. RuntimeError if that
+    Python cannot run it (it is run from the folder of this program, with python -m radiometric_app check --json)
+    """
+    executable = normalized_python(executable)
+    command = [str(executable), '-m', 'radiometric_app', 'check', '--json', '--root', str(root)] + (['--deep'] if deep else [])
+    try:
+        done = subprocess.run(command, cwd=str(Path(__file__).resolve().parent.parent), env=process_environment(executable),
+                              capture_output=True, text=True, timeout=timeout, check=False,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"{executable} could not be run: {error}") from error
+    try:
+        return json.loads(done.stdout)                                  # the exit code is 1 when something is missing
+    except ValueError as error:
+        raise RuntimeError((done.stderr or done.stdout or "The check did not answer").strip()) from error
+
+
+def relaunch(executable, command, argv):
+    """
+    Start this program again with another Python, without the console of python.exe and without asking again, and
+    leave it running: python -m radiometric_app <command> <argv> from the current folder. Returns the process
+    """
+    executable = normalized_python(executable)
+    windowed = executable.with_name('pythonw.exe')
+    if os.name == 'nt' and windowed.is_file():
+        executable = windowed
+    environment = process_environment(executable)
+    environment[CONFIRMED_VARIABLE] = '1'
+    return subprocess.Popen([str(executable), '-m', 'radiometric_app', command, *argv], cwd=os.getcwd(), env=environment,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
 
 def main(argv=None):

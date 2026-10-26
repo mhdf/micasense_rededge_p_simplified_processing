@@ -8,6 +8,7 @@ import contextlib
 import importlib.machinery
 import io
 import json
+import platform
 import sys
 import tempfile
 import types
@@ -181,6 +182,10 @@ class ReportTests(unittest.TestCase):
             text = env.install_text(self.items)
         self.assertIn(r'"C:\Program Files\Python310\python.exe" -m pip install pyzbar shapely', text)
 
+    def test_the_pip_command_can_be_for_another_python(self):
+        text = env.install_text(self.items, r'D:\envs\other\pythonw.exe')
+        self.assertIn(r'D:\envs\other\python.exe -m pip install pyzbar shapely', text)
+
     def test_the_message_names_the_problems_and_the_python(self):
         text = env.message_text(self.items)
         self.assertIn('pyzbar: missing (the QR code)', text)
@@ -247,6 +252,105 @@ class PythonEnvironmentFileTests(unittest.TestCase):
             self.assertIn(b'\r\n', text, name)                                 # cmd files keep their Windows line endings
 
 
+class AnotherPythonTests(unittest.TestCase):
+    """ Running, choosing and starting another Python """
+
+    def test_pythonw_is_the_python_next_to_it_and_the_same_file_is_the_same_python(self):
+        self.assertEqual(env.normalized_python(r'C:\envs\a\pythonw.exe'), Path(r'C:\envs\a\python.exe'))
+        self.assertEqual(env.normalized_python('"C:/envs/a/python.exe"'), Path('C:/envs/a/python.exe'))
+        self.assertTrue(env.same_python(sys.executable, sys.executable))
+        self.assertTrue(env.same_python(Path(sys.executable).with_name('pythonw.exe'), sys.executable))
+        self.assertFalse(env.same_python(sys.executable, Path(sys.executable).parent / 'other' / 'python.exe'))
+
+    def test_another_python_starts_with_its_own_folders_first_and_without_the_variables_of_this_one(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / 'Library' / 'bin').mkdir(parents=True)
+            with mock.patch.dict(env.os.environ, {'PYTHONHOME': 'x', 'PYTHONPATH': 'y', 'PATH': 'z'}):
+                conda = env.process_environment(Path(folder) / 'python.exe')
+                plain = env.process_environment(Path(folder).parent / 'python.exe')
+        self.assertEqual(conda['PATH'].split(env.os.pathsep)[:3], [str(Path(folder) / 'Library' / 'bin'), folder, 'z'])
+        self.assertEqual(plain['PATH'].split(env.os.pathsep)[:2], [str(Path(folder).parent), 'z'])
+        for variables in (conda, plain):
+            self.assertNotIn('PYTHONHOME', variables)
+            self.assertNotIn('PYTHONPATH', variables)
+
+    def test_this_python_is_run_to_see_its_version_and_whether_it_can_open_a_window(self):
+        report = env.inspect_python(sys.executable)
+        self.assertEqual(report['version'], platform.python_version())
+        self.assertTrue(report['python_compatible'])
+        self.assertIn('ok', report['tkinter'])
+        self.assertTrue(env.same_python(report['executable'], sys.executable))
+
+    def test_a_python_that_does_not_exist_or_does_not_answer_is_an_error(self):
+        with self.assertRaises(FileNotFoundError):
+            env.inspect_python(Path('C:/no/such/python.exe'))
+        with tempfile.TemporaryDirectory() as folder:
+            fake = Path(folder) / 'python.exe'
+            fake.write_text('x')
+            failed = mock.Mock(returncode=1, stdout='', stderr='cannot start')
+            with mock.patch.object(env.subprocess, 'run', return_value=failed):
+                with self.assertRaisesRegex(RuntimeError, 'cannot start'):
+                    env.inspect_python(fake)
+            garbage = mock.Mock(returncode=0, stdout='hello\nnot json', stderr='')
+            with mock.patch.object(env.subprocess, 'run', return_value=garbage):
+                with self.assertRaisesRegex(RuntimeError, 'Could not read'):
+                    env.inspect_python(fake)
+            with mock.patch.object(env.subprocess, 'run', side_effect=env.subprocess.TimeoutExpired('python', 25)):
+                with self.assertRaisesRegex(RuntimeError, 'could not be run'):
+                    env.inspect_python(fake)
+
+    def report(self, compatible=True, tk=True):
+        return {'executable': r'C:\envs\a\python.exe', 'version': '3.10.1' if compatible else '3.8.0',
+                'python_compatible': compatible, 'tkinter': {'ok': tk, 'detail': 'Tk 8.6' if tk else 'no display'}}
+
+    def test_a_python_is_saved_only_after_it_was_found_able_to_open_a_window(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(env, 'inspect_python', return_value=self.report()):
+                report = env.remember_python(folder, 'whatever')
+            self.assertEqual(env.read_python_environment(folder), {'python': r'C:\envs\a\python.exe'})
+            self.assertEqual(report['version'], '3.10.1')
+            self.assertEqual(sorted(path.name for path in (Path(folder) / 'config').iterdir()), ['python_environment.json'])
+            with mock.patch.object(env, 'inspect_python', return_value=self.report(compatible=False)):
+                with self.assertRaisesRegex(ValueError, '3.10 or newer; this is Python 3.8.0'):
+                    env.remember_python(folder, 'old')
+            with mock.patch.object(env, 'inspect_python', return_value=self.report(tk=False)):
+                with self.assertRaisesRegex(ValueError, 'working Tkinter. no display'):
+                    env.remember_python(folder, 'no tk')
+            with mock.patch.object(env, 'inspect_python', side_effect=RuntimeError('does not run')):
+                with self.assertRaises(RuntimeError):
+                    env.remember_python(folder, 'broken')
+            self.assertEqual(env.read_python_environment(folder), {'python': r'C:\envs\a\python.exe'})   # still the one that works
+
+    def test_the_check_of_another_python_is_the_json_of_its_own_check(self):
+        items = [item('Python'), item('shapely', 'missing')]
+        done = mock.Mock(returncode=1, stdout=json.dumps(items), stderr='')                 # 1: something is missing
+        with tempfile.TemporaryDirectory() as folder:
+            fake = Path(folder) / 'python.exe'
+            fake.write_text('x')
+            with mock.patch.object(env.subprocess, 'run', return_value=done) as run:
+                self.assertEqual(env.check_python_environment(fake, 'project'), items)
+            command = run.call_args[0][0]
+            self.assertEqual(command[1:], ['-m', 'radiometric_app', 'check', '--json', '--root', 'project', '--deep'])
+            self.assertEqual(Path(run.call_args[1]['cwd']), Path(env.__file__).resolve().parent.parent)
+            with mock.patch.object(env.subprocess, 'run', return_value=mock.Mock(returncode=1, stdout='', stderr='No module')):
+                with self.assertRaisesRegex(RuntimeError, 'No module'):
+                    env.check_python_environment(fake, 'project', deep=False)
+
+    def test_the_program_is_started_again_with_the_chosen_python_without_asking_again(self):
+        with tempfile.TemporaryDirectory() as folder:
+            python = Path(folder) / 'python.exe'
+            python.write_text('x')
+            (Path(folder) / 'pythonw.exe').write_text('x')
+            with mock.patch.object(env.subprocess, 'Popen') as popen:
+                env.relaunch(python, 'window', ['--root', '.'])
+        command = popen.call_args[0][0]
+        self.assertEqual(command[1:], ['-m', 'radiometric_app', 'window', '--root', '.'])
+        if env.os.name == 'nt':
+            self.assertTrue(command[0].endswith('pythonw.exe'))                           # without a console
+        self.assertEqual(popen.call_args[1]['env'][env.CONFIRMED_VARIABLE], '1')
+        self.assertEqual(popen.call_args[1]['cwd'], env.os.getcwd())
+
+
 class CommandLineTests(unittest.TestCase):
 
     def run_main(self, items, *arguments):
@@ -284,6 +388,11 @@ class CommandLineTests(unittest.TestCase):
 
 class LaunchTests(unittest.TestCase):
     """ python -m radiometric_app: the check, the message and what is opened """
+
+    def setUp(self):
+        patcher = mock.patch.object(launch, '_confirm_python', return_value=None)           # the dialog is tested below
+        self.confirm = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_launch(self, argv, items, answer=False):
         window = mock.Mock(main=mock.Mock(return_value=0))
@@ -347,6 +456,84 @@ class LaunchTests(unittest.TestCase):
                 launch.main(['--root', folder])
         self.assertEqual(check.call_args.args[0], 'C:/tools/exiftool.exe')
         self.assertIs(check.call_args.kwargs['exiftool_version_too'], False)
+
+
+class ConfirmPythonTests(unittest.TestCase):
+    """ The dialog that asks for the Python each time the window starts """
+
+    def ask(self, chosen, saved=None, argv=('--root', 'x')):
+        from radiometric_app import python_selection
+        with tempfile.TemporaryDirectory() as folder:
+            if saved:
+                env.save_python_environment(folder, saved)
+            with mock.patch('tkinter.Tk') as root, \
+                    mock.patch.object(python_selection, 'choose_python_environment', return_value=chosen) as dialog, \
+                    mock.patch.object(env, 'relaunch') as relaunch:
+                outcome = launch._confirm_python(folder, 'window', list(argv))
+        return outcome, dialog, relaunch, root
+
+    def test_cancelling_the_dialog_closes_the_program(self):
+        outcome, dialog, relaunch, root = self.ask(None)
+        self.assertEqual(outcome, 0)
+        relaunch.assert_not_called()
+        root.return_value.destroy.assert_called_once()
+
+    def test_the_python_that_is_running_goes_on_in_the_same_process(self):
+        outcome, _, relaunch, _ = self.ask(Path(sys.executable))
+        self.assertIsNone(outcome)
+        relaunch.assert_not_called()
+
+    def test_another_python_starts_the_window_again_and_this_one_stops(self):
+        other = Path(r'C:\envs\other\python.exe')
+        outcome, _, relaunch, _ = self.ask(other)
+        self.assertEqual(outcome, 0)
+        relaunch.assert_called_once_with(other, 'window', ['--root', 'x'])
+
+    def test_the_dialog_proposes_the_saved_python_if_it_is_there_and_else_the_running_one(self):
+        _, dialog, _, _ = self.ask(None, saved=sys.executable)
+        self.assertEqual(dialog.call_args[0][1], sys.executable)
+        _, dialog, _, _ = self.ask(None, saved=r'C:\gone\python.exe')
+        self.assertEqual(dialog.call_args[0][1], sys.executable)
+        _, dialog, _, _ = self.ask(None)
+        self.assertEqual(dialog.call_args[0][1], sys.executable)
+
+    def test_without_tkinter_the_dialog_is_skipped(self):
+        with mock.patch.dict(sys.modules, {'tkinter': None}):
+            self.assertIsNone(launch._confirm_python('.', 'window', []))
+
+    def test_the_window_asks_each_time_unless_it_was_asked_not_to_or_was_started_by_the_dialog(self):
+        window = mock.Mock(main=mock.Mock(return_value=0))
+        items = [item('Python')]
+
+        def run(argv, environment=None):
+            with mock.patch.object(env, 'check_environment', return_value=items), \
+                    mock.patch.object(launch, '_confirm_python', return_value=None) as confirm, \
+                    mock.patch.object(launch.importlib, 'import_module', return_value=window), \
+                    mock.patch.dict(env.os.environ, environment or {}):
+                launch.main(argv)
+                remaining = env.os.environ.get(env.CONFIRMED_VARIABLE)
+            return confirm, remaining
+
+        confirm, _ = run(['window', '--root', '.'])
+        confirm.assert_called_once_with('.', 'window', ['--root', '.'])
+        confirm, _ = run([])                                                       # window is the default command
+        confirm.assert_called_once()
+        confirm, _ = run(['window', '--skip-python-dialog', '--root', '.'])
+        confirm.assert_not_called()
+        window.main.assert_called_with(['--root', '.'])                            # the option is not the window's
+        confirm, remaining = run(['window'], {env.CONFIRMED_VARIABLE: '1'})
+        confirm.assert_not_called()
+        self.assertIsNone(remaining)                                               # it is not passed on to other programs
+        confirm, _ = run(['panels', '--root', '.'])                                # only the window asks
+        confirm.assert_not_called()
+
+    def test_the_window_that_was_cancelled_or_started_again_opens_nothing_here(self):
+        with mock.patch.object(launch, '_confirm_python', return_value=0), \
+                mock.patch.object(env, 'check_environment') as check, \
+                mock.patch.object(launch.importlib, 'import_module') as opened:
+            self.assertEqual(launch.main(['window']), 0)
+        check.assert_not_called()
+        opened.assert_not_called()
 
 
 if __name__ == '__main__':

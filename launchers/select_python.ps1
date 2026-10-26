@@ -17,13 +17,13 @@ function Get-SavedPython {
     return ''
 }
 
-# '' if this Python can be used (3.10 or newer, with Tkinter), else what is wrong
+# '' if this Python can be used (3.10 or newer, with Tkinter that can open a window), else what is wrong
 function Test-Python([string]$path) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return 'The file does not exist.' }
     try {
         $info = New-Object System.Diagnostics.ProcessStartInfo
         $info.FileName = $path
-        $info.Arguments = '-c "import sys, tkinter; print(sys.version_info[0], sys.version_info[1])"'
+        $info.Arguments = '-c "import sys, tkinter; r = tkinter.Tk(); r.withdraw(); r.destroy(); print(sys.version_info[0], sys.version_info[1])"'
         $info.RedirectStandardOutput = $true
         $info.RedirectStandardError = $true
         $info.UseShellExecute = $false

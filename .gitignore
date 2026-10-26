@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .vscode/
 
+# a virtual environment made in the project folder (see "Installing on a new computer" in README.md)
+.venv/
+
 # the configuration of the user: the saved inputs, the profiles and the camera presets of their own
 config/
 

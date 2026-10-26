@@ -6,6 +6,7 @@ Run from the project folder with:  python -m unittest tests.test_radiometric_win
 """
 
 import json
+import sys
 import tempfile
 import time
 import unittest
@@ -173,6 +174,78 @@ class WindowTests(unittest.TestCase):
         frame = rw.RadiometricFrame(self.root, self.config_path, ROOT)
         self.assertEqual(frame.model.overrides(), {})
         self.assertTrue(any('was not used' in line for line in frame.log_lines()))
+
+    def python_report(self, compatible=True, tk=True):
+        return {'executable': r'C:\envs\a\python.exe', 'version': '3.10.1' if compatible else '3.8.0',
+                'python_compatible': compatible, 'tkinter': {'ok': tk, 'detail': 'Tk 8.6' if tk else 'no display'}}
+
+    def test_the_inputs_page_has_the_python_section_with_the_saved_python(self):
+        frame = rw.RadiometricFrame(self.root, Path(self.folder.name) / 'python.json', self.folder.name)
+        self.assertEqual(frame.python_var.get(), sys.executable)                  # nothing saved: the one that is running
+        wf.environment.save_python_environment(self.folder.name, r'C:\envs\a\python.exe')
+        frame = rw.RadiometricFrame(self.root, Path(self.folder.name) / 'python.json', self.folder.name)
+        self.assertEqual(frame.python_var.get(), r'C:\envs\a\python.exe')
+        self.assertTrue(self.inside(self.frame.buttons['python_check'], 'INPUTS'))
+        self.assertEqual(self.frame.buttons['python_use'].cget('text'), 'Use it for the next launches')
+        self.assertEqual(self.frame.buttons['python_check'].cget('text'), 'Check this Python')
+
+    def test_check_this_python_says_what_it_has_and_what_it_lacks(self):
+        items = [{'name': 'shapely', 'status': 'missing', 'version': None, 'detail': 'polygons', 'fix': 'pip install shapely',
+                  'level': 'required'}]
+        self.frame.python_var.set(r'C:\envs\a\python.exe')
+        with mock.patch.object(rw.environment, 'inspect_python', return_value=self.python_report()), \
+                mock.patch.object(rw.environment, 'check_python_environment', return_value=items) as check:
+            self.frame.buttons['python_check'].invoke()
+            self.assertIn('disabled', self.frame.buttons['python_use'].state())      # while it runs
+            self.pump(lambda: 'shapely' in self.frame.python_status.cget('text'))
+        self.assertEqual(check.call_args[0][0], r'C:\envs\a\python.exe')
+        text = self.frame.python_status.cget('text')
+        self.assertIn('Python 3.10.1: C:\\envs\\a\\python.exe', text)
+        self.assertIn('Tkinter: works', text)
+        self.assertIn('shapely: missing (polygons)', text)
+        self.assertIn(r'C:\envs\a\python.exe -m pip install shapely', text)          # for that Python, not for this one
+        self.assertEqual(str(self.frame.python_status.cget('style')), 'Error.TLabel')
+        self.assertNotIn('disabled', self.frame.buttons['python_use'].state())
+        with mock.patch.object(rw.environment, 'inspect_python', return_value=self.python_report()), \
+                mock.patch.object(rw.environment, 'check_python_environment', return_value=[]):
+            self.frame.buttons['python_check'].invoke()
+            self.pump(lambda: 'in place' in self.frame.python_status.cget('text'))
+        self.assertEqual(str(self.frame.python_status.cget('style')), 'Ok.TLabel')
+
+    def test_a_python_that_cannot_open_a_window_is_not_asked_about_its_packages(self):
+        with mock.patch.object(rw.environment, 'inspect_python', return_value=self.python_report(compatible=False, tk=False)), \
+                mock.patch.object(rw.environment, 'check_python_environment') as check:
+            self.frame.buttons['python_check'].invoke()
+            self.pump(lambda: 'Tkinter' in self.frame.python_status.cget('text'))
+        check.assert_not_called()
+        text = self.frame.python_status.cget('text')
+        self.assertIn('does not work - no display', text)
+        self.assertIn('Python 3.10 or newer', text)
+
+    def test_what_cannot_be_run_is_shown_as_an_error(self):
+        with mock.patch.object(rw.environment, 'inspect_python', side_effect=FileNotFoundError('Python executable does not exist: x')):
+            self.frame.buttons['python_check'].invoke()
+            self.pump(lambda: 'does not exist' in self.frame.python_status.cget('text'))
+        self.assertEqual(str(self.frame.python_status.cget('style')), 'Error.TLabel')
+        self.assertNotIn('disabled', self.frame.buttons['python_check'].state())
+
+    def test_use_it_for_the_next_launches_saves_it_and_leaves_this_window_alone(self):
+        frame = rw.RadiometricFrame(self.root, Path(self.folder.name) / 'use.json', self.folder.name)
+        frame.python_var.set(r'C:\envs\a\python.exe')
+        with mock.patch.object(rw.environment, 'inspect_python', return_value=self.python_report()):
+            frame.buttons['python_use'].invoke()
+            self.pump(lambda: 'Saved' in frame.python_status.cget('text'))
+        self.assertEqual(wf.environment.read_python_environment(self.folder.name), {'python': r'C:\envs\a\python.exe'})
+        self.assertIn('keeps the Python that it is running', frame.python_status.cget('text'))
+        with mock.patch.object(rw.environment, 'inspect_python', return_value=self.python_report(compatible=False)):
+            frame.buttons['python_use'].invoke()
+            self.pump(lambda: 'needs Python 3.10' in frame.python_status.cget('text'))
+        self.assertEqual(wf.environment.read_python_environment(self.folder.name), {'python': r'C:\envs\a\python.exe'})
+
+    def test_browse_for_the_python_fills_the_field(self):
+        with mock.patch('tkinter.filedialog.askopenfilename', return_value=r'D:\p\python.exe'):
+            self.frame.browse_python()
+        self.assertEqual(self.frame.python_var.get(), r'D:\p\python.exe')
 
     def test_check_environment_lists_the_computer_in_the_log(self):
         def entry(name, status='ok', fix=None):
@@ -779,7 +852,7 @@ class WindowTests(unittest.TestCase):
         headings = [child.cget('text') for child in self.frame.scroll_pages['INPUTS'].body.winfo_children()
                     if child.winfo_class() == 'TLabel']
         self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Reference panel regions',
-                                        'Images to correct'])
+                                        'Images to correct', 'Python environment'])
 
     def test_the_messages_follow_the_width_of_the_page_and_the_help_column_keeps_its_width(self):
         self.root.attributes('-alpha', 0.0)

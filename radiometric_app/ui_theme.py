@@ -2,7 +2,7 @@
 Dark theme shared by the windows of this project (panel_selector.py, radiometric_window.py)
 
 The colors and fonts follow the configuration window of the photogrammetric workflow (compact, neutral dark controls),
-so that the windows can be merged into it later: when that happens this file can be replaced by its theme.
+so that the windows of the two projects look alike.
 """
 
 COLORS = {'background': '#242424', 'panel': '#2b2b2b', 'input': '#595d61', 'foreground': '#dedede',

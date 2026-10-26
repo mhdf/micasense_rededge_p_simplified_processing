@@ -17,6 +17,7 @@ ConfigModel (the values being edited and their validation) has no user interface
 import argparse
 import json
 import os
+import platform
 import queue
 import sys
 import threading
@@ -102,6 +103,12 @@ REGIONS_NOTE = ("- Check inputs: tells whether the folders, the panel capture an
                 "is wrong or the QR code cannot be read. Every band has to be accepted.\n"
                 "The regions are saved in the file above; if it is empty, in panel_regions.json in the results folder, which "
                 "is then filled in above.")
+PYTHON_NOTE = ("The window runs in the Python shown first and cannot change it. The Python chosen here is the one that is "
+               "proposed in the dialog that opens before the window and that the launchers use the next time; it is saved "
+               "in config/python_environment.json, not in the configuration or in the profiles.\n"
+               "- Check this Python: runs it to see its version, whether it can open a window, and which packages and "
+               "ExifTool it has, and what to install if something is missing.\n"
+               "- Use it for the next launches: saves it, after trying it (Python 3.10 or newer, with working Tkinter).")
 RUN_NOTES = {
     'buttons': ("Check inputs, Check environment, Run, Open results folder",
                 "- Check inputs: tells whether everything the correction needs is in place, without running it.\n"
@@ -377,6 +384,8 @@ class RadiometricFrame:
                 for field in wf.FIELDS:
                     if page_of(field['key']) == prefix:
                         self._build_field(page, field)
+                if prefix == 'INPUTS':
+                    self._build_python_section(page)
         for key in BAND_KEYS:                                     # these keys live in the band table
             self.variables[key] = self.band_table
         self.help_panel.describe(save_button, *PROFILE_NOTES['save'])
@@ -523,6 +532,91 @@ class RadiometricFrame:
             self.exiftool_summary = ttk.Label(row, text='', style='Error.TLabel', wraplength=760, justify='left')
         if key == 'PANEL.manual_regions_file':
             self._build_regions_tool(page)
+
+    def _build_python_section(self, page):
+        """ The Python that is running this window, and the one to use the next time: choose it, check it, save it """
+        tk, ttk = self.tk, self.ttk
+        heading = ttk.Label(page, text='Python environment', style='Heading.TLabel')
+        heading.pack(anchor='w', pady=(10, 2))
+        ttk.Separator(page).pack(fill='x', pady=(0, 8))
+        holder = ttk.Frame(page)
+        holder.pack(fill='x', pady=(0, 9))
+        for widget in (heading, holder):
+            self.help_panel.describe(widget, 'Python environment', PYTHON_NOTE)
+        ttk.Label(holder, text='Python running this window', style='Heading.TLabel').pack(anchor='w')
+        ttk.Label(holder, text=f"Python {platform.python_version()}: {sys.executable}", style='Muted.TLabel').pack(
+            anchor='w', pady=(2, 8))
+        ttk.Label(holder, text='Python for the next launches', style='Heading.TLabel').pack(anchor='w')
+        line = ttk.Frame(holder)
+        line.pack(fill='x', pady=(3, 0))
+        self.python_var = tk.StringVar(value=environment.read_python_environment(self.root_folder).get('python')
+                                       or sys.executable)
+        ttk.Entry(line, textvariable=self.python_var).pack(side='left', fill='x', expand=True)
+        ttk.Button(line, text='Browse...', command=self.browse_python).pack(side='left', padx=(6, 0))
+        buttons = ttk.Frame(holder)
+        buttons.pack(anchor='w', pady=(6, 0))
+        self.buttons['python_check'] = ttk.Button(buttons, text='Check this Python', command=lambda: self._python_task('check'))
+        self.buttons['python_use'] = ttk.Button(buttons, text='Use it for the next launches',
+                                                command=lambda: self._python_task('use'))
+        self.buttons['python_check'].pack(side='left')
+        self.buttons['python_use'].pack(side='left', padx=(6, 0))
+        self.python_status = ttk.Label(holder, text='', style='Muted.TLabel', wraplength=760, justify='left')
+        self.python_status.pack(anchor='w', pady=(6, 0))
+
+    def browse_python(self):
+        from tkinter import filedialog
+        current = Path(self.python_var.get().strip().strip('"'))
+        chosen = filedialog.askopenfilename(
+            title="Select Python executable (python.exe)", initialdir=current.parent if current.parent.is_dir() else None,
+            filetypes=(("Python executable", "python.exe pythonw.exe python python3"), ("All files", "*.*")))
+        if chosen:
+            self.python_var.set(chosen)
+
+    def _python_task(self, action):
+        """ Check the Python of the field ('check') or try it and save it for the next launches ('use'), in another thread """
+        path, root = self.python_var.get().strip().strip('"'), self.root_folder
+        self.python_status.configure(text='Running this Python...', style='Muted.TLabel')
+        for name in ('python_check', 'python_use'):
+            self.buttons[name].state(['disabled'])
+
+        def work():
+            try:
+                if action == 'use':
+                    payload = environment.remember_python(root, path)
+                else:
+                    report = environment.inspect_python(path)
+                    items = (environment.check_python_environment(path, root)
+                             if report['python_compatible'] and report['tkinter']['ok'] else None)
+                    payload = {'report': report, 'items': items}
+            except Exception as error:                      # what is wrong is shown, not raised in the thread
+                payload = error
+            self.events.put(('python', (action, payload)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_python(self, action, payload):
+        for name in ('python_check', 'python_use'):
+            self.buttons[name].state(['!disabled'])
+        if isinstance(payload, Exception):
+            self.python_status.configure(text=str(payload), style='Error.TLabel')
+            return
+        if action == 'use':
+            self.python_status.configure(
+                text=f"Saved: the next launches use {payload['executable']} (Python {payload['version']}). "
+                     "This window keeps the Python that it is running.", style='Ok.TLabel')
+            return
+        report, items = payload['report'], payload['items']
+        lines = [f"Python {report['version']}: {report['executable']}",
+                 "Tkinter: " + ('works' if report['tkinter']['ok'] else 'does not work - ' + report['tkinter']['detail'])]
+        if not report['python_compatible']:
+            lines.append("The program needs Python 3.10 or newer.")
+        found = environment.problems(items) if items is not None else []
+        if items is not None and not found:
+            lines.append("All the packages and ExifTool are in place.")
+        elif found:
+            lines += [f"{item['name']}: {item['status']}" + (f" ({item['detail']})" if item['detail'] else '') for item in found]
+            lines.append(environment.install_text(items, report['executable']))
+        good = items is not None and not found
+        self.python_status.configure(text='\n'.join(lines), style='Ok.TLabel' if good else 'Error.TLabel')
 
     def _build_regions_tool(self, page):
         """ The buttons to check the inputs and to open the tool that checks, accepts and draws the panel regions """
@@ -1316,6 +1410,8 @@ class RadiometricFrame:
                 self.help_panel.refresh()
         elif kind == 'environment':
             self._show_environment(payload)
+        elif kind == 'python':
+            self._show_python(*payload)
         elif kind == 'images':
             self._open_selector(payload)
         elif kind == 'bands':

@@ -371,14 +371,14 @@ class RunTests(unittest.TestCase):
         flag = 'sun angle differs'
         self.assertEqual(text.count(flag), 1)                                   # the flag is in the result once
         saved = json.loads(text)
-        self.assertEqual(len(saved['flags']), 1)
+        self.assertEqual(len(saved['flags']), 2)                                # the heading of the panel and the DLS tilt
         entry = saved['captures']['IMG_0010']
         for key in ('flags', 'checks'):
             self.assertNotIn(key, entry)                                        # they are in the provenance record
         self.assertEqual(entry['outputs'], [f'IMG_0010_{number}.tif' for number in (1, 2, 6, 3, 5, 4)])
         self.assertEqual(entry['provenance'], 'IMG_0010_provenance.json')
-        self.assertEqual(sorted(entry['dls']['sun_angle_discrepancy_deg']), ['image', 'panel'])
-        self.assertIn('median_ratio', entry['dls'])
+        self.assertEqual(list(entry['dls']), ['median_ratio'])
+        self.assertAlmostEqual(entry['geometry']['dls_tilt_deg'], 14.99, places=1)
         for audit in saved['panel']['before']['bands'].values():
             for key in ('image_path', 'band_name', 'sat_threshold', 'percent_inner_area', 'geometry'):
                 self.assertNotIn(key, audit)
@@ -415,15 +415,83 @@ class RunTests(unittest.TestCase):
 
     def test_dls_run_reports_the_tilt_flag_of_the_example(self):
         flags = self.with_dls['flags']
-        self.assertEqual(len(flags), 1)
-        self.assertIn('IMG_0010', flags[0])
-        self.assertIn('sun angle', flags[0])
+        self.assertEqual(len(flags), 2)
+        tilt = [flag for flag in flags if 'sun angle' in flag]
+        self.assertEqual(len(tilt), 1)
+        self.assertIn('IMG_0010', tilt[0])
 
     def test_thresholds_of_the_configuration_are_used_and_then_restored(self):
-        limits_before = dict(rct.DLS_CHECKS)
-        result = wf.run(config_for(self.folder / 'loose', **{'CHECKS.max_sun_angle_discrepancy_deg': 30.0}), ROOT)
+        limits_before, geometry_before = dict(rct.DLS_CHECKS), dict(rct.GEOMETRY_CHECKS)
+        result = wf.run(config_for(self.folder / 'loose', **{'CHECKS.max_sun_angle_discrepancy_deg': 30.0,
+                                                             'CHECKS.panel_heading_tolerance_deg': 90.0}), ROOT)
         self.assertEqual(result['flags'], [])
         self.assertEqual(rct.DLS_CHECKS, limits_before)
+        self.assertEqual(rct.GEOMETRY_CHECKS, geometry_before)
+        strict = wf.run(config_for(self.folder / 'strict', **{'CHECKS.max_camera_tilt_deg': 1.0,
+                                                              'CHECKS.image_heading_tolerance_deg': 5.0}), ROOT)
+        text = '\n'.join(strict['flags'])
+        self.assertIn('Camera tilt of the image capture: 1.4 deg', text)
+        self.assertIn('Heading of the camera in the image capture: 83 deg', text)
+        self.assertEqual(rct.GEOMETRY_CHECKS, geometry_before)
+
+    def test_the_geometry_of_the_panel_and_of_the_images_is_checked_once_for_each(self):
+        result = self.panel_only
+        panel = result['panel']['before']['geometry']
+        self.assertAlmostEqual(panel['camera_tilt_deg'], 0.075, places=2)
+        self.assertAlmostEqual(panel['heading_to_sun_deg'], 87.0, places=1)
+        flags = [flag for flag in result['flags'] if 'panel capture' in flag and 'Heading' in flag]
+        self.assertEqual(len(flags), 1)
+        self.assertTrue(flags[0].startswith('IMG_0005: '))
+        provenance = json.loads((self.folder / 'panel_only' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        geometry = provenance['checks']['geometry']
+        self.assertEqual(sorted(geometry), ['image', 'panel'])
+        self.assertAlmostEqual(geometry['image']['heading_to_sun_deg'], 82.8, places=1)
+        self.assertAlmostEqual(geometry['panel']['heading_to_sun_deg'], 87.0, places=1)       # what the panel was like
+        self.assertFalse([flag for flag in provenance['checks']['flags'] if 'panel capture' in flag and 'Heading' in flag])  # its flag is in the result, once
+
+    def test_the_flags_of_the_panel_are_not_repeated_for_every_capture(self):
+        images = self.folder / 'two_captures'
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            shutil.copy(path, images / path.name)
+            if path.name.startswith('IMG_0010'):
+                shutil.copy(path, images / path.name.replace('IMG_0010', 'IMG_0011'))
+        result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'two_captures_out'),
+                         'CHECKS.max_sun_angle_discrepancy_deg': 0.1}, ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertEqual(sum('Heading of the camera in the panel capture' in flag for flag in result['flags']), 1)
+        self.assertEqual(sum('DLS of the panel capture' in flag for flag in result['flags']), 1)   # 0.2 deg > 0.1: once
+        self.assertEqual(sum('DLS of the image capture' in flag for flag in result['flags']), 2)    # one for each capture
+        self.assertEqual(result['summary']['corrected'], 2)
+
+    def test_the_summary_of_the_run(self):
+        summary = self.panel_only['summary']
+        self.assertEqual((summary['captures'], summary['corrected'], summary['files'], summary['flags']), (1, 1, 6, 2))
+        self.assertEqual(summary['panels']['before']['capture'], 'IMG_0005')
+        images = summary['images']
+        self.assertEqual(set(images), {'camera_tilt_deg', 'heading_to_sun_deg', 'sun_elevation_deg', 'dls_tilt_deg',
+                                       'dls_ratio'})
+        self.assertEqual(images['camera_tilt_deg']['outside'], 0)
+        self.assertEqual(images['dls_tilt_deg']['outside'], 1)
+        self.assertEqual(images['sun_elevation_deg']['outside'], None)
+        lines = wf.summary_lines(self.panel_only)
+        self.assertEqual(lines[0], 'Summary: 1 of 1 capture(s) corrected, 6 file(s) written, 2 flag(s).')
+        self.assertTrue(lines[1].startswith('Panel IMG_0005: camera tilt 0.1 deg; heading 87 deg from the sun'))
+        self.assertTrue(any(line.startswith('Images (1): DLS tilt') and '1 outside the limit 10' in line for line in lines))
+        self.assertEqual(wf.summary_lines({'errors': ['x']}), [])
+        saved = json.loads((self.folder / 'panel_only' / wf.RESULT_FILE_NAME).read_text(encoding='utf-8'))
+        self.assertEqual(saved['summary']['corrected'], 1)
+
+    def test_the_statistics_use_the_median_and_skip_what_is_missing(self):
+        self.assertEqual(wf._statistics([3.0, None, 1.0, 2.0]), {'n': 3, 'min': 1.0, 'median': 2.0, 'max': 3.0})
+        self.assertIsNone(wf._statistics([None, None]))
+
+    def test_the_limits_of_the_geometry_have_to_make_sense(self):
+        for key, value in (('CHECKS.max_camera_tilt_deg', 0.0), ('CHECKS.panel_heading_tolerance_deg', 120.0),
+                           ('CHECKS.image_heading_tolerance_deg', -5.0), ('CHECKS.heading_offset_deg', 200.0)):
+            text = '\n'.join(wf.validate_config(wf.merge_config({key: value}), ROOT))
+            self.assertIn(key, text)
+        self.assertEqual(wf.validate_config(wf.merge_config({'CHECKS.heading_offset_deg': -22.0}), ROOT), [])
 
     def test_two_panel_captures_are_compared(self):
         result = wf.run(config_for(self.folder / 'two_panels', **{'INPUTS.reference_panel_capture_after': 'IMG_0005'}), ROOT)

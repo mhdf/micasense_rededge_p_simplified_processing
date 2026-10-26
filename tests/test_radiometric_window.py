@@ -684,7 +684,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.frame.scroll_pages['CORRECTION'].body.winfo_children()[0].cget('text'),
                          'DLS (Downwelling Light Sensor)')
         keys = ['CORRECTION.use_dls'] + [field['key'] for field in wf.FIELDS if field['key'].startswith('CHECKS.')]
-        self.assertEqual(len(keys), 7)
+        self.assertEqual(len(keys), 11)
         for key in keys:
             self.assertIn(key, self.frame.variables)
         for key in keys[1:]:
@@ -786,6 +786,32 @@ class WindowTests(unittest.TestCase):
         self.assertIn('panel factor', helps['CHECKS.panel_drift_tolerance'])
         self.assertIn('DLS and the camera', helps['CHECKS.panel_drift_tolerance'])
         self.assertIn('flag asks you to look', helps['CHECKS.ratio_range_max'])
+
+    def test_the_limits_of_the_geometry_are_on_the_dls_page_with_their_note(self):
+        for key in ('CHECKS.max_camera_tilt_deg', 'CHECKS.panel_heading_tolerance_deg', 'CHECKS.image_heading_tolerance_deg',
+                    'CHECKS.heading_offset_deg'):
+            self.assertTrue(self.inside(self.frame.entries[key], 'CORRECTION'), key)
+        body = self.frame.scroll_pages['CORRECTION'].body
+        headings = {child.cget('text'): child for child in body.winfo_children() if child.winfo_class() == 'TLabel'}
+        found = self.frame.help_panel.explanation_of(headings['Acquisition geometry (limits)'])
+        self.assertIn('0 degrees: the camera faces the sun', found[1])
+        self.assertIn('crossed pattern', found[1])
+        self.assertIn('magnetic declination', wf.FIELDS[wf.FIELD_KEYS.index('CHECKS.heading_offset_deg')]['help'])
+
+    def test_the_summary_of_the_run_is_written_at_the_end_of_the_log(self):
+        result = {'status': 'completed', 'errors': [], 'flags': ['IMG_0010: a flag'], 'outputs': ['a.tif'],
+                  'summary': {'captures': 1, 'corrected': 1, 'files': 1, 'flags': 1, 'irradiance_changes': 0,
+                              'limits': {'camera_tilt_deg': 5.0, 'heading_tolerance_deg': 30.0, 'dls_tilt_deg': 10.0,
+                                         'dls_ratio': [0.5, 2.0]},
+                              'panels': {}, 'images': {'camera_tilt_deg': {'n': 1, 'min': 1.0, 'median': 1.0, 'max': 1.0,
+                                                                           'outside': 0}}}}
+        self.frame._show_result(result)
+        lines = self.frame.log_lines()
+        self.assertIn('FLAG: IMG_0010: a flag', lines)
+        self.assertIn('Summary: 1 of 1 capture(s) corrected, 1 file(s) written, 1 flag(s).', lines)
+        self.assertTrue(any(line.startswith('Images (1): camera tilt (deg): min 1.0') for line in lines))
+        self.assertLess(lines.index('FLAG: IMG_0010: a flag'),
+                        lines.index('Summary: 1 of 1 capture(s) corrected, 1 file(s) written, 1 flag(s).'))
 
     def test_the_use_of_two_panels_is_a_choice_in_the_panel_page(self):
         self.assertTrue(self.inside(self.frame.entries['PANEL.panels_used'], 'PANEL'))

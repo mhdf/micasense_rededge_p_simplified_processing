@@ -329,6 +329,119 @@ def compare_panel_captures(before, after, tolerance=None):
     return { 'bands': result, 'flags': flags }
 
 
+# 7. Geometry of the acquisition: tilt of the camera and direction in which it points with respect to the sun
+# The camera writes its attitude (XMP:Roll, XMP:Pitch, XMP:Yaw, in degrees) and the sun (XMP:SolarAzimuth, from north
+# clockwise, and XMP:SolarElevation, in radians). The heading of the camera is the direction of the top of its image.
+# The angle between the heading and the sun goes from 0 (facing the sun) to 90 (the sun at the side) and 180 (the back to
+# the sun). These are the limits (first guesses, to be adjusted to the data), also kept in the configuration
+GEOMETRY_CHECKS = { 'max_camera_tilt_deg': 5.0,             # angle between the optical axis of the camera and the vertical
+                    'panel_heading_tolerance_deg': 30.0,    # panel: largest angle between the heading and the line of the
+                                                            # sun (0, facing it, or 180, back to it)
+                    'image_heading_tolerance_deg': 30.0,    # images: largest departure from the sun at the side (90)
+                    'heading_offset_deg': 0.0 }             # added to XMP:Yaw to refer it to true north (the magnetic
+                                                            # declination, east positive, if the yaw is magnetic)
+
+
+def _angle_of(metadata, key):
+    """ A number written in the metadata (possibly as text), or None if it is missing or is not a number """
+    try:
+        return _metadata_floats(metadata, key, key, count=1)[0]
+    except MetadataError:
+        return None
+
+
+def camera_tilt_deg(metadata):
+    """ Angle between the optical axis of the camera and the vertical, in degrees, from XMP:Roll and XMP:Pitch (or None) """
+    roll, pitch = _angle_of(metadata, 'XMP:Roll'), _angle_of(metadata, 'XMP:Pitch')
+    if roll is None or pitch is None:
+        return None
+    return float(np.degrees(np.arccos(np.clip(np.cos(np.radians(roll)) * np.cos(np.radians(pitch)), -1, 1))))
+
+
+def sun_elevation_deg(metadata):
+    """ Elevation of the sun above the horizon, in degrees, from XMP:SolarElevation (written in radians), or None """
+    elevation = _angle_of(metadata, 'XMP:SolarElevation')
+    return None if elevation is None else float(np.degrees(elevation))
+
+
+def heading_to_sun_deg(metadata, offset=0.0):
+    """
+    Angle between the heading of the camera (XMP:Yaw plus the offset) and the direction of the sun (XMP:SolarAzimuth, in
+    radians), from 0 to 180 degrees without a side: 0 is facing the sun, 90 the sun at the side, 180 the back to the sun.
+    None if a field is missing
+    """
+    yaw, azimuth = _angle_of(metadata, 'XMP:Yaw'), _angle_of(metadata, 'XMP:SolarAzimuth')
+    if yaw is None or azimuth is None:
+        return None
+    return float(abs((yaw + offset - np.degrees(azimuth) + 180) % 360 - 180))
+
+
+def measure_geometry(images):
+    """
+    The geometry of a capture: the median over its bands of the tilt of the camera, the angle between its heading and the
+    sun, the elevation of the sun and the tilt of the DLS (see Image.dls_sun_angle_discrepancy_deg)
+    Inputs: {band name: rct.Image}. Outputs: {'camera_tilt_deg', 'heading_to_sun_deg', 'sun_elevation_deg', 'dls_tilt_deg'},
+    each a number or None
+    """
+    offset = GEOMETRY_CHECKS['heading_offset_deg']
+    functions = {'camera_tilt_deg': lambda image: camera_tilt_deg(image.metadata),
+                 'heading_to_sun_deg': lambda image: heading_to_sun_deg(image.metadata, offset),
+                 'sun_elevation_deg': lambda image: sun_elevation_deg(image.metadata),
+                 'dls_tilt_deg': lambda image: image.dls_sun_angle_discrepancy_deg()}
+    values = {}
+    for name, function in functions.items():
+        numbers = [number for number in (function(image) for image in images.values()) if number is not None]
+        values[name] = float(np.median(numbers)) if numbers else None
+    return values
+
+
+def _check_geometry(images, kind):
+    values = measure_geometry(images)
+    flags, unavailable = [], []
+    tilt, heading = values['camera_tilt_deg'], values['heading_to_sun_deg']
+    if tilt is None:
+        unavailable.append(f"camera tilt of the {kind} capture (XMP:Roll or XMP:Pitch missing)")
+    elif tilt > GEOMETRY_CHECKS['max_camera_tilt_deg']:
+        flags.append(f"Camera tilt of the {kind} capture: {tilt:.1f} deg from the vertical (limit "
+                     f"{GEOMETRY_CHECKS['max_camera_tilt_deg']:g} deg)")
+    if heading is None:
+        unavailable.append(f"heading of the camera of the {kind} capture (XMP:Yaw or XMP:SolarAzimuth missing)")
+    elif kind == 'panel':
+        off_line = min(heading, 180 - heading)
+        values['heading_departure_deg'] = off_line               # from facing the sun or the back to it
+        if off_line > GEOMETRY_CHECKS['panel_heading_tolerance_deg']:
+            flags.append(f"Heading of the camera in the panel capture: {heading:.0f} deg from the sun; for the panel "
+                         f"expect within {GEOMETRY_CHECKS['panel_heading_tolerance_deg']:g} deg of 0 (facing the sun) or "
+                         f"180 (the back to the sun)")
+    else:
+        departure = abs(heading - 90)                            # from the sun at the side
+        values['heading_departure_deg'] = departure
+        if departure > GEOMETRY_CHECKS['image_heading_tolerance_deg']:
+            flags.append(f"Heading of the camera in the image capture: {heading:.0f} deg from the sun; for mapping "
+                         f"expect within {GEOMETRY_CHECKS['image_heading_tolerance_deg']:g} deg of 90 (the sun at the side)")
+    for flag in flags:
+        warnings.warn(flag, RuntimeWarning)
+    return {'values': values, 'flags': flags, 'unavailable': unavailable}
+
+
+def check_panel_geometry(panel_images):
+    """
+    Check the tilt of the camera and its heading with respect to the sun in a panel capture (see GEOMETRY_CHECKS): the
+    panel is expected to be photographed with the camera facing the sun or with its back to it
+    Inputs: {band name: rct.Image}. Outputs: {'values' (see measure_geometry, plus 'heading_departure_deg': the angle from
+    0 or 180), 'flags', 'unavailable'}; the flags are also issued as RuntimeWarning
+    """
+    return _check_geometry(panel_images, 'panel')
+
+
+def check_image_geometry(images):
+    """
+    The same for a capture to correct, where the sun is expected at the side of the camera (90 degrees); here
+    'heading_departure_deg' is the departure from 90
+    """
+    return _check_geometry(images, 'image')
+
+
 # Provenance record - what was used to produce the outputs, saved next to them
 def _jsonable(value):
     """ Convert numpy values (and containers of them) to plain Python types for json """

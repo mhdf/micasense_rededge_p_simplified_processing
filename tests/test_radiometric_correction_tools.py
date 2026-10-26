@@ -113,6 +113,86 @@ class FilePatternTests(unittest.TestCase):
         self.assertIsNotNone(rct.compile_file_pattern(None))
 
 
+class GeometryTests(unittest.TestCase):
+
+    def test_the_tilt_of_the_camera_comes_from_the_roll_and_the_pitch(self):
+        self.assertAlmostEqual(rct.camera_tilt_deg({'XMP:Roll': 0.0, 'XMP:Pitch': 0.0}), 0.0)
+        self.assertAlmostEqual(rct.camera_tilt_deg({'XMP:Roll': 3.0, 'XMP:Pitch': 0.0}), 3.0)
+        self.assertAlmostEqual(rct.camera_tilt_deg({'XMP:Roll': '3.0', 'XMP:Pitch': '4.0'}), 4.9985, places=3)
+        self.assertIsNone(rct.camera_tilt_deg({'XMP:Roll': 3.0}))
+
+    def test_the_angle_between_the_heading_and_the_sun_has_no_side(self):
+        azimuth = lambda degrees: {'XMP:SolarAzimuth': np.radians(degrees)}
+        self.assertAlmostEqual(rct.heading_to_sun_deg(dict(azimuth(100), **{'XMP:Yaw': 10.0})), 90.0)
+        self.assertAlmostEqual(rct.heading_to_sun_deg(dict(azimuth(100), **{'XMP:Yaw': 190.0})), 90.0)
+        self.assertAlmostEqual(rct.heading_to_sun_deg(dict(azimuth(10), **{'XMP:Yaw': 350.0})), 20.0)    # across north
+        self.assertAlmostEqual(rct.heading_to_sun_deg(dict(azimuth(10), **{'XMP:Yaw': -10.0})), 20.0)
+        self.assertAlmostEqual(rct.heading_to_sun_deg(dict(azimuth(10), **{'XMP:Yaw': 10.0})), 0.0)       # facing the sun
+        self.assertAlmostEqual(rct.heading_to_sun_deg(dict(azimuth(10), **{'XMP:Yaw': 190.0})), 180.0)    # the back to it
+        self.assertAlmostEqual(rct.heading_to_sun_deg(dict(azimuth(100), **{'XMP:Yaw': 30.0}), offset=60.0), 10.0)
+        self.assertIsNone(rct.heading_to_sun_deg({'XMP:Yaw': 10.0}))
+        self.assertAlmostEqual(rct.sun_elevation_deg({'XMP:SolarElevation': np.radians(66.0)}), 66.0)
+        self.assertIsNone(rct.sun_elevation_deg({}))
+
+    def images(self, **metadata):
+        from types import SimpleNamespace
+        values = {'XMP:Roll': 0.0, 'XMP:Pitch': 0.0, 'XMP:Yaw': 0.0, 'XMP:SolarAzimuth': np.radians(90.0),
+                  'XMP:SolarElevation': np.radians(60.0)}
+        values.update(metadata)
+        return {band: SimpleNamespace(metadata=values, dls_sun_angle_discrepancy_deg=lambda: 2.0) for band in ('Blue', 'Red')}
+
+    def test_the_panel_is_expected_facing_the_sun_or_with_the_back_to_it(self):
+        facing = rct.check_panel_geometry(self.images(**{'XMP:Yaw': 80.0}))             # 10 deg from facing the sun
+        self.assertEqual(facing['flags'], [])
+        self.assertAlmostEqual(facing['values']['heading_departure_deg'], 10.0)
+        back = rct.check_panel_geometry(self.images(**{'XMP:Yaw': 280.0}))              # 170: 10 deg from the back to it
+        self.assertEqual(back['flags'], [])
+        side = rct.check_panel_geometry(self.images(**{'XMP:Yaw': 0.0}))                # the sun at the side
+        self.assertEqual(len(side['flags']), 1)
+        self.assertIn('90 deg from the sun', side['flags'][0])
+        self.assertIn('panel capture', side['flags'][0])
+
+    def test_the_images_are_expected_with_the_sun_at_the_side(self):
+        side = rct.check_image_geometry(self.images())
+        self.assertEqual(side['flags'], [])
+        self.assertAlmostEqual(side['values']['heading_departure_deg'], 0.0)
+        facing = rct.check_image_geometry(self.images(**{'XMP:Yaw': 80.0}))
+        self.assertEqual(len(facing['flags']), 1)
+        self.assertIn('image capture', facing['flags'][0])
+        self.assertIn('within 30 deg of 90', facing['flags'][0])
+
+    def test_a_tilted_camera_is_flagged_and_the_limits_can_be_changed(self):
+        tilted = rct.check_image_geometry(self.images(**{'XMP:Roll': 8.0}))
+        self.assertEqual(len(tilted['flags']), 1)
+        self.assertIn('Camera tilt of the image capture: 8.0 deg', tilted['flags'][0])
+        with mock.patch.dict(rct.GEOMETRY_CHECKS, {'max_camera_tilt_deg': 10.0}):
+            self.assertEqual(rct.check_image_geometry(self.images(**{'XMP:Roll': 8.0}))['flags'], [])
+        self.assertEqual(len(rct.check_image_geometry(self.images(**{'XMP:Yaw': -80.0}))['flags']), 1)    # 170 from the sun
+        with mock.patch.dict(rct.GEOMETRY_CHECKS, {'heading_offset_deg': 80.0}):               # the yaw is corrected first
+            self.assertEqual(rct.check_image_geometry(self.images(**{'XMP:Yaw': -80.0}))['flags'], [])
+
+    def test_what_is_missing_is_reported_and_not_flagged(self):
+        from types import SimpleNamespace
+        empty = {'Blue': SimpleNamespace(metadata={}, dls_sun_angle_discrepancy_deg=lambda: None)}
+        result = rct.check_image_geometry(empty)
+        self.assertEqual(result['flags'], [])
+        self.assertEqual(len(result['unavailable']), 2)
+        self.assertIsNone(result['values']['camera_tilt_deg'])
+
+    def test_the_values_are_the_median_of_the_bands(self):
+        from types import SimpleNamespace
+        images = {band: SimpleNamespace(metadata={'XMP:Roll': roll, 'XMP:Pitch': 0.0}, dls_sun_angle_discrepancy_deg=lambda: None)
+                  for band, roll in (('A', 1.0), ('B', 2.0), ('C', 9.0))}
+        self.assertAlmostEqual(rct.measure_geometry(images)['camera_tilt_deg'], 2.0)
+
+    def test_the_flags_are_issued_as_warnings(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            rct.check_image_geometry(self.images(**{'XMP:Roll': 8.0}))
+        self.assertTrue(any(issubclass(warning.category, RuntimeWarning) and 'Camera tilt' in str(warning.message)
+                            for warning in caught))
+
+
 class PatternPreviewTests(unittest.TestCase):
 
     def setUp(self):

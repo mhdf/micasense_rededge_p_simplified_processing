@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import shutil
+import statistics
 import subprocess
 import sys
 import traceback
@@ -85,6 +86,27 @@ GROUP_NOTES = {
         "- Jump: change of the irradiance of a band between consecutive captures: a spike if it comes back, a "
         "step if it stays.\n"
         "- Panel drift: the two panel captures against each other (only with a second panel capture).",
+    "Acquisition geometry (limits)":
+        "These checks look at how the camera was pointed in each capture. They only raise flags: they never "
+        "change the result.\n"
+        "# What is measured\n"
+        "- Camera tilt: the angle between the optical axis of the camera and the vertical, from XMP:Roll and "
+        "XMP:Pitch. A camera that looks straight down has 0.\n"
+        "- Heading and the sun: the angle between the heading of the camera, which is the direction of the "
+        "top of its image (XMP:Yaw), and the direction of the sun (XMP:SolarAzimuth).\n"
+        "# How to read the angle between the heading and the sun\n"
+        "- 0 degrees: the camera faces the sun.\n"
+        "- 90 degrees: the sun is at the side of the camera.\n"
+        "- 180 degrees: the camera has its back to the sun.\n"
+        "# What is expected\n"
+        "- The reference panel: facing the sun or with the back to it, close to 0 or to 180.\n"
+        "- The images to correct: with the sun at the side, close to 90, which lessens the directional "
+        "effects of the surfaces.\n"
+        "It is the heading of the camera that counts, not the direction of the flight line. If the aircraft "
+        "keeps its heading during the flight, the angle is the same in every line. If its nose follows the "
+        "lines of a crossed pattern, the angle of one set of lines differs by 90 degrees from the other: the "
+        "sun cannot be at the side in both. Set the limit for that, or turn the pattern 45 degrees from the "
+        "sun.",
 }
 
 FIELDS = [
@@ -310,6 +332,29 @@ FIELDS = [
                   "one of the photos.\n"
                   "Only used with a second panel capture. A flag does not change the result; whether the second panel "
                   "also calibrates the images is chosen in 'Panels used when there are two'.")},
+    {'key': 'CHECKS.max_camera_tilt_deg', 'group': 'Acquisition geometry (limits)', 'kind': 'float', 'default': rct.GEOMETRY_CHECKS['max_camera_tilt_deg'],
+     'label': 'Largest camera tilt (deg)',
+     'help': ("Largest angle accepted between the optical axis of the camera and the vertical, in degrees, in the "
+                  "panel capture and in each image capture. It is worked out from XMP:Roll and XMP:Pitch.\n"
+                  "A camera that does not look straight down sees the ground at an angle, and surfaces that are not "
+                  "diffuse (soil, leaves) look different from it.")},
+    {'key': 'CHECKS.panel_heading_tolerance_deg', 'group': 'Acquisition geometry (limits)', 'kind': 'float', 'default': rct.GEOMETRY_CHECKS['panel_heading_tolerance_deg'],
+     'label': 'Panel: largest angle from facing the sun or away (deg)',
+     'help': ("How far from the line of the sun the heading of the camera may be in a panel capture, in degrees. "
+                  "The angle between the heading and the sun is 0 when the camera faces the sun and 180 when it has its "
+                  "back to it, and the check accepts the angles within this tolerance of 0 or of 180.\n"
+                  "With 30, the angles from 0 to 30 and from 150 to 180 are accepted.")},
+    {'key': 'CHECKS.image_heading_tolerance_deg', 'group': 'Acquisition geometry (limits)', 'kind': 'float', 'default': rct.GEOMETRY_CHECKS['image_heading_tolerance_deg'],
+     'label': 'Images: largest angle from the sun at the side (deg)',
+     'help': ("How far from 90 degrees the angle between the heading of the camera and the sun may be in the images "
+                  "to correct, in degrees. 90 is the sun at the side of the camera.\n"
+                  "With 30, the angles from 60 to 120 are accepted.")},
+    {'key': 'CHECKS.heading_offset_deg', 'group': 'Acquisition geometry (limits)', 'kind': 'float', 'default': rct.GEOMETRY_CHECKS['heading_offset_deg'],
+     'label': 'Correction of the yaw (deg)',
+     'help': ("Added to XMP:Yaw before it is compared with the direction of the sun, in degrees.\n"
+                  "The direction of the sun is measured from true north. If the yaw of your camera is measured from "
+                  "magnetic north, put here the magnetic declination of the place (east is positive). If you do not "
+                  "know it, leave 0 and use wide limits.")},
 ]
 
 FIELD_KEYS = [field['key'] for field in FIELDS]
@@ -608,6 +653,11 @@ def validate_config(config, root='.'):
             problems.append(f"{key} must be positive")
     if config['CHECKS.ratio_range_min'] >= config['CHECKS.ratio_range_max']:
         problems.append("CHECKS.ratio_range_min must be smaller than CHECKS.ratio_range_max")
+    for key in ('CHECKS.max_camera_tilt_deg', 'CHECKS.panel_heading_tolerance_deg', 'CHECKS.image_heading_tolerance_deg'):
+        if not 0 < config[key] <= 90:
+            problems.append(f"{key} must be between 0 and 90 degrees")
+    if not -180 <= config['CHECKS.heading_offset_deg'] <= 180:
+        problems.append("CHECKS.heading_offset_deg must be between -180 and 180 degrees")
 
     images = resolve_path(root, config['INPUTS.images_folder'])
     if not images.is_dir():
@@ -686,7 +736,7 @@ def run(config, root='.', progress=None):
     result = {'status': 'failed', 'stages': list(STAGES), 'errors': [], 'flags': [], 'captures': {},
               'panel': {}, 'outputs': []}
     results_folder = None
-    limits = dict(rct.DLS_CHECKS)
+    limits, geometry_limits = dict(rct.DLS_CHECKS), dict(rct.GEOMETRY_CHECKS)
     try:
         config = merge_config(config)
         result['config'] = config
@@ -702,6 +752,7 @@ def run(config, root='.', progress=None):
                                'max_sun_angle_discrepancy_deg': config['CHECKS.max_sun_angle_discrepancy_deg'],
                                'jump_threshold': config['CHECKS.jump_threshold'],
                                'panel_drift_tolerance': config['CHECKS.panel_drift_tolerance']})
+        rct.GEOMETRY_CHECKS.update({key: config['CHECKS.' + key] for key in geometry_limits})
         _run_stages(config, root, results_folder, result, progress)
     except Exception as error:   # the result must always say what happened
         result['errors'].append(f"{type(error).__name__}: {error}")
@@ -710,6 +761,8 @@ def run(config, root='.', progress=None):
     finally:
         rct.DLS_CHECKS.clear()
         rct.DLS_CHECKS.update(limits)
+        rct.GEOMETRY_CHECKS.clear()
+        rct.GEOMETRY_CHECKS.update(geometry_limits)
     if results_folder is not None:
         result['result_file'] = str(results_folder / RESULT_FILE_NAME)
         _write_result(results_folder / RESULT_FILE_NAME, result)
@@ -781,6 +834,11 @@ def _run_stages(config, root, results_folder, result, progress):
         panels[label] = objects
         result['panel'][label] = {'capture': name, 'bands': {band: rct._jsonable(rct.compact_panel_audit(image.panel_audit))
                                                               for band, image in objects.items()}}
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter('always')
+            geometry = rct.check_panel_geometry(objects)
+        result['panel'][label]['geometry'] = rct._jsonable(geometry['values'])
+        result['flags'].extend(f"{name}: {flag}" for flag in geometry['flags'])
     if 'after' in panels:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
@@ -825,9 +883,13 @@ def _run_stages(config, root, results_folder, result, progress):
                     written.append(str(output_path))
                     entry['outputs'].append(output_path.name)           # the files are in the results folder
                 checks = rct.check_dls_capture(panels['before'], objects, ratios or None)
+                geometry = rct.check_image_geometry(objects)
+                checks['geometry'] = {'panel': result['panel']['before']['geometry'], 'image': geometry['values']}
+                checks['flags'] = list(checks['flags']) + geometry['flags']
+                checks['unavailable'] = list(checks['unavailable']) + geometry['unavailable']
                 flags = list(checks['flags'])
-                entry['dls'] = rct._jsonable({key: checks[key] for key in ('median_ratio', 'sun_angle_discrepancy_deg')
-                                              if key in checks})
+                entry['geometry'] = rct._jsonable(geometry['values'])
+                entry['dls'] = rct._jsonable({key: checks[key] for key in ('median_ratio',) if key in checks})
                 provenance = rct.write_provenance(results_folder / (name + '_provenance.json'), records,
                                                   parameters=parameters, checks=checks)
                 entry['provenance'] = Path(provenance).name
@@ -840,7 +902,13 @@ def _run_stages(config, root, results_folder, result, progress):
         except Exception as error:
             entry['errors'].append(f"{type(error).__name__}: {error}")
             result['errors'].append(f"{name}: {error}")
-        result['flags'].extend(f"{name}: {flag}" for flag in flags)
+        for flag in flags:
+            if flag.startswith('DLS of the panel capture'):          # the same in every capture: once, with the panel
+                flag = f"{panel_name}: {flag}"
+                if flag not in result['flags']:
+                    result['flags'].append(flag)
+            else:
+                result['flags'].append(f"{name}: {flag}")
 
     _progress(progress, 'DLS_CHECKS', "Checking the irradiance along the captures", len(names), len(names))
     result['irradiance_changes'] = irradiance_series_changes(series, config['CHECKS.jump_threshold'])
@@ -853,6 +921,88 @@ def _run_stages(config, root, results_folder, result, progress):
     produced = any(entry['outputs'] for entry in result['captures'].values())
     failed = any(entry['errors'] for entry in result['captures'].values())
     result['status'] = 'failed' if not produced else ('completed_with_errors' if failed else 'completed')
+    result['summary'] = build_summary(result, config)
+
+
+def _statistics(values):
+    """ {'n', 'min', 'median', 'max'} of the numbers that are not None, or None if there are none """
+    numbers = [value for value in values if value is not None]
+    if not numbers:
+        return None
+    return {'n': len(numbers), 'min': min(numbers), 'median': statistics.median(numbers), 'max': max(numbers)}
+
+
+def build_summary(result, config):
+    """
+    What the run found, in numbers, for the end of the log and the result file: how many captures were corrected, the
+    geometry and the DLS of the panel captures, and the minimum, median and maximum over the corrected captures of the tilt of
+    the camera, the angle between its heading and the sun, the elevation of the sun, the tilt of the DLS and the DLS ratio,
+    each with how many captures are outside the limits of the configuration
+    """
+    done = [entry for entry in result['captures'].values() if entry.get('outputs') and not entry.get('errors')]
+    tilt_limit, tolerance = config['CHECKS.max_camera_tilt_deg'], config['CHECKS.image_heading_tolerance_deg']
+    dls_limit = config['CHECKS.max_sun_angle_discrepancy_deg']
+    low, high = config['CHECKS.ratio_range_min'], config['CHECKS.ratio_range_max']
+
+    def column(group, key):
+        return [entry[group].get(key) for entry in done if entry.get(group)]
+    images = {}
+    for name, values, outside in (
+            ('camera_tilt_deg', column('geometry', 'camera_tilt_deg'), lambda value: value > tilt_limit),
+            ('heading_to_sun_deg', column('geometry', 'heading_to_sun_deg'), lambda value: abs(value - 90) > tolerance),
+            ('sun_elevation_deg', column('geometry', 'sun_elevation_deg'), None),
+            ('dls_tilt_deg', column('geometry', 'dls_tilt_deg'), lambda value: value > dls_limit),
+            ('dls_ratio', column('dls', 'median_ratio'), lambda value: not low <= value <= high)):
+        stats = _statistics(values)
+        if stats:
+            stats['outside'] = None if outside is None else sum(outside(value) for value in values if value is not None)
+            images[name] = stats
+    panels = {label: dict(result['panel'][label]['geometry'], capture=result['panel'][label]['capture'])
+              for label in ('before', 'after') if result['panel'].get(label, {}).get('geometry')}
+    return {'captures': len(result['captures']), 'corrected': len(done), 'files': len(result['outputs']),
+            'flags': len(result['flags']),
+            'irradiance_changes': sum(len(events) for events in result.get('irradiance_changes', {}).values()),
+            'limits': {'camera_tilt_deg': tilt_limit, 'heading_tolerance_deg': tolerance, 'dls_tilt_deg': dls_limit,
+                       'dls_ratio': [low, high]},
+            'panels': panels, 'images': rct._jsonable(images)}
+
+
+def summary_lines(result):
+    """ The summary of a run (see build_summary) as lines of text for the log; [] if the run has none """
+    summary = result.get('summary')
+    if not summary:
+        return []
+
+    def number(value, digits=0):
+        return 'unknown' if value is None else f"{value:.{digits}f}"
+
+    lines = [f"Summary: {summary['corrected']} of {summary['captures']} capture(s) corrected, {summary['files']} file(s) "
+             f"written, {summary['flags']} flag(s)."]
+    for panel in summary['panels'].values():
+        lines.append(f"Panel {panel['capture']}: camera tilt {number(panel.get('camera_tilt_deg'), 1)} deg; heading "
+                     f"{number(panel.get('heading_to_sun_deg'))} deg from the sun (0 = facing it, 180 = the back to it); "
+                     f"DLS tilt {number(panel.get('dls_tilt_deg'), 1)} deg; sun elevation "
+                     f"{number(panel.get('sun_elevation_deg'))} deg.")
+    images, limits = summary['images'], summary['limits']
+    descriptions = (
+        ('camera_tilt_deg', 1, "camera tilt (deg)", f"limit {limits['camera_tilt_deg']:g}"),
+        ('heading_to_sun_deg', 0, "camera heading from the sun (deg; 90 = the sun at the side)",
+         f"limit {limits['heading_tolerance_deg']:g} from 90"),
+        ('sun_elevation_deg', 0, "sun elevation (deg)", None),
+        ('dls_tilt_deg', 1, "DLS tilt (deg, at least)", f"limit {limits['dls_tilt_deg']:g}"),
+        ('dls_ratio', 3, "DLS ratio, panel / image", f"range {limits['dls_ratio'][0]:g} to {limits['dls_ratio'][1]:g}"))
+    for key, digits, label, limit in descriptions:
+        stats = images.get(key)
+        if not stats:
+            continue
+        line = (f"Images ({stats['n']}): {label}: min {number(stats['min'], digits)}, median "
+                f"{number(stats['median'], digits)}, max {number(stats['max'], digits)}")
+        if limit:
+            line += f"; {stats['outside']} outside the {limit}"
+        lines.append(line + '.')
+    if summary.get('irradiance_changes'):
+        lines.append(f"Irradiance along the captures: {summary['irradiance_changes']} spike(s) or step(s) found.")
+    return lines
 
 
 def _write_result(path, result):
@@ -908,6 +1058,8 @@ def main(argv=None):
         print(f"ERROR: {error}", file=sys.stderr)
     for flag in result['flags']:
         print(f"FLAG: {flag}")
+    for line in summary_lines(result):
+        print(line)
     if 'result_file' in result:
         print(f"RADIOMETRIC_RESULT_JSON={Path(result['result_file']).resolve()}")
     print(f"Status: {result['status']}")

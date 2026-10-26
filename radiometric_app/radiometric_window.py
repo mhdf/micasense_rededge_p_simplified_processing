@@ -1288,6 +1288,8 @@ class RadiometricFrame:
             self.log(f"ERROR: {error}", 'error')
         for flag in result['flags']:
             self.log(f"FLAG: {flag}", 'flag')
+        for line in wf.summary_lines(result):
+            self.log(line)
         done = len(result['outputs'])
         text = f"Status: {result['status']}. {done} image(s) written"
         if 'result_file' in result:

@@ -848,12 +848,13 @@ def _run_stages(config, root, results_folder, result, progress):
 
     # REFLECTANCE and DLS_CHECKS of each capture
     series = {band: [] for band in bands}
+    events, checked = [], 0                      # the flags of the captures, to be counted by criterion (group_flag_events)
     parameters = {'config': config, 'panel_reflectance_levels': levels, 'panel_reflectance_source': reflectance_info}
     for number, name in enumerate(names, start=1):
         _progress(progress, 'REFLECTANCE', f"Correcting {name}", number - 1, len(names))
         entry = {'outputs': [], 'errors': []}
         result['captures'][name] = entry
-        written, flags = [], []
+        written, flags, details = [], [], []
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter('always')
@@ -887,7 +888,8 @@ def _run_stages(config, root, results_folder, result, progress):
                 checks['geometry'] = {'panel': result['panel']['before']['geometry'], 'image': geometry['values']}
                 checks['flags'] = list(checks['flags']) + geometry['flags']
                 checks['unavailable'] = list(checks['unavailable']) + geometry['unavailable']
-                flags = list(checks['flags'])
+                flags, details = list(checks['flags']), checks['flag_details'] + geometry['flag_details']
+                checked += 1
                 entry['geometry'] = rct._jsonable(geometry['values'])
                 entry['dls'] = rct._jsonable({key: checks[key] for key in ('median_ratio',) if key in checks})
                 provenance = rct.write_provenance(results_folder / (name + '_provenance.json'), records,
@@ -902,26 +904,120 @@ def _run_stages(config, root, results_folder, result, progress):
         except Exception as error:
             entry['errors'].append(f"{type(error).__name__}: {error}")
             result['errors'].append(f"{name}: {error}")
-        for flag in flags:
-            if flag.startswith('DLS of the panel capture'):          # the same in every capture: once, with the panel
+        for number, flag in enumerate(flags):
+            detail = details[number] if number < len(details) else None
+            if detail is None:
+                result['flags'].append(f"{name}: {flag}")
+            elif detail['scope'] == 'panel':                         # the same in every capture: once, with the panel
                 flag = f"{panel_name}: {flag}"
                 if flag not in result['flags']:
                     result['flags'].append(flag)
             else:
-                result['flags'].append(f"{name}: {flag}")
+                events.append((name, detail))
+
+    groups = group_flag_events(events, checked, names)
 
     _progress(progress, 'DLS_CHECKS', "Checking the irradiance along the captures", len(names), len(names))
     result['irradiance_changes'] = irradiance_series_changes(series, config['CHECKS.jump_threshold'])
-    for band, events in result['irradiance_changes'].items():
-        for event in events:
-            result['flags'].append(f"{event['capture']}: {band} irradiance {event['kind']} "
-                                   f"({100 * event['change']:+.1f} % from the previous capture)")
+    groups += group_irradiance_changes(result['irradiance_changes'], config['CHECKS.jump_threshold'], len(names), names)
+    result['flag_groups'] = [{key: value for key, value in group.items() if key != 'message'} for group in groups]
+    result['flags'].extend(group['message'] for group in groups)
 
     _progress(progress, 'PROVENANCE', "Saving the result file", len(names), len(names))
     produced = any(entry['outputs'] for entry in result['captures'].values())
     failed = any(entry['errors'] for entry in result['captures'].values())
     result['status'] = 'failed' if not produced else ('completed_with_errors' if failed else 'completed')
     result['summary'] = build_summary(result, config)
+
+
+# The flags of the captures are counted by criterion: 'DLS tilt over 10 deg in 386 of 409 captures (...): IMG_0010 to IMG_0044, ...'
+FLAG_LIST_LIMIT = 12                             # items of the list of captures in the message (the result file has all)
+FLAG_CRITERIA = (                                # (criterion, label from the limit, name of the value, unit, decimals)
+    ('camera_tilt', lambda limit: f"Camera tilt over {limit:g} deg", 'tilt', ' deg', 1),
+    ('heading', lambda limit: f"Camera heading more than {limit:g} deg from the sun at the side (90 deg)",
+     'heading', ' deg from the sun', 0),
+    ('dls_tilt', lambda limit: f"DLS tilt over {limit:g} deg", 'tilt of at least', ' deg', 1),
+    ('ratio_range', lambda limit: f"DLS ratio outside {limit[0]:g} to {limit[1]:g}", 'ratio', '', 3),
+    ('band_ratio_departure', lambda limit: f"DLS ratio of a band more than {100 * limit:g} % from the median of the bands",
+     'departure', ' %', 1))
+
+
+def capture_list_text(names, order, maximum=FLAG_LIST_LIMIT, texts=None):
+    """
+    The captures of a flag as text, in the order of the run (order: the names of all the captures): three or more neighbours
+    as 'first to last', at most 'maximum' items and 'and N more captures' for the rest. texts: {capture: text written after
+    its name}; the captures are then written one by one
+    """
+    position = {name: number for number, name in enumerate(order)}
+    names = sorted(set(names), key=position.__getitem__)
+    items, index = [], 0                         # (text, number of captures)
+    while index < len(names):
+        end = index
+        while not texts and end + 1 < len(names) and position[names[end + 1]] == position[names[end]] + 1:
+            end += 1
+        if end - index >= 2:
+            items.append((f"{names[index]} to {names[end]}", end - index + 1))
+        else:
+            items.extend((name + (f" ({texts[name]})" if texts else ''), 1) for name in names[index:end + 1])
+        index = end + 1
+    rest = sum(count for _, count in items[maximum:])
+    return ', '.join(text for text, _ in items[:maximum]) + (f", and {rest} more capture{'s' if rest > 1 else ''}" if rest else '')
+
+
+def group_flag_events(events, total, order):
+    """
+    Count the flags of the captures by criterion
+    Inputs: [(capture, detail)] with the 'flag_details' of rct.check_dls_capture and rct.check_image_geometry; the number
+            of captures that were checked and the names of all the captures in the order of the run
+    Outputs: one dictionary per criterion that was flagged, in the order of FLAG_CRITERIA: {'criterion', 'label', 'count',
+             'of', 'captures' (all of them), 'bands', 'min', 'max' (of the values) and 'message'}, the text for the log
+             with the count, the range of the values and the captures (see capture_list_text)
+    """
+    groups = []
+    for criterion, label, value_name, unit, digits in FLAG_CRITERIA:
+        found = [(capture, detail) for capture, detail in events if detail['criterion'] == criterion]
+        if not found:
+            continue
+        captures = sorted({capture for capture, _ in found}, key=order.index)
+        scale = 100 if criterion == 'band_ratio_departure' else 1
+        values = [abs(detail['value']) * scale for _, detail in found]
+        bands = sorted({detail['band'] for _, detail in found if detail['band']})
+        low, high = min(values), max(values)
+        values_text = (f"{low:.{digits}f}{unit}" if round(low, digits) == round(high, digits)
+                       else f"{low:.{digits}f} to {high:.{digits}f}{unit}")
+        label_text = label(found[0][1]['limit'])
+        message = (f"{label_text} in {len(captures)} of {total} capture{'s' if total != 1 else ''} "
+                   f"({value_name} {values_text}{'; bands ' + ', '.join(bands) if bands else ''}): "
+                   f"{capture_list_text(captures, order)}")
+        groups.append({'criterion': criterion, 'label': label_text, 'count': len(captures), 'of': total,
+                       'captures': captures, 'bands': bands, 'min': low, 'max': high, 'message': message})
+    return groups
+
+
+def group_irradiance_changes(changes, threshold, total, order):
+    """
+    The spikes and steps of the irradiance (see irradiance_series_changes) counted by kind over the bands, in the form of
+    group_flag_events; each capture says the largest change and in how many bands it was found
+    """
+    groups = []
+    for kind in ('spike', 'step'):
+        found = {}
+        for events in changes.values():
+            for event in events:
+                if event['kind'] == kind:
+                    found.setdefault(event['capture'], []).append(event['change'])
+        if not found:
+            continue
+        texts = {capture: f"{100 * max(values, key=abs):+.1f} %, {len(values)} band{'s' if len(values) > 1 else ''}"
+                 for capture, values in found.items()}
+        captures = sorted(found, key=order.index)
+        label = f"Irradiance {kind} of more than {100 * threshold:g} % from the previous capture"
+        message = (f"{label} in {len(captures)} of {total} capture{'s' if total != 1 else ''}: "
+                   f"{capture_list_text(captures, order, texts=texts)}")
+        groups.append({'criterion': f'irradiance_{kind}', 'label': label, 'count': len(captures), 'of': total,
+                       'captures': captures, 'changes': {capture: found[capture] for capture in captures},
+                       'message': message})
+    return groups
 
 
 def _statistics(values):

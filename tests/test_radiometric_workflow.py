@@ -369,9 +369,12 @@ class RunTests(unittest.TestCase):
         folder = self.folder / 'panel_only'
         text = (folder / wf.RESULT_FILE_NAME).read_text(encoding='utf-8')
         flag = 'sun angle differs'
-        self.assertEqual(text.count(flag), 1)                                   # the flag is in the result once
+        self.assertEqual(text.count(flag), 0)                                   # the flags of the captures are counted instead
         saved = json.loads(text)
         self.assertEqual(len(saved['flags']), 2)                                # the heading of the panel and the DLS tilt
+        self.assertEqual([group['criterion'] for group in saved['flag_groups']], ['dls_tilt'])
+        self.assertEqual(saved['flag_groups'][0]['captures'], ['IMG_0010'])
+        self.assertNotIn('message', saved['flag_groups'][0])                    # it is in the flags
         entry = saved['captures']['IMG_0010']
         for key in ('flags', 'checks'):
             self.assertNotIn(key, entry)                                        # they are in the provenance record
@@ -416,9 +419,8 @@ class RunTests(unittest.TestCase):
     def test_dls_run_reports_the_tilt_flag_of_the_example(self):
         flags = self.with_dls['flags']
         self.assertEqual(len(flags), 2)
-        tilt = [flag for flag in flags if 'sun angle' in flag]
-        self.assertEqual(len(tilt), 1)
-        self.assertIn('IMG_0010', tilt[0])
+        tilt = [flag for flag in flags if 'DLS tilt' in flag]
+        self.assertEqual(tilt, ['DLS tilt over 10 deg in 1 of 1 capture (tilt of at least 15.0 deg): IMG_0010'])
 
     def test_thresholds_of_the_configuration_are_used_and_then_restored(self):
         limits_before, geometry_before = dict(rct.DLS_CHECKS), dict(rct.GEOMETRY_CHECKS)
@@ -430,8 +432,9 @@ class RunTests(unittest.TestCase):
         strict = wf.run(config_for(self.folder / 'strict', **{'CHECKS.max_camera_tilt_deg': 1.0,
                                                               'CHECKS.image_heading_tolerance_deg': 5.0}), ROOT)
         text = '\n'.join(strict['flags'])
-        self.assertIn('Camera tilt of the image capture: 1.4 deg', text)
-        self.assertIn('Heading of the camera in the image capture: 83 deg', text)
+        self.assertIn('Camera tilt over 1 deg in 1 of 1 capture (tilt 1.4 deg): IMG_0010', text)
+        self.assertIn('Camera heading more than 5 deg from the sun at the side (90 deg) in 1 of 1 capture '
+                      '(heading 83 deg from the sun): IMG_0010', text)
         self.assertEqual(rct.GEOMETRY_CHECKS, geometry_before)
 
     def test_the_geometry_of_the_panel_and_of_the_images_is_checked_once_for_each(self):
@@ -461,8 +464,67 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['status'], 'completed', result['errors'])
         self.assertEqual(sum('Heading of the camera in the panel capture' in flag for flag in result['flags']), 1)
         self.assertEqual(sum('DLS of the panel capture' in flag for flag in result['flags']), 1)   # 0.2 deg > 0.1: once
-        self.assertEqual(sum('DLS of the image capture' in flag for flag in result['flags']), 2)    # one for each capture
+        self.assertEqual(sum('DLS of the image capture' in flag for flag in result['flags']), 0)    # they are counted instead
+        self.assertIn('DLS tilt over 0.1 deg in 2 of 2 captures (tilt of at least 15.0 deg): IMG_0010, IMG_0011',
+                      result['flags'])
+        self.assertEqual(result['flag_groups'][0]['captures'], ['IMG_0010', 'IMG_0011'])
         self.assertEqual(result['summary']['corrected'], 2)
+
+    def test_flags_of_the_same_criterion_are_counted_with_the_captures_listed(self):
+        order = [f'IMG_{number:04d}' for number in range(10, 30)]
+        tilt = lambda value: {'criterion': 'dls_tilt', 'scope': 'image', 'band': None, 'value': value, 'limit': 10.0}
+        events = [(name, tilt(10.0 + number)) for number, name in enumerate(order[:6])]          # IMG_0010 to IMG_0015
+        events += [(order[8], tilt(20.0)), (order[12], tilt(12.0)), (order[13], tilt(11.0))]
+        events += [(order[4], {'criterion': 'camera_tilt', 'scope': 'image', 'band': None, 'value': 6.2, 'limit': 5.0})]
+        groups = wf.group_flag_events(events, 20, order)
+        self.assertEqual([group['criterion'] for group in groups], ['camera_tilt', 'dls_tilt'])   # the order of FLAG_CRITERIA
+        self.assertEqual(groups[0]['message'], 'Camera tilt over 5 deg in 1 of 20 captures (tilt 6.2 deg): IMG_0014')
+        self.assertEqual(groups[1]['message'], 'DLS tilt over 10 deg in 9 of 20 captures (tilt of at least 10.0 to 20.0 deg): '
+                                               'IMG_0010 to IMG_0015, IMG_0018, IMG_0022, IMG_0023')
+        self.assertEqual((groups[1]['count'], groups[1]['of'], groups[1]['min'], groups[1]['max']), (9, 20, 10.0, 20.0))
+        self.assertEqual(groups[1]['captures'], [order[number] for number in (0, 1, 2, 3, 4, 5, 8, 12, 13)])
+
+    def test_flags_of_the_bands_are_counted_by_capture_and_name_the_bands(self):
+        order = ['A_1', 'A_2', 'A_3']
+        ratio = lambda band, value: {'criterion': 'ratio_range', 'scope': 'image', 'band': band, 'value': value,
+                                     'limit': [0.5, 2.0]}
+        events = [('A_2', ratio('Blue', 0.31)), ('A_2', ratio('Green', 0.4)), ('A_3', ratio('Blue', 2.4))]
+        group = wf.group_flag_events(events, 3, order)[0]
+        self.assertEqual(group['count'], 2)                                      # captures, not (capture, band) pairs
+        self.assertEqual(group['bands'], ['Blue', 'Green'])
+        self.assertEqual(group['message'], 'DLS ratio outside 0.5 to 2 in 2 of 3 captures (ratio 0.310 to 2.400; bands Blue, '
+                                           'Green): A_2, A_3')
+        departure = {'criterion': 'band_ratio_departure', 'scope': 'image', 'band': 'Red', 'value': -0.125, 'limit': 0.1}
+        message = wf.group_flag_events([('A_1', departure)], 1, order)[0]['message']
+        self.assertEqual(message, 'DLS ratio of a band more than 10 % from the median of the bands in 1 of 1 capture '
+                                  '(departure 12.5 %; bands Red): A_1')
+
+    def test_a_long_list_of_captures_is_written_in_ranges_and_cut(self):
+        order = [f'IMG_{number:04d}' for number in range(1, 101)]
+        self.assertEqual(wf.capture_list_text(order[:2], order), 'IMG_0001, IMG_0002')
+        self.assertEqual(wf.capture_list_text(order[:3], order), 'IMG_0001 to IMG_0003')
+        self.assertEqual(wf.capture_list_text(order[9:60], order), 'IMG_0010 to IMG_0060')
+        scattered = order[::2]                                                    # 50 captures, none of them neighbours
+        text = wf.capture_list_text(scattered, order)
+        self.assertTrue(text.startswith('IMG_0001, IMG_0003, IMG_0005'))
+        self.assertEqual(text.count('IMG_'), wf.FLAG_LIST_LIMIT)
+        self.assertTrue(text.endswith(f", and {50 - wf.FLAG_LIST_LIMIT} more captures"))
+        self.assertEqual(wf.capture_list_text(['IMG_0007', 'IMG_0003'], order), 'IMG_0003, IMG_0007')    # in the order of the run
+        self.assertEqual(wf.capture_list_text(order[:20], order, maximum=2, texts={n: '+1 %' for n in order[:20]}),
+                         'IMG_0001 (+1 %), IMG_0002 (+1 %), and 18 more captures')
+
+    def test_the_spikes_and_steps_are_counted_over_the_bands(self):
+        order = [f'IMG_{number:04d}' for number in range(10, 20)]
+        changes = {'Blue': [{'index': 3, 'kind': 'step', 'change': -0.114, 'capture': 'IMG_0013'}],
+                   'Green': [{'index': 3, 'kind': 'step', 'change': -0.105, 'capture': 'IMG_0013'},
+                             {'index': 6, 'kind': 'spike', 'change': 0.2, 'capture': 'IMG_0016'}]}
+        groups = wf.group_irradiance_changes(changes, 0.1, 10, order)
+        self.assertEqual([group['criterion'] for group in groups], ['irradiance_spike', 'irradiance_step'])
+        self.assertEqual(groups[0]['message'], 'Irradiance spike of more than 10 % from the previous capture in 1 of 10 '
+                                               'captures: IMG_0016 (+20.0 %, 1 band)')
+        self.assertEqual(groups[1]['message'], 'Irradiance step of more than 10 % from the previous capture in 1 of 10 '
+                                               'captures: IMG_0013 (-11.4 %, 2 bands)')
+        self.assertEqual(wf.group_irradiance_changes({}, 0.1, 10, order), [])
 
     def test_the_summary_of_the_run(self):
         summary = self.panel_only['summary']

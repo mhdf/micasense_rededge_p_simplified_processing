@@ -195,10 +195,12 @@ def check_dls_capture(panel_images, images, ratios=None):
     Check the DLS data of one capture against the panel (see DLS_CHECKS for the limits)
     Inputs: dictionaries {band name: rct.Image} for the panel capture (after detect_reference_panel) and the image
             capture, and optionally the output of capture_dls_ratios
-    Outputs: dictionary with the values checked and 'flags', a list of messages (also issued as RuntimeWarning).
+    Outputs: dictionary with the values checked and 'flags', a list of messages (also issued as RuntimeWarning), and
+             'flag_details', one dictionary per flag (same order) saying what was checked, so that the same criterion can be
+             counted over many captures: {'criterion', 'scope' ('panel' or 'image', or None), 'band', 'value', 'limit'}.
              Data that are not available are reported in 'unavailable' instead of raising errors
     """
-    flags, unavailable = [], []
+    flags, details, unavailable = [], [], []
     if ratios is None:
         ratios = {}
         for band, image in images.items():
@@ -218,6 +220,8 @@ def check_dls_capture(panel_images, images, ratios=None):
         for band, departure in departures.items():
             if abs(departure) > DLS_CHECKS['band_ratio_tolerance']:
                 flags.append(f"Band '{band}' DLS ratio departs {100 * departure:.1f} % from the median of the bands")
+                details.append({'criterion': 'band_ratio_departure', 'scope': 'image', 'band': band,
+                                'value': float(departure), 'limit': DLS_CHECKS['band_ratio_tolerance']})
 
     # 2. Irradiance of the DLS compared with the irradiance estimated from the panel. It differs between bands
     #    (14 % in the example, a calibration difference between camera and DLS), so it is only reported here; compare it
@@ -247,14 +251,18 @@ def check_dls_capture(panel_images, images, ratios=None):
         if np.median(angles) > DLS_CHECKS['max_sun_angle_discrepancy_deg']:
             flags.append(f"DLS of the {name} capture: sun angle differs {np.median(angles):.1f} deg from the solar zenith "
                          f"(DLS tilted at least that much, or the angles are inconsistent)")
+            details.append({'criterion': 'dls_tilt', 'scope': name, 'band': None, 'value': float(np.median(angles)),
+                            'limit': DLS_CHECKS['max_sun_angle_discrepancy_deg']})
 
     # 5. Plausible range (also warned by dls_irradiance_ratio)
     low, high = DLS_CHECKS['ratio_range']
     for band, value in values.items():
         if not low <= value <= high:
             flags.append(f"Band '{band}' DLS ratio {value:.3f} is outside the plausible range {low}-{high}")
+            details.append({'criterion': 'ratio_range', 'scope': 'image', 'band': band, 'value': float(value),
+                            'limit': [low, high]})
 
-    result['flags'], result['unavailable'] = flags, unavailable
+    result['flags'], result['flag_details'], result['unavailable'] = flags, details, unavailable
     for flag in flags:
         warnings.warn(flag, RuntimeWarning)
     return result
@@ -397,13 +405,15 @@ def measure_geometry(images):
 
 def _check_geometry(images, kind):
     values = measure_geometry(images)
-    flags, unavailable = [], []
+    flags, details, unavailable = [], [], []
     tilt, heading = values['camera_tilt_deg'], values['heading_to_sun_deg']
     if tilt is None:
         unavailable.append(f"camera tilt of the {kind} capture (XMP:Roll or XMP:Pitch missing)")
     elif tilt > GEOMETRY_CHECKS['max_camera_tilt_deg']:
         flags.append(f"Camera tilt of the {kind} capture: {tilt:.1f} deg from the vertical (limit "
                      f"{GEOMETRY_CHECKS['max_camera_tilt_deg']:g} deg)")
+        details.append({'criterion': 'camera_tilt', 'scope': kind, 'band': None, 'value': float(tilt),
+                        'limit': GEOMETRY_CHECKS['max_camera_tilt_deg']})
     if heading is None:
         unavailable.append(f"heading of the camera of the {kind} capture (XMP:Yaw or XMP:SolarAzimuth missing)")
     elif kind == 'panel':
@@ -413,15 +423,19 @@ def _check_geometry(images, kind):
             flags.append(f"Heading of the camera in the panel capture: {heading:.0f} deg from the sun; for the panel "
                          f"expect within {GEOMETRY_CHECKS['panel_heading_tolerance_deg']:g} deg of 0 (facing the sun) or "
                          f"180 (the back to the sun)")
+            details.append({'criterion': 'heading', 'scope': 'panel', 'band': None, 'value': float(heading),
+                            'limit': GEOMETRY_CHECKS['panel_heading_tolerance_deg']})
     else:
         departure = abs(heading - 90)                            # from the sun at the side
         values['heading_departure_deg'] = departure
         if departure > GEOMETRY_CHECKS['image_heading_tolerance_deg']:
             flags.append(f"Heading of the camera in the image capture: {heading:.0f} deg from the sun; for mapping "
                          f"expect within {GEOMETRY_CHECKS['image_heading_tolerance_deg']:g} deg of 90 (the sun at the side)")
+            details.append({'criterion': 'heading', 'scope': 'image', 'band': None, 'value': float(heading),
+                            'limit': GEOMETRY_CHECKS['image_heading_tolerance_deg']})
     for flag in flags:
         warnings.warn(flag, RuntimeWarning)
-    return {'values': values, 'flags': flags, 'unavailable': unavailable}
+    return {'values': values, 'flags': flags, 'flag_details': details, 'unavailable': unavailable}
 
 
 def check_panel_geometry(panel_images):
@@ -429,7 +443,7 @@ def check_panel_geometry(panel_images):
     Check the tilt of the camera and its heading with respect to the sun in a panel capture (see GEOMETRY_CHECKS): the
     panel is expected to be photographed with the camera facing the sun or with its back to it
     Inputs: {band name: rct.Image}. Outputs: {'values' (see measure_geometry, plus 'heading_departure_deg': the angle from
-    0 or 180), 'flags', 'unavailable'}; the flags are also issued as RuntimeWarning
+    0 or 180), 'flags', 'flag_details' (see check_dls_capture), 'unavailable'}; the flags are also issued as RuntimeWarning
     """
     return _check_geometry(panel_images, 'panel')
 
@@ -599,8 +613,11 @@ def compact_band_records(band_records):
 
 
 def compact_checks(checks):
-    """ The checks of a capture without what says nothing: the source of the ratios (always the metadata) and the empty list """
-    compact = {key: value for key, value in (checks or {}).items() if key != 'ratio_sources'}
+    """
+    The checks of a capture without what says nothing: the source of the ratios (always the metadata), the details of the
+    flags (they are for counting the same criterion over the captures) and the empty list
+    """
+    compact = {key: value for key, value in (checks or {}).items() if key not in ('ratio_sources', 'flag_details')}
     if not compact.get('unavailable'):
         compact.pop('unavailable', None)
     return compact

@@ -171,6 +171,19 @@ class GeometryTests(unittest.TestCase):
         with mock.patch.dict(rct.GEOMETRY_CHECKS, {'heading_offset_deg': 80.0}):               # the yaw is corrected first
             self.assertEqual(rct.check_image_geometry(self.images(**{'XMP:Yaw': -80.0}))['flags'], [])
 
+    def test_each_flag_has_details_to_count_the_same_criterion_over_the_captures(self):
+        tilted = rct.check_image_geometry(self.images(**{'XMP:Roll': 8.0, 'XMP:Yaw': 80.0}))
+        self.assertEqual(len(tilted['flags']), len(tilted['flag_details']))
+        self.assertEqual([detail['criterion'] for detail in tilted['flag_details']], ['camera_tilt', 'heading'])
+        tilt, heading = tilted['flag_details']
+        self.assertEqual((tilt['scope'], tilt['limit']), ('image', 5.0))
+        self.assertAlmostEqual(tilt['value'], 8.0, places=1)
+        self.assertEqual((heading['scope'], heading['limit']), ('image', 30.0))
+        self.assertAlmostEqual(heading['value'], 10.0)
+        panel = rct.check_panel_geometry(self.images(**{'XMP:Yaw': 0.0}))
+        self.assertEqual([(detail['criterion'], detail['scope']) for detail in panel['flag_details']], [('heading', 'panel')])
+        self.assertEqual(rct.check_image_geometry(self.images())['flag_details'], [])
+
     def test_what_is_missing_is_reported_and_not_flagged(self):
         from types import SimpleNamespace
         empty = {'Blue': SimpleNamespace(metadata={}, dls_sun_angle_discrepancy_deg=lambda: None)}
@@ -653,6 +666,9 @@ class ExampleImageTests(unittest.TestCase):
         self.assertEqual(len(checks['flags']), 1)
         self.assertIn('sun angle', checks['flags'][0])
         self.assertEqual(len(caught), 1)
+        self.assertEqual([(detail['criterion'], detail['scope'], detail['limit']) for detail in checks['flag_details']],
+                         [('dls_tilt', 'image', rct.DLS_CHECKS['max_sun_angle_discrepancy_deg'])])
+        self.assertAlmostEqual(checks['flag_details'][0]['value'], checks['sun_angle_discrepancy_deg']['image'])
         # the irradiance estimated from the panel is reported, not judged
         self.assertEqual(set(checks['dls_over_panel_estimate']), set(BANDS))
 
@@ -663,6 +679,8 @@ class ExampleImageTests(unittest.TestCase):
             warnings.simplefilter('always')
             checks = rct.check_dls_capture(panel, dict(target, Green=odd))
         self.assertTrue(any("Band 'Green'" in flag and 'median' in flag for flag in checks['flags']))
+        departure = [detail for detail in checks['flag_details'] if detail['criterion'] == 'band_ratio_departure']
+        self.assertEqual([detail['band'] for detail in departure], ['Green'])
 
     def test_sun_angle_discrepancy_is_none_without_the_fields(self):
         _, target = self.capture_dicts()
@@ -683,6 +701,7 @@ class ExampleImageTests(unittest.TestCase):
         self.assertEqual(saved['checks']['flags'], checks['flags'])
         self.assertNotIn('dls_checks_limits', saved)                              # the limits are in the configuration
         self.assertNotIn('ratio_sources', saved['checks'])
+        self.assertNotIn('flag_details', saved['checks'])                         # they are for the count over the captures
 
     # --- Provenance record ------------------------------------------------------------------------------------
 

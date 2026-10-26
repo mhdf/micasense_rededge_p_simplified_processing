@@ -151,13 +151,6 @@ FIELDS = [
                   "the DLS irradiance relative to the panel, larger than the panel drift tolerance raises a flag.\n"
                   "Whether it also calibrates the images is chosen in 'Panels used when there are two' (Reference panel "
                   "page).")},
-    {'key': 'PANEL.manual_regions_file', 'kind': 'file', 'default': '', 'group': 'Reference panel regions',
-     'label': 'Panel regions drawn by hand (optional)',
-     'help': ("File (.json) with the panel regions that were accepted or drawn in Check / draw panel regions. "
-                  "Empty: panel_regions.json in the results folder.\n"
-                  "A band with a region in the file uses it instead of the region found from the QR code; the bands "
-                  "without one are detected automatically.\n"
-                  "The buttons below check the inputs and open the tool that accepts or draws the regions.")},
     {'key': 'INPUTS.image_captures', 'group': 'Images to correct', 'kind': 'text', 'default': '',
      'label': 'Select captures',
      'help': ("The captures to correct: type their names separated by commas, or choose them from the images folder "
@@ -276,11 +269,21 @@ FIELDS = [
     {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
      'label': 'Inner area of the panel', 'help': ("Fraction (0 to 1] of the panel region that is used to measure its radiance.\n"
                   "The edge of the region is left out, because it can include the border of the panel or the ground. "
-                  "With 0.7 the central 70 % is used.")},
+                  "With 0.7 the central 70 % is used.\n"
+                  "It decides the region that is found from the QR code, and only where no region was accepted: a band "
+                  "whose region was accepted or drawn in Check / draw panel regions uses that region as it is. The tool "
+                  "has this value too, and shows the region that it gives.")},
     {'key': 'PANEL.saturation_threshold', 'kind': 'int', 'default': 65000, 'group': 'Panel measurement',
      'label': 'Saturation threshold', 'help': ("Pixels above this value are left out of the panel radiance: they are saturated and do not measure "
                   "the light correctly.\n"
                   "The raw values of the camera go up to 65535 (16 bits); 65000 leaves out the pixels at the limit.")},
+    {'key': 'PANEL.manual_regions_file', 'kind': 'file', 'default': '', 'group': 'Reference panel regions',
+     'label': 'Panel regions drawn by hand (optional)',
+     'help': ("File (.json) with the panel regions that were accepted or drawn in Check / draw panel regions. "
+                  "Empty: panel_regions.json in the results folder.\n"
+                  "A band with a region in the file uses it instead of the region found from the QR code; the bands "
+                  "without one are detected automatically.\n"
+                  "The buttons below check the inputs and open the tool that accepts or draws the regions.")},
     {'key': 'CORRECTION.use_dls', 'group': 'Correction with the DLS', 'kind': 'bool', 'default': False,
      'label': 'Correct illumination changes with the DLS',
      'help': ("Multiply the reflectance of each band (Panchro included) by the DLS ratio E_panel / E_image.\n"

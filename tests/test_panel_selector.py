@@ -221,6 +221,34 @@ class CaptureSetTests(PanelImagesMixin, unittest.TestCase):
         self.assertEqual(captures.session('IMG_0007').state('Blue'), 'pending')
         self.assertEqual(captures.summary('IMG_0005'), '1 of 6 accepted')
 
+    def test_the_inner_area_is_changed_in_every_capture_and_in_those_opened_later(self):
+        automatic = self.make().session('IMG_0005').automatic_polygon('Blue')
+        captures = self.make(saved={'IMG_0005': {'Blue': automatic}, 'IMG_0007': {'Blue': automatic}},
+                             saved_origins={'IMG_0005': {'Blue': 'accepted_automatic'},
+                                            'IMG_0007': {'Blue': 'accepted_automatic'}})
+        first = captures.session('IMG_0005')                                      # IMG_0007 is not opened yet
+        self.assertEqual(first.state('Blue'), 'accepted')
+        self.assertEqual(captures.set_inner_area(0.5), {'IMG_0005': ['Blue']})
+        self.assertEqual(captures.percent_inner_area, 0.5)
+        second = captures.session('IMG_0007')
+        self.assertEqual(second.percent_inner_area, 0.5)
+        self.assertEqual(second.state('Blue'), 'pending')                         # made with the old value: to accept again
+        self.assertEqual(captures.set_inner_area(0.5), {})
+        with self.assertRaises(ValueError):
+            captures.set_inner_area(2)
+
+    def test_the_result_says_which_inner_area_the_tool_was_left_with(self):
+        captures = self.make(percent_inner_area=0.6)
+        session = captures.session('IMG_0005')
+        session.accept_all_automatic()
+        self.assertEqual(captures.result().percent_inner_area, 0.6)
+        captures.set_inner_area(0.3)
+        session.accept_all_automatic()
+        results = captures.result()
+        self.assertEqual(results.percent_inner_area, 0.3)
+        self.assertEqual(list(results), ['IMG_0005'])
+        self.assertEqual(results, {'IMG_0005': results['IMG_0005']})              # it is a dictionary
+
     def test_the_panel_captures_must_be_accepted_before_saving(self):
         captures = self.make(required=('IMG_0005', 'IMG_0007'))
         self.assertEqual(captures.not_ready(), {'IMG_0005': None, 'IMG_0007': None})
@@ -330,6 +358,39 @@ class SelectionSessionTests(PanelImagesMixin, unittest.TestCase):
         self.assertEqual(session.polygons['Blue'], edited)                    # accepted ones are not touched
         self.assertEqual(session.polygons['Green'], session.automatic_polygon('Green'))
         self.assertEqual({session.origins[band] for band in BANDS if band != 'Blue'}, {'accepted_automatic'})
+
+    @staticmethod
+    def area(polygon):
+        xs, ys = zip(*polygon)
+        return abs(sum(xs[i] * ys[(i + 1) % len(xs)] - xs[(i + 1) % len(xs)] * ys[i] for i in range(len(xs)))) / 2
+
+    def test_a_new_inner_area_makes_the_automatic_regions_again_and_puts_back_those_accepted_as_found(self):
+        automatic = self.session().automatic_polygon('Blue')
+        drawn = [[100, 100], [200, 100], [200, 200], [100, 200]]
+        session = self.session({'Blue': automatic, 'Green': drawn, 'Red': automatic}, {'Red': 'accepted_automatic'})
+        before = {band: session.automatic_polygon(band) for band in BANDS}
+        self.assertEqual(session.set_inner_area(0.4), ['Blue', 'Red'])            # accepted as found from the QR code
+        self.assertEqual(session.percent_inner_area, 0.4)
+        for band in ('Blue', 'Red'):
+            self.assertEqual(session.state(band), 'pending')
+            self.assertEqual(session.proposed_polygon(band), session.automatic_polygon(band))      # the new one
+            self.assertLess(self.area(session.automatic_polygon(band)), self.area(before[band]))
+        self.assertEqual((session.state('Green'), session.proposed_polygon('Green')), ('accepted', drawn))   # drawn: kept
+        self.assertEqual(session.origins['Green'], 'edited')
+        self.assertEqual(session.accepted_count(), 1)
+        session.accept('Blue')
+        self.assertEqual(session.origins['Blue'], 'accepted_automatic')           # of the new region
+
+    def test_the_inner_area_is_checked_and_the_same_value_changes_nothing(self):
+        session = self.session()
+        session.accept('Blue')
+        self.assertEqual(session.set_inner_area(0.7), [])
+        self.assertEqual(session.state('Blue'), 'accepted')
+        for value in (0, -0.1, 1.5, 'abc'):
+            with self.assertRaises(ValueError):
+                session.set_inner_area(value)
+        self.assertEqual(session.percent_inner_area, 0.7)
+        self.assertEqual(session.set_inner_area(1), ['Blue'])                       # 1 is allowed: the whole region
 
     def test_the_result_has_every_accepted_polygon_with_its_origin(self):
         session = self.session()
@@ -710,6 +771,64 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         self.assertEqual(self.window.band_list.curselection(), (9,))
 
     # --- keys ------------------------------------------------------------------------------------------------------
+
+    def test_the_window_has_the_inner_area_of_the_panel_and_a_hint_for_it(self):
+        window = self.window
+        self.assertEqual(window.inner_var.get(), '0.7')
+        self.assertIn('Inner area of the panel', self.hover(window.inner_entry))
+        self.assertIn('Inner area of the panel', self.hover(window.buttons['inner']))
+
+    def test_applying_a_new_inner_area_makes_the_regions_again_and_puts_back_those_accepted_as_found(self):
+        window = self.window
+        window.accept_all()
+        self.assertTrue(self.session.is_complete())
+        drawn = [[100, 100], [200, 100], [200, 200], [100, 200]]
+        self.session.accept('Green', drawn)
+        old = self.session.automatic_polygon('Blue')
+        window.inner_var.set('0.5')
+        window.apply_inner_area()
+        self.assertEqual(self.window.captures.percent_inner_area, 0.5)
+        self.assertNotEqual(self.session.automatic_polygon('Blue'), old)
+        self.assertEqual(self.session.state('Blue'), 'pending')
+        self.assertEqual(self.session.state('Green'), 'accepted')                  # drawn: kept
+        message = window.message_label.cget('text')
+        self.assertIn('Inner area 0.5: regions found again.', message)
+        self.assertIn('5 accepted as found from the QR code are to accept again', message)     # Green was drawn
+        self.assertIn('drawn or edited ones stay', message)
+        self.assertLess(len(message), 125)                                                       # the line is not wrapped
+        self.assertEqual(window.inner_var.get(), '0.5')
+        self.assertFalse(self.window.captures.is_ready())                           # they have to be accepted again
+
+    def test_a_wrong_inner_area_or_one_typed_while_drawing_is_refused_and_the_old_one_stays(self):
+        window = self.window
+        for text in ('abc', '0', '1.5', ''):
+            window.inner_var.set(text)
+            window.apply_inner_area()
+            self.assertEqual(window.inner_var.get(), '0.7', text)
+            self.assertIn('a number above 0 and up to 1', window.message_label.cget('text'))
+        window.edit_band('Blue')
+        window.inner_var.set('0.5')
+        window.apply_inner_area()
+        self.assertEqual(window.captures.percent_inner_area, 0.7)
+        self.assertIn('Confirm or discard the edit', window.message_label.cget('text'))
+        self.assertTrue(window.editing)                                             # what was drawn is not lost
+        window.toggle_edit()
+        window.inner_var.set('0,5')                                                 # a decimal comma is accepted
+        window.apply_inner_area()
+        self.assertEqual(window.captures.percent_inner_area, 0.5)
+
+    def test_enter_in_the_box_applies_the_value_and_escape_leaves_the_box_without_closing_the_tool(self):
+        from unittest import mock
+        window = self.window
+        window.inner_var.set('0.4')
+        self.assertNotEqual(window.inner_entry.bind('<Return>'), '')
+        self.assertEqual(window._inner_return(), 'break')                           # Enter does not accept the band
+        self.assertEqual(window.captures.percent_inner_area, 0.4)
+        window.inner_var.set('0.9')
+        with mock.patch.object(window, '_typing', return_value=True):
+            window._key_escape()
+        self.assertFalse(window.finished)
+        self.assertEqual(window.inner_var.get(), '0.4')                             # what was not applied is dropped
 
     def test_escape_leaves_the_drawing_and_then_cancels(self):
         window = self.window

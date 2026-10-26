@@ -47,7 +47,7 @@ SECTIONS = [('INPUTS', 'Inputs'), ('PANEL', 'Reference panel'), ('CORRECTION', '
 # the keys that are shown in another page than their prefix says
 PAGE_TITLES = {'CORRECTION': 'DLS (Downwelling Light Sensor)'}          # where it is not the title in the list of pages
 PAGE_PREFIXES = {'CORRECTION': ('CORRECTION', 'CHECKS')}
-FIELD_PAGE = {'PANEL.manual_regions_file': 'INPUTS'}
+FIELD_PAGE = {}
 
 # The keys that hold the name of a capture, typed or chosen by looking at the captures of the images folder: the text
 # of the choice of no capture, for the key that may be empty
@@ -63,8 +63,8 @@ PAGE_HELP = {
                "# The steps\n"
                "- Choose the images folder and the results folder.\n"
                "- Choose the capture that shows the reference panel (and the one taken after the flight, if there is one).\n"
-               "- Check the inputs, then check or draw the regions of the panel.\n"
-               "- Choose the captures to correct."),
+               "- Choose the captures to correct.\n"
+               "- Then check the inputs and the regions of the panel in the Reference panel page."),
     'PANEL': ("Reference panel",
               "The bands of the camera, the known reflectance of the reference panel and how the panel is measured in its "
               "image.\n"
@@ -72,7 +72,8 @@ PAGE_HELP = {
               "- Bands of the camera: the table of the bands, with the buttons to detect them from a capture or to fill them "
               "from a camera preset.\n"
               "- Reflectance of the panel: where the value of each band comes from.\n"
-              "- Panel measurement: how the panel is measured, and what is done with a second panel capture."),
+              "- Panel measurement: how the panel is measured, and what is done with a second panel capture.\n"
+              "- Reference panel regions: check the inputs, then check, accept or draw the region of the panel in each band."),
     'CORRECTION': ("DLS (Downwelling Light Sensor)", wf.GROUP_NOTES['Correction with the DLS'],
                    'Checks of the DLS data (limits)', wf.GROUP_NOTES['Checks of the DLS data (limits)']),
     'RUN': ("Run and results",
@@ -101,6 +102,8 @@ REGIONS_NOTE = ("- Check inputs: tells whether the folders, the panel capture an
                 "- Check / draw panel regions: opens the panel capture band by band, with the region found from the QR code "
                 "and the regions saved before. Accept each one there, or turn on the drawing (Edit region) when the region "
                 "is wrong or the QR code cannot be read. Every band has to be accepted.\n"
+                "The tool also has the inner area of the panel, which decides the region that is found from the QR code: "
+                "what it is set to when the tool is closed with Save and close is kept here.\n"
                 "The regions are saved in the file above; if it is empty, in panel_regions.json in the results folder, which "
                 "is then filled in above.")
 PYTHON_NOTE = ("The window runs in the Python shown first and cannot change it. The Python chosen here is the one that is "
@@ -1358,6 +1361,11 @@ class RadiometricFrame:
                 text = f"Saved the accepted regions in {path} ({'; '.join(parts)})."
                 self.log(text, 'ok')
                 self.inputs_status.configure(text=text, style='Ok.TLabel')
+                area = getattr(selected, 'percent_inner_area', None)
+                if area is not None and area != config['PANEL.percent_inner_area']:
+                    self.set_value('PANEL.percent_inner_area', f"{area:g}")
+                    self.log(f"PANEL.percent_inner_area was set to {area:g}, the inner area of the panel of the tool.")
+                    self.save()
                 if not config['PANEL.manual_regions_file']:
                     self.set_value('PANEL.manual_regions_file', str(path))
                     self.log('PANEL.manual_regions_file was set to this file.')

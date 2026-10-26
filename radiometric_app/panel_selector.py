@@ -69,6 +69,10 @@ HINTS = {
     'accept_all': "Accept all automatic regions: for every band of this capture that is not accepted yet, accept the region "
                   "found from the QR code (yellow outline). Bands without one are left for you to draw with Edit region. "
                   "Look at the outlines first: accepting means that this region is the one used for the reference panel.",
+    'inner': "Inner area of the panel (a number above 0 and up to 1; Enter or Apply): the fraction of the region found from "
+             "the QR code that is measured, without the edge. The yellow regions are made again with it; the ones accepted as "
+             "found from the QR code are to accept again, the ones you drew or edited stay. Save and close sets it in the "
+             "configuration.",
     'finish': "Save and close: write the accepted regions (and whether each was accepted as found or edited) to the "
               "regions file; the workflow then uses exactly these regions. Available when every band of the panel "
               "captures is accepted.",
@@ -246,6 +250,26 @@ class SelectionSession:
     def band(self):
         return self.bands[self.index]
 
+    def set_inner_area(self, value):
+        """
+        Change the inner area of the panel, which decides the region found from the QR code (a number above 0 and up to 1;
+        ValueError if it is not). The regions that were accepted as found from the QR code were made with the old value,
+        so they are to accept again (the one that is proposed is the new one); the regions that were drawn or edited stay.
+        Returns the bands that are to accept again
+        """
+        value = float(value)
+        if not 0 < value <= 1:
+            raise ValueError("The inner area of the panel must be above 0 and up to 1")
+        if value == self.percent_inner_area:
+            return []
+        self.percent_inner_area = value
+        self._automatic = {}
+        again = [band for band in self.bands if self.origins[band] == 'accepted_automatic']
+        for band in again:
+            self.unaccept(band)
+            self.saved.pop(band, None)
+        return again
+
     def image_size(self, band=None):
         image = self.images[band or self.band]
         return (image.image.shape[1], image.image.shape[0])
@@ -344,6 +368,12 @@ class SelectionSession:
                                {band: self.origins[band] for band in accepted if self.origins[band]})
 
 
+class SelectionResults(dict):
+    """ {capture: SelectionResult}, with .percent_inner_area: the inner area of the panel that the tool was left with """
+
+    percent_inner_area = None
+
+
 class CaptureSet:
     """
     The captures that can be looked at, and the session of each one (opened when it is chosen)
@@ -360,7 +390,8 @@ class CaptureSet:
             raise ValueError("There is no capture to look at")
         self.load = load
         self.saved, self.saved_origins = saved or {}, saved_origins or {}
-        self.percent_inner_area, self.sat_threshold = percent_inner_area, sat_threshold
+        self.initial_inner_area = self.percent_inner_area = percent_inner_area
+        self.sat_threshold = sat_threshold
         self.sessions = {}
         for name, images in (preloaded or {}).items():
             self.sessions[name] = self._make(name, images)
@@ -374,8 +405,23 @@ class CaptureSet:
         return captures
 
     def _make(self, name, images):
-        return SelectionSession(images, self.saved.get(name), self.percent_inner_area, self.sat_threshold,
-                                self.saved_origins.get(name))
+        session = SelectionSession(images, self.saved.get(name), self.initial_inner_area, self.sat_threshold,
+                                   self.saved_origins.get(name))
+        if self.percent_inner_area != self.initial_inner_area:           # the value was changed before it was opened
+            session.set_inner_area(self.percent_inner_area)
+        return session
+
+    def set_inner_area(self, value):
+        """
+        Change the inner area of the panel in every capture (see SelectionSession.set_inner_area; the captures that are
+        opened later use it too). Returns {capture: bands that are to accept again} for the captures where there are some
+        """
+        value = float(value)
+        if not 0 < value <= 1:
+            raise ValueError("The inner area of the panel must be above 0 and up to 1")
+        self.percent_inner_area = value
+        again = {name: session.set_inner_area(value) for name, session in self.sessions.items()}
+        return {name: bands for name, bands in again.items() if bands}
 
     def session(self, name):
         """ The session of a capture; its images are read the first time (any error of the reading is raised) """
@@ -406,8 +452,11 @@ class CaptureSet:
         return not self.not_ready()
 
     def result(self):
-        """ {capture: SelectionResult} of the captures whose bands are all accepted """
-        return {name: session.result() for name, session in self.sessions.items() if session.is_complete()}
+        """ {capture: SelectionResult} of the captures whose bands are all accepted (a SelectionResults) """
+        results = SelectionResults({name: session.result() for name, session in self.sessions.items()
+                                    if session.is_complete()})
+        results.percent_inner_area = self.percent_inner_area
+        return results
 
 
 def count_wrapped_lines(measure, text, width):
@@ -562,6 +611,17 @@ class PanelSelectorWindow:
                                           ('zoom', 'Whole image', self.toggle_zoom, 'left')):
             self.buttons[name] = ttk.Button(row_end, text=text, command=command)
             self.buttons[name].pack(side=side, padx=(0, 6) if side == 'left' else (6, 0))
+        inner = ttk.Frame(row_end)                      # the inner area of the panel decides the region found from the QR code
+        inner.pack(side='left', padx=(12, 0))
+        ttk.Label(inner, text='Inner area of the panel', style='Muted.TLabel').pack(side='left', padx=(0, 6))
+        self.inner_var = tk.StringVar(value=f"{self.captures.percent_inner_area:g}")
+        self.inner_entry = ttk.Entry(inner, textvariable=self.inner_var, width=6)
+        self.inner_entry.pack(side='left')
+        self.buttons['inner'] = ttk.Button(inner, text='Apply', command=self.apply_inner_area)
+        self.buttons['inner'].pack(side='left', padx=(6, 0))
+        self.inner_entry.bind('<Return>', self._inner_return)
+        for widget in (inner, self.inner_entry, self.buttons['inner']):
+            self._hover(widget, 'inner')
         self._hover(self.buttons['previous'], 'previous')
         self._hover(self.buttons['next'], 'next')
         self._hover(self.buttons['accept'], lambda: 'confirm' if self.editing else 'accept')
@@ -888,6 +948,42 @@ class PanelSelectorWindow:
         if left:
             self.message(f"No region was found from the QR code for: {', '.join(left)}. Draw them with Edit region.", error=True)
 
+    def _inner_return(self, event=None):
+        """ Enter in the box of the inner area: apply it, and do not accept the band as Enter does elsewhere """
+        self.apply_inner_area()
+        return 'break'
+
+    def apply_inner_area(self):
+        """
+        Use the inner area that is typed: the region found from the QR code is made again in every band and the regions
+        that were accepted as found from it are to accept again (the ones that were drawn or edited stay)
+        """
+        text = self.inner_var.get().strip().replace(',', '.')
+        try:
+            value = float(text)
+        except ValueError:
+            value = None
+        if value is None or not 0 < value <= 1:
+            self.inner_var.set(f"{self.captures.percent_inner_area:g}")
+            self.message("The inner area of the panel is a number above 0 and up to 1, for example 0.7.", error=True)
+            return
+        if value == self.captures.percent_inner_area:
+            return
+        if self.editing:
+            self.inner_var.set(f"{self.captures.percent_inner_area:g}")
+            self.message("Confirm or discard the edit before changing the inner area of the panel.", error=True)
+            return
+        self.message("Finding the regions again...", error=False)
+        self.root.update_idletasks()
+        again = self.captures.set_inner_area(value)
+        self.inner_var.set(f"{value:g}")
+        self.show_band(self.session.index)
+        text = f"Inner area {value:g}: regions found again."              # short: the line is not wrapped
+        count = sum(len(bands) for bands in again.values())
+        if count:
+            text += f" {count} accepted as found from the QR code are to accept again; drawn or edited ones stay."
+        self.message(text, error=False)
+
     def previous(self):
         self.show_band(self.session.index - 1)
 
@@ -950,7 +1046,10 @@ class PanelSelectorWindow:
             self.next()
 
     def _key_escape(self):
-        if self.editing:
+        if self._typing():                                  # in a box that takes text: leave it, with its value as it was
+            self.inner_var.set(f"{self.captures.percent_inner_area:g}")
+            self.canvas.focus_set()
+        elif self.editing:
             self.toggle_edit()
         else:
             self.cancel()
@@ -983,7 +1082,8 @@ def select_panel_regions(captures, load, required=None, saved=None, saved_origin
             capture (they are shown as accepted), the images that were read already and, when another window is open,
             that window (the window is then modal and opens above it); start is not used any more (kept so that callers work)
     Outputs: {capture: SelectionResult} for every capture whose bands are all accepted (the panel captures at least), or
-             None if the user cancelled
+             None if the user cancelled. It is a SelectionResults: its percent_inner_area is the inner area of the panel
+             that the tool was left with (the one given, unless it was changed in the window)
     """
     import tkinter as tk
     required = list(captures[:1]) if required is None else list(required)
@@ -1048,6 +1148,10 @@ def main(argv=None):
     for name, result in selected.items():
         wf.save_panel_regions(regions_path, name, result, result.origins)
     print(f"PANEL_REGIONS_JSON={regions_path.resolve()}")
+    if selected.percent_inner_area != config['PANEL.percent_inner_area']:
+        print(f"The regions found from the QR code were made with an inner area of {selected.percent_inner_area:g}, not the "
+              f"{config['PANEL.percent_inner_area']:g} of the configuration: set PANEL.percent_inner_area to it to get the "
+              "same ones where a band has no accepted region.")
     if config['PANEL.manual_regions_file'] == '':
         print("Set PANEL.manual_regions_file to this file in the configuration to use it.")
     return 0

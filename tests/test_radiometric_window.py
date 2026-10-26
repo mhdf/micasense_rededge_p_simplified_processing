@@ -99,7 +99,7 @@ class ConfigModelTests(unittest.TestCase):
         pages = {page for page, _ in rw.SECTIONS}
         self.assertTrue(all(rw.page_of(field['key']) in pages for field in wf.FIELDS))
         self.assertEqual(rw.page_of('CHECKS.jump_threshold'), 'CORRECTION')           # the DLS page has the checks too
-        self.assertEqual(rw.page_of('PANEL.manual_regions_file'), 'INPUTS')
+        self.assertEqual(rw.page_of('PANEL.manual_regions_file'), 'PANEL')                  # with the panel measurement
         self.assertEqual(rw.page_of('PANEL.percent_inner_area'), 'PANEL')
 
 
@@ -332,6 +332,23 @@ class WindowTests(unittest.TestCase):
         saved = json.loads(self.config_path.read_text(encoding='utf-8'))
         self.assertEqual(saved['PANEL.manual_regions_file'], str(path))
 
+    def test_the_inner_area_of_the_tool_is_kept_in_the_configuration(self):
+        from radiometric_app.panel_selector import SelectionResults
+        self.frame.set_value('INPUTS.results_folder', self.results('inner'))
+        bands = list(wf.BAND_NAMES)
+        polygon = [[10, 10], [20, 10], [20, 20], [10, 20]]
+        selection = SelectionResults({'IMG_0005': self.accepted({band: polygon for band in bands},
+                                                                {band: 'edited' for band in bands})})
+        selection.percent_inner_area = 0.5
+        with mock.patch('radiometric_app.panel_selector.select_panel_regions', return_value=selection) as selector:
+            self.frame.draw_regions()
+            self.pump(lambda: selector.called and not self.frame.running)
+        self.assertEqual(selector.call_args[0][5], 0.7)                                # the tool opens with the field
+        self.assertEqual(self.frame.model.config()[0]['PANEL.percent_inner_area'], 0.5)
+        self.assertTrue(any('PANEL.percent_inner_area was set to 0.5' in line for line in self.frame.log_lines()))
+        saved = json.loads(self.config_path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['PANEL.percent_inner_area'], 0.5)
+
     def test_cancelling_the_dialog_saves_nothing(self):
         self.frame.set_value('INPUTS.results_folder', self.results('cancel'))
         with mock.patch('radiometric_app.panel_selector.select_panel_regions', return_value=None) as selector:
@@ -393,8 +410,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(str(self.frame.inputs_status.cget('style')), 'Error.TLabel')
         self.assertEqual([line for line in self.frame.log_lines() if line], [])      # the Run page log is not used
 
-    def test_the_check_button_is_next_to_the_tool_on_the_inputs_page(self):
-        self.assertTrue(self.inside(self.frame.buttons['check_here'], 'INPUTS'))
+    def test_the_check_button_is_next_to_the_tool_on_the_reference_panel_page(self):
+        self.assertTrue(self.inside(self.frame.buttons['check_here'], 'PANEL'))
         self.assertEqual(self.frame.buttons['check_here'].cget('text'), 'Check inputs')
         self.assertEqual(self.frame.buttons['check_here'].master, self.frame.buttons['regions'].master)
 
@@ -836,23 +853,27 @@ class WindowTests(unittest.TestCase):
         self.assertIn('Checks of the DLS data (limits)', headings)
         self.assertLess(headings.index('Correction with the DLS'), headings.index('Checks of the DLS data (limits)'))
 
-    def test_the_panel_region_tool_is_on_the_inputs_page_next_to_the_panel_captures(self):
-        self.assertTrue(self.inside(self.frame.entries['PANEL.manual_regions_file'], 'INPUTS'))
-        self.assertTrue(self.inside(self.frame.buttons['regions'], 'INPUTS'))
-        self.assertFalse(self.inside(self.frame.buttons['regions'], 'PANEL'))
+    def test_the_panel_region_tool_is_on_the_reference_panel_page_after_the_panel_measurement(self):
+        self.assertTrue(self.inside(self.frame.entries['PANEL.manual_regions_file'], 'PANEL'))
+        self.assertTrue(self.inside(self.frame.buttons['regions'], 'PANEL'))
+        self.assertTrue(self.inside(self.frame.buttons['check_here'], 'PANEL'))
+        self.assertFalse(self.inside(self.frame.buttons['regions'], 'INPUTS'))
         self.assertNotIn('PANEL.manual_regions_file', [key for key in self.frame.entries
-                                                       if self.inside(self.frame.entries[key], 'PANEL')])
+                                                       if self.inside(self.frame.entries[key], 'INPUTS')])
         order = wf.FIELD_KEYS
-        self.assertLess(order.index('INPUTS.reference_panel_capture_after'), order.index('PANEL.manual_regions_file'))
-        self.assertLess(order.index('PANEL.manual_regions_file'), order.index('INPUTS.image_captures'))
+        for key in ('PANEL.panels_used', 'PANEL.percent_inner_area', 'PANEL.saturation_threshold'):
+            self.assertLess(order.index(key), order.index('PANEL.manual_regions_file'))
+        headings = [child.cget('text') for child in self.frame.scroll_pages['PANEL'].body.winfo_children()
+                    if child.winfo_class() == 'TLabel']
+        self.assertLess(headings.index('Panel measurement'), headings.index('Reference panel regions'))
         run_page_buttons = [child.cget('text') for child in self.frame.pages['RUN'].winfo_children()[1].winfo_children()]
         self.assertEqual(run_page_buttons, ['Check inputs', 'Check environment', 'Run', 'Open results folder'])
 
     def test_the_inputs_page_has_headings_for_its_groups(self):
         headings = [child.cget('text') for child in self.frame.scroll_pages['INPUTS'].body.winfo_children()
                     if child.winfo_class() == 'TLabel']
-        self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Reference panel regions',
-                                        'Images to correct', 'Python environment'])
+        self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Images to correct',
+                                        'Python environment'])
 
     def test_the_messages_follow_the_width_of_the_page_and_the_help_column_keeps_its_width(self):
         self.root.attributes('-alpha', 0.0)

@@ -912,7 +912,6 @@ def _run_stages(config, root, results_folder, result, progress):
 
 
 # The flags of the captures are counted by criterion: 'DLS tilt over 10 deg in 386 of 409 captures (...): IMG_0010 to IMG_0044, ...'
-FLAG_LIST_LIMIT = 12                             # items of the list of captures in the message (the result file has all)
 FLAG_CRITERIA = (                                # (criterion, label from the limit, name of the value, unit, decimals)
     ('camera_tilt', lambda limit: f"Camera tilt over {limit:g} deg", 'tilt', ' deg', 1),
     ('heading', lambda limit: f"Camera heading more than {limit:g} deg from the sun at the side (90 deg)",
@@ -923,26 +922,25 @@ FLAG_CRITERIA = (                                # (criterion, label from the li
      'departure', ' %', 1))
 
 
-def capture_list_text(names, order, maximum=FLAG_LIST_LIMIT, texts=None):
+def capture_list_text(names, order, texts=None):
     """
-    The captures of a flag as text, in the order of the run (order: the names of all the captures): three or more neighbours
-    as 'first to last', at most 'maximum' items and 'and N more captures' for the rest. texts: {capture: text written after
-    its name}; the captures are then written one by one
+    The captures of a flag as text, all of them, in the order of the run (order: the names of all the captures): three or
+    more neighbours are written as 'first to last'. texts: {capture: text written after its name}; the captures are then
+    written one by one
     """
     position = {name: number for number, name in enumerate(order)}
     names = sorted(set(names), key=position.__getitem__)
-    items, index = [], 0                         # (text, number of captures)
+    items, index = [], 0
     while index < len(names):
         end = index
         while not texts and end + 1 < len(names) and position[names[end + 1]] == position[names[end]] + 1:
             end += 1
         if end - index >= 2:
-            items.append((f"{names[index]} to {names[end]}", end - index + 1))
+            items.append(f"{names[index]} to {names[end]}")
         else:
-            items.extend((name + (f" ({texts[name]})" if texts else ''), 1) for name in names[index:end + 1])
+            items.extend(name + (f" ({texts[name]})" if texts else '') for name in names[index:end + 1])
         index = end + 1
-    rest = sum(count for _, count in items[maximum:])
-    return ', '.join(text for text, _ in items[:maximum]) + (f", and {rest} more capture{'s' if rest > 1 else ''}" if rest else '')
+    return ', '.join(items)
 
 
 def group_flag_events(events, total, order):

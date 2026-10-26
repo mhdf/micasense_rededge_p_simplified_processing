@@ -165,10 +165,10 @@ How the camera was pointed in each capture. The limits are in ```rct.GEOMETRY_CH
 A criterion that fails in many captures is written once, with how many captures failed and which ones, not once per capture. In the example flight (409 captures) the line is, for instance:
 
 ```
-DLS tilt over 10 deg in 386 of 409 captures (tilt of at least 10.1 to 22.0 deg): IMG_0010 to IMG_0044, IMG_0047, IMG_0050 to IMG_0100, ..., and 301 more captures
+DLS tilt over 10 deg in 386 of 409 captures (tilt of at least 10.1 to 22.0 deg): IMG_0010 to IMG_0044, IMG_0047, IMG_0050 to IMG_0100, ...
 ```
 
-- The captures are in the order of the run; three or more neighbours are written as ```first to last```, and the log shows at most 12 items (```wf.FLAG_LIST_LIMIT```) followed by the number of captures that were left out. The ```flag_groups``` of ```radiometric_result.json``` have every capture of every group (```criterion```, ```label```, ```count```, ```of```, ```captures```, the range of the values and, for the criteria that are checked in each band, ```bands```).
+- Every capture is listed, in the order of the run (there is no limit to the length of the list); three or more neighbours are written as ```first to last``` to keep it short. The ```flag_groups``` of ```radiometric_result.json``` have the same captures in a list (```criterion```, ```label```, ```count```, ```of```, ```captures```, the range of the values and, for the criteria that are checked in each band, ```bands```).
 - The criteria that are counted are the tilt of the camera, its heading against the sun, the tilt of the DLS, the DLS ratio outside its plausible range and the ratio of a band that departs from the other bands (```wf.FLAG_CRITERIA```), and the spikes and steps of the irradiance (one line for each kind, with the largest change and the number of bands in which it was found for each capture). The result of a check carries ```flag_details``` for this (the criterion, the scope, the band, the value and the limit of each flag, in the order of ```flags```); ```wf.group_flag_events()``` and ```wf.group_irradiance_changes()``` do the counting, ```wf.capture_list_text()``` writes the list.
 - What is not repeated per capture stays as before: the flags of the panel captures (heading, tilt, the DLS of the panel and the comparison of two panels) are written once with the name of the panel capture. The provenance record of each capture still has all of its own flags, with their numbers.
 

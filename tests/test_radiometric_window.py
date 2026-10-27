@@ -268,6 +268,64 @@ class WindowTests(unittest.TestCase):
         system_file.assert_called_once()
         self.assertEqual(self.frame.variables['INPUTS.exiftool_path'].get(), str(images / 'x.exe'))
 
+    def test_the_regions_file_in_the_results_folder_follows_the_results_folder(self):
+        folder = Path(self.folder.name)
+        old, new = folder / 'old_results', folder / 'new_results'
+        self.frame.set_value('INPUTS.results_folder', str(old).replace('\\', '/'))             # the style of the stored paths
+        self.frame.set_value('PANEL.manual_regions_file', str(old / 'panel_regions.json'))       # with the other slashes
+        self.frame.set_value('INPUTS.results_folder', str(new).replace('\\', '/'))
+        self.assertEqual(Path(self.frame.model.config()[0]['PANEL.manual_regions_file']), new / 'panel_regions.json')
+        self.frame.set_value('INPUTS.results_folder', 'relative/results')                        # and again, with a relative one
+        self.assertEqual(Path(self.frame.model.config()[0]['PANEL.manual_regions_file']),
+                         Path('relative/results') / 'panel_regions.json')
+        self.frame.set_value('INPUTS.results_folder', str(new))
+        self.assertEqual(Path(self.frame.model.config()[0]['PANEL.manual_regions_file']), new / 'panel_regions.json')
+
+    def test_a_regions_file_that_is_elsewhere_or_has_another_name_stays_where_it_is(self):
+        folder = Path(self.folder.name)
+        self.frame.set_value('INPUTS.results_folder', str(folder / 'results'))
+        for chosen in (folder / 'elsewhere' / 'panel_regions.json', folder / 'results' / 'my_regions.json'):
+            self.frame.set_value('PANEL.manual_regions_file', str(chosen))
+            self.frame.set_value('INPUTS.results_folder', str(folder / 'other'))
+            self.assertEqual(self.frame.model.config()[0]['PANEL.manual_regions_file'], str(chosen))
+            self.frame.set_value('INPUTS.results_folder', str(folder / 'results'))
+        self.frame.set_value('PANEL.manual_regions_file', '')                                    # empty stays empty
+        self.frame.set_value('INPUTS.results_folder', str(folder / 'third'))
+        self.assertEqual(self.frame.model.config()[0]['PANEL.manual_regions_file'], '')
+
+    def test_a_profile_keeps_its_regions_file_whatever_the_results_folder_was(self):
+        folder = Path(self.folder.name)
+        self.frame.set_value('INPUTS.results_folder', str(folder / 'one'))
+        self.frame.set_value('PANEL.manual_regions_file', str(folder / 'one' / 'panel_regions.json'))
+        profile = folder / 'profile.json'
+        profile.write_text(json.dumps({'INPUTS.results_folder': str(folder / 'two'),
+                                       'PANEL.manual_regions_file': str(folder / 'kept' / 'regions.json')}), encoding='utf-8')
+        self.assertTrue(self.frame.load_profile(profile))
+        config = self.frame.model.config()[0]
+        self.assertEqual(Path(config['PANEL.manual_regions_file']), folder / 'kept' / 'regions.json')
+
+    def test_the_regions_file_is_chosen_with_the_dialog_that_names_a_file_so_that_it_need_not_exist(self):
+        folder = Path(self.folder.name)
+        results = folder / 'results'
+        results.mkdir()
+        self.frame.set_value('INPUTS.results_folder', str(results / 'not_yet'))               # a folder that does not exist
+        chosen = folder / 'elsewhere' / 'my_regions.json'
+        with mock.patch('tkinter.filedialog.asksaveasfilename', return_value=str(chosen)) as ask, \
+                mock.patch('tkinter.filedialog.askopenfilename') as open_one:
+            self.frame._browse('PANEL.manual_regions_file', 'file')
+        open_one.assert_not_called()
+        options = ask.call_args[1]
+        self.assertEqual(options['initialdir'], results)                                       # the nearest one that exists
+        self.assertEqual(options['initialfile'], 'panel_regions.json')
+        self.assertIs(options['confirmoverwrite'], False)                                      # it is not written here
+        self.assertEqual(options['defaultextension'], '.json')
+        self.assertEqual(self.frame.variables['PANEL.manual_regions_file'].get(), str(chosen))   # a new file can be chosen
+        with mock.patch('tkinter.filedialog.asksaveasfilename', return_value='') as ask:       # cancelled: nothing changes
+            self.frame._browse('PANEL.manual_regions_file', 'file')
+        self.assertEqual(ask.call_args[1]['initialdir'], folder)                               # it opens where the file is
+        self.assertEqual(ask.call_args[1]['initialfile'], 'my_regions.json')
+        self.assertEqual(self.frame.variables['PANEL.manual_regions_file'].get(), str(chosen))
+
     def test_browse_for_the_python_fills_the_field(self):
         with mock.patch('tkinter.filedialog.askopenfilename', return_value=r'D:\p\python.exe'):
             self.frame.browse_python()

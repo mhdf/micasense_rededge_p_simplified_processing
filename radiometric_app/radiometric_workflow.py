@@ -298,6 +298,9 @@ FIELDS = [
      'label': 'Panel regions drawn by hand (optional)',
      'help': ("File (.json) with the panel regions that were accepted or drawn in Check / draw panel regions. "
                   "Empty: panel_regions.json in the results folder.\n"
+                  "The file does not have to exist yet: Browse... lets you choose the folder and name a new one, and the "
+                  "tool creates it. While the file is the panel_regions.json of the results folder it follows that folder "
+                  "when you change it; a file of another name or folder stays where you put it.\n"
                   "A band with a region in the file uses it instead of the region found from the QR code; the bands "
                   "without one are detected automatically.\n"
                   "The buttons below check the inputs and open the tool that accepts or draws the regions.")},

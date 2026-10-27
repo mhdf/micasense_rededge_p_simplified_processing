@@ -299,6 +299,7 @@ class RadiometricFrame:
         self.buttons = {}
         self.syncing = False
         self.loading_values = False                  # a profile is being loaded: its values are not corrected
+        self.results_before = None                   # the results folder before the last change (see _follow_results_folder)
         self.detecting = False
         self.presets, self.preset_problems = camera_presets.load_presets(camera_presets.preset_folders(self.root_folder))
         self.summary_after = None
@@ -404,6 +405,7 @@ class RadiometricFrame:
         self.entries['PANEL.panels_used'].bind('<<ComboboxSelected>>', lambda event: self._panels_selected())
         chosen = self.variables['PANEL.panels_used'].get()
         self.panels_used_ok = chosen if self._panels_used_allowed(chosen) else 'first'
+        self.results_before = self.model.get('INPUTS.results_folder')
         self.help_panel.describe(save_button, *PROFILE_NOTES['save'])
         self.help_panel.describe(save_profile, *PROFILE_NOTES['profile'])
         self.help_panel.describe(load_profile, *PROFILE_NOTES['profile'])
@@ -979,7 +981,25 @@ class RadiometricFrame:
         self.status.configure(text=f"The panel selection approach was '{previous}' and is now 'First panel only': it needs the "
                                    "DLS correction, which is off.", style='Muted.TLabel')
 
+    def _follow_results_folder(self):
+        """
+        The file of the panel regions that is in the results folder (panel_regions.json, the place that the tool proposes)
+        goes with the folder when it is changed; a file that is somewhere else, or has another name, stays as it is
+        """
+        new = self.model.get('INPUTS.results_folder')
+        old, self.results_before = self.results_before, new
+        regions = self.model.get('PANEL.manual_regions_file')
+        if self.loading_values or not (old and new and regions):
+            return
+
+        def default(folder):
+            return wf.resolve_path(self.root_folder, folder) / 'panel_regions.json'
+        if default(old) == wf.resolve_path(self.root_folder, regions):
+            self.set_value('PANEL.manual_regions_file', str(Path(new) / 'panel_regions.json'))
+
     def _after_change(self, key):
+        if key == 'INPUTS.results_folder':
+            self._follow_results_folder()
         if key == 'CORRECTION.use_dls':
             self._dls_correction_changed()
         if key == 'PANEL.panels_used' and self._panels_used_allowed(self.model.get(key)):
@@ -1120,6 +1140,17 @@ class RadiometricFrame:
             while not initial.is_dir() and initial != initial.parent:          # a results folder that does not exist yet
                 initial = initial.parent
             chosen = ask_folder(self.parent.winfo_toplevel(), self.model.fields[key]['label'], initial)
+        elif key == 'PANEL.manual_regions_file':
+            from tkinter import filedialog
+            # the file may not exist yet: the dialog that names a file is used, so that any folder can be chosen and a new name
+            # typed; an existing file is chosen without asking whether to replace it (it is not written here)
+            results = wf.resolve_path(self.root_folder, self.model.get('INPUTS.results_folder'))
+            folder = initial if current else results
+            while not folder.is_dir() and folder != folder.parent:
+                folder = folder.parent
+            chosen = filedialog.asksaveasfilename(
+                title='Panel regions file', initialdir=folder, initialfile=Path(current).name if current else 'panel_regions.json',
+                defaultextension='.json', filetypes=(('JSON files', '*.json'), ('All files', '*.*')), confirmoverwrite=False)
         else:
             from tkinter import filedialog
             chosen = filedialog.askopenfilename(initialdir=initial)

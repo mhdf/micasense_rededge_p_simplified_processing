@@ -230,6 +230,7 @@ tests/                            the tests
 launchers/                        launchers for Windows (double-click), the choice of the Python and the check of the computer
 config/                           your configuration, profiles, presets and chosen Python (not kept in git)
 requirements.txt, environment.yml the Python packages (pip) and the conda environment (see "Installing on a new computer")
+open_radiometric_window.cmd       double-click to open the window (the other launchers are in launchers/)
 images/raw/, results/reflectance/ the example images and their results
 ```
 
@@ -296,9 +297,9 @@ The panel region of each band can be checked, accepted and, when it is wrong or 
 
 ## Launchers (Windows)
 
-Double-click one of these files in the ```launchers``` folder. They use the Python saved in ```config/python_environment.json``` (chosen with ```select_python.cmd```, which they open by themselves if there is none; the window then asks for it again, see "Installing on a new computer") and the project folder as ```--root```, so the relative paths of the configuration (for example ```images/raw```) are resolved from there. Each one checks that the Python is 3.10 or newer with Tkinter; the packages and ExifTool are checked by the program before it opens (see "Installing on a new computer").
+Double-click ```open_radiometric_window.cmd```, in the project folder, to open the window; the other files are in the ```launchers``` folder. They use the Python saved in ```config/python_environment.json``` (chosen with ```select_python.cmd```, which they open by themselves if there is none; the window then asks for it again, see "Installing on a new computer") and the project folder as ```--root```, so the relative paths of the configuration (for example ```images/raw```) are resolved from there. Each one checks that the Python is 3.10 or newer with Tkinter; the packages and ExifTool are checked by the program before it opens (see "Installing on a new computer").
 
-- ```launchers/open_radiometric_window.cmd```: the window, without a console (like the launcher of the photogrammetric workflow); it is ```pythonw -m radiometric_app window --root .```.
+- ```open_radiometric_window.cmd``` (in the project folder, next to ```radiometric_correction_tools.py```): the window, without a console (like the launcher of the photogrammetric workflow); it is ```pythonw -m radiometric_app window --root .```.
 - ```launchers/open_radiometric_window_debug.cmd```: the same window with the console kept open, to see messages and error traces while testing.
 - ```launchers/open_panel_selector.cmd```: only the dialog to draw the panel regions, using ```config/radiometric_inputs.json``` in the project folder if it exists, otherwise the defaults. Extra arguments are passed on (for example ```--capture IMG_0005```).
 - ```launchers/select_python.cmd```: choose the ```python.exe``` (window written in PowerShell, so that it works before any Python is chosen; ```select_python.ps1```) and check it.

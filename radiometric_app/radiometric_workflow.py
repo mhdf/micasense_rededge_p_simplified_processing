@@ -57,8 +57,9 @@ GROUP_NOTES = {
         "spectral window of each band.",
     "Correction with the DLS":
         "The panel photo sets the reflectance scale for the light at the moment it was taken. The DLS "
-        "(downwelling light sensor) measures the irradiance, the light that arrives from the sky, so it shows "
-        "how the light changed between the panel photo and each image.\n"
+        "(downwelling light sensor) estimates the irradiance, the light that arrives from the sky on a horizontal "
+        "surface, from its own sensor readings, so it shows how the light changed between the panel photo and "
+        "each image.\n"
         "# The correction\n"
         "- For each band: DLS ratio = E_panel / E_image, with E read from XMP:HorizontalIrradiance of the "
         "panel capture and of the image.\n"

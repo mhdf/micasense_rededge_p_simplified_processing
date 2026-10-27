@@ -371,6 +371,7 @@ class WindowTests(unittest.TestCase):
 
     def test_running_the_workflow_reports_progress_and_the_result(self):
         self.frame.set_value('INPUTS.results_folder', self.results('run'))
+        self.frame.set_value('INPUTS.image_captures', 'IMG_0010')                    # IMG_0422 is the second panel capture
         self.frame.set_value('CORRECTION.use_dls', True)
         self.frame.start_run()
         self.assertTrue(self.frame.running)
@@ -966,6 +967,7 @@ class WindowTests(unittest.TestCase):
         for name in ('Panchro', 'Red edge', 'NIR'):
             self.row(name)['vars']['process'].set(False)
         self.frame.set_value('INPUTS.results_folder', self.results('three'))
+        self.frame.set_value('INPUTS.image_captures', 'IMG_0010')
         self.frame.start_run()
         self.pump(lambda: not self.frame.running)
         result = self.frame.last_result
@@ -1244,12 +1246,12 @@ class CaptureChoiceTests(unittest.TestCase):
     def test_panel_captures_are_typed_or_chosen_by_looking_at_the_captures(self):
         entry = self.frame.entries['INPUTS.reference_panel_capture']
         self.assertEqual(entry.winfo_class(), 'TEntry')
-        self.assertEqual(self.frame.capture_names(), ['IMG_0005', 'IMG_0010'])
-        self.assertEqual(self.frame.capture_names(True), ['', 'IMG_0005', 'IMG_0010'])
+        self.assertEqual(self.frame.capture_names(), ['IMG_0005', 'IMG_0010', 'IMG_0422'])
+        self.assertEqual(self.frame.capture_names(True), ['', 'IMG_0005', 'IMG_0010', 'IMG_0422'])
         with mock.patch.object(rw, 'pick_captures', return_value='IMG_0010') as picker:
             self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
         args, kwargs = picker.call_args
-        self.assertEqual(args[1], ['IMG_0005', 'IMG_0010'])
+        self.assertEqual(args[1], ['IMG_0005', 'IMG_0010', 'IMG_0422'])
         self.assertEqual(kwargs['selected'], ['IMG_0005'])
         self.assertIsNone(kwargs['none_label'])                                  # the first panel capture is needed
         self.assertFalse(kwargs.get('multiple', False))
@@ -1272,7 +1274,7 @@ class CaptureChoiceTests(unittest.TestCase):
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
             self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
             self.frame.choose_captures()
-        self.assertEqual(picker.call_args[0][1], ['IMG_0010'])             # the panel capture is not offered
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel capture is not offered
         self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')      # shown in the field, even if it is all
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0001')
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']):
@@ -1295,8 +1297,9 @@ class CaptureChoiceTests(unittest.TestCase):
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
         self.frame._update_captures_summary()
         text = self.frame.captures_details()[1]
-        self.assertIn('All the other captures of the folder will be corrected (1):', text)
+        self.assertIn('All the other captures of the folder will be corrected (2):', text)
         self.assertIn('- IMG_0010', text)
+        self.assertIn('- IMG_0422', text)
         self.assertFalse(self.frame.captures_summary.winfo_manager())
 
     def test_the_pattern_details_and_the_suggestion(self):
@@ -1305,7 +1308,7 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertEqual(title, 'In the images folder')
         self.assertIn('{capture}_{index}.tif', text)
         self.assertIn('- IMG_0005_1.tif -> capture IMG_0005, file 1', text)
-        self.assertIn('2 captures (2 with 6 files)', text)
+        self.assertIn('3 captures (3 with 6 files)', text)
         self.assertEqual(self.frame.pattern_preview.cget('text'), '')
         self.frame.set_value('INPUTS.file_pattern', r'(?P<capture>X.+)\.tif$')
         self.frame._update_pattern_preview()

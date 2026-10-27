@@ -28,7 +28,7 @@ from pathlib import Path
 from . import camera_presets, environment
 import radiometric_correction_tools as rct
 from . import radiometric_workflow as wf
-from .ui_theme import COLORS, FONT, apply_dark_theme, hide_title_icon
+from .ui_theme import COLORS, apply_dark_theme, hide_title_icon
 from .capture_picker import pick_captures
 from .ui_widgets import BandTable, HelpPanel, NavTiles, ScrollablePage, model_from_rows, rows_from_model
 

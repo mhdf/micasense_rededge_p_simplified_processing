@@ -20,7 +20,7 @@ import tkinter as tk
 from tkinter import ttk
 
 # Local Imports
-from .ui_theme import COLORS, FONT, hide_title_icon
+from .ui_theme import COLORS, hide_title_icon
 
 IMAGE_SUFFIXES = ('.tif', '.tiff', '.png', '.jpg', '.jpeg')
 PREVIEW_BOUNDS = (1600, 1200)             # the picture is reduced to this before it is stretched and drawn

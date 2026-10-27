@@ -8,8 +8,10 @@ __pycache__/
 # the configuration of the user: the saved inputs, the profiles and the camera presets of their own
 config/
 
-# files written by using the tools: the regions of the panel and the results of a run (and the configuration that
-# earlier versions kept in the project folder)
+# what the program writes: the results of the runs (reflectance images, result and provenance files, the regions of the panel)
+results/
+
+# files written by using the tools elsewhere (and the configuration that earlier versions kept in the project folder)
 radiometric_inputs.json
 panel_regions.json
 radiometric_result.json

@@ -25,7 +25,6 @@ import sys
 from pathlib import Path
 
 # Third-Party Imports
-import numpy as np
 
 # Local Imports
 import radiometric_correction_tools as rct

@@ -135,8 +135,6 @@ $browse.Add_Click({
     $current = $box.Text.Trim().Trim('"')
     if ($current -and (Test-Path -LiteralPath (Split-Path -Parent $current) -ErrorAction SilentlyContinue)) {
         $dialog.InitialDirectory = Split-Path -Parent $current
-    } elseif (Test-Path 'C:\path\to\your\envs') {
-        $dialog.InitialDirectory = 'C:\path\to\your\envs'
     }
     if ($dialog.ShowDialog() -eq 'OK') { $box.Text = $dialog.FileName; $message.Text = '' }
 })

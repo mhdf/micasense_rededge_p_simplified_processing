@@ -13,8 +13,7 @@ import numpy as np
 
 from radiometric_app import panel_spectrum as ps
 
-REAL_FILE = Path(r'C:\path\to\your\files'
-                 r'\reference_panel_spectral_response\RP06-2201497-OB.csv')
+REAL_FILE = Path(__file__).resolve().parent.parent / 'reference_panel_spectral_response' / 'RP06-2201497-OB.csv'
 
 
 def write(folder, name, text):
@@ -301,7 +300,7 @@ class ReadingOptionsTests(unittest.TestCase):
             self.assertEqual(fmt['delimiter'], 'comma')
 
 
-@unittest.skipUnless(REAL_FILE.is_file(), 'the file of the example panel is not available')
+@unittest.skipUnless(REAL_FILE.is_file(), 'the spectral response of the example panel is not in the project')
 class ExamplePanelTests(unittest.TestCase):
 
     def test_the_example_panel_reproduces_the_values_printed_on_it(self):

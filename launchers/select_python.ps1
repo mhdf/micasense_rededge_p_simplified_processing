@@ -116,7 +116,7 @@ $form.Controls.Add($box)
 $browse = New-Button 'Browse...' 535 74 105
 $form.Controls.Add($browse)
 $form.Controls.Add((New-Label ('Python 3.10 or newer with Tkinter is required. The Python packages and ExifTool are checked ' +
-    'when the window is opened (see the README to install them on a new computer).') 20 112 620 44 $muted $false))
+    'when the window is opened (see docs/installation.md to install them on a new computer).') 20 112 620 44 $muted $false))
 $message = New-Label '' 20 160 620 22 $errorColor $false
 $form.Controls.Add($message)
 $confirm = New-Button 'Confirm' 430 190 100

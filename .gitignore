@@ -11,6 +11,12 @@ config/
 # what the program writes: the results of the runs (reflectance images, result and provenance files, the regions of the panel)
 results/
 
+# pages that a Markdown previewer (for example Quarto) writes next to the README and the pages of docs
+README.html
+README_files/
+docs/*.html
+docs/*_files/
+
 # files written by using the tools elsewhere (and the configuration that earlier versions kept in the project folder)
 radiometric_inputs.json
 panel_regions.json

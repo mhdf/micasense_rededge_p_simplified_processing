@@ -1,5 +1,5 @@
 # conda environment for the radiometric correction program:  conda env create -f environment.yml
-# Then choose its python.exe with launchers\select_python.cmd (see "Installing on a new computer" in README.md).
+# Then choose its python.exe with launchers\select_python.cmd (see docs/installation.md).
 # ExifTool, the program that reads the metadata of the images, is not included: install it separately.
 name: radiometric
 channels:

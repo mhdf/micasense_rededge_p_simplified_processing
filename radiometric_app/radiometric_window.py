@@ -122,10 +122,13 @@ RUN_NOTES = {
     'log': ("Log", "What the correction did: errors, flags raised by the checks of the DLS data, and the files written."),
 }
 PROFILE_NOTES = {
-    'save': ("Save configuration", "Saves what is in the window in the working file shown at the left (the one that the "
-                                   "window reads when it opens). Only the values that differ from the defaults are written. "
-                                   "It is done by itself when you run the correction, so the button is for keeping changes "
-                                   "without running."),
+    'save': ("Update saved configuration", "Replaces the saved configuration, the file shown at the left (the one that the "
+                                           "window reads when it opens), with what is in the window, so that the window "
+                                           "opens with these values the next time. Only the values that differ from the "
+                                           "defaults are written. It is not tied to a project or to a results folder: the "
+                                           "settings of each run are in its results folder (radiometric_result.json), and a "
+                                           "profile keeps a setup under a name. It is done by itself when you run the "
+                                           "correction, so the button is for keeping changes without running."),
     'profile': ("Profiles", "A profile is a named copy of all the values, for a camera or a flight, kept apart from the "
                             "working configuration.\n"
                             "- Save profile...: writes every value in a file that you name (the config/profiles folder is "
@@ -358,8 +361,9 @@ class RadiometricFrame:
         tk, ttk = self.tk, self.ttk
         bottom = ttk.Frame(self.widget, padding=(12, 6, 12, 10))
         bottom.pack(side='bottom', fill='x')
-        save_button = ttk.Button(bottom, text='Save configuration', command=self.save)
+        save_button = ttk.Button(bottom, text='Update saved configuration', command=self.save)
         save_button.pack(side='right')
+        self.buttons['save'] = save_button
         save_profile = ttk.Button(bottom, text='Save profile...', command=self.save_profile_as)
         save_profile.pack(side='right', padx=(0, 6))
         load_profile = ttk.Button(bottom, text='Load profile...', command=self.load_profile_from)
@@ -1249,7 +1253,8 @@ class RadiometricFrame:
             return False
         _, errors = self.model.config()
         note = f" ({len(errors)} invalid value(s) were not saved)" if errors else ''
-        self.status.configure(text=f"Saved to {self.config_path}{note}", style='Muted.TLabel')
+        self.status.configure(text=f"Saved configuration updated: {self.config_path}{note}. The window opens with these "
+                                   "values the next time.", style='Muted.TLabel')
         return True
 
     # --- profiles ---------------------------------------------------------------------------------------------------

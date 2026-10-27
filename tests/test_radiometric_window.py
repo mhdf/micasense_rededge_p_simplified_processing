@@ -164,7 +164,10 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(self.frame.save())
         self.assertEqual(json.loads(self.config_path.read_text(encoding='utf-8')),
                          {'INPUTS.reference_panel_capture': 'IMG_0007'})
-        self.assertIn('Saved to', self.frame.status.cget('text'))
+        self.assertIn('Saved configuration updated', self.frame.status.cget('text'))
+        self.assertIn(str(self.config_path), self.frame.status.cget('text'))
+        self.assertIn('opens with these values the next time', self.frame.status.cget('text'))
+        self.assertEqual(self.frame.buttons['save'].cget('text'), 'Update saved configuration')
 
     def test_a_saved_configuration_is_loaded_and_a_bad_one_is_reported(self):
         self.config_path.write_text(json.dumps({'CORRECTION.use_dls': True}), encoding='utf-8')

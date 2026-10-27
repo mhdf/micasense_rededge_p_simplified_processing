@@ -1569,7 +1569,7 @@ def main(argv=None):
     parser.add_argument('--root', default='.', help="folder from which the relative paths are resolved")
     arguments = parser.parse_args(argv)
     window = tk.Tk()
-    window.title("Radiometric correction - Micasense RedEdge-P")
+    window.title("Radiometric Correction for Micasense Multispectral Cameras")
     window.geometry("1400x820")
     window.minsize(1150, 620)
     apply_dark_theme(window)

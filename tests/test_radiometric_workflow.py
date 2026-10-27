@@ -24,7 +24,9 @@ RAW = ROOT / 'images' / 'raw'
 
 
 def config_for(results_folder, **changes):
-    values = {'INPUTS.images_folder': str(RAW), 'INPUTS.results_folder': str(results_folder)}
+    """ The example images: IMG_0005 shows the panel, IMG_0010 is corrected (IMG_0422 is the second panel capture) """
+    values = {'INPUTS.images_folder': str(RAW), 'INPUTS.results_folder': str(results_folder),
+              'INPUTS.image_captures': 'IMG_0010'}
     values.update(changes)
     return values
 
@@ -119,7 +121,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('ExifTool not found', text)
 
     def test_captures_are_listed_from_the_file_names(self):
-        self.assertEqual(rct.list_capture_names(RAW), ['IMG_0005', 'IMG_0010'])
+        self.assertEqual(rct.list_capture_names(RAW), ['IMG_0005', 'IMG_0010', 'IMG_0422'])
         self.assertEqual(wf.capture_names(' A , B,,C '), ['A', 'B', 'C'])
 
     def test_panel_regions_are_saved_and_loaded_keeping_other_captures(self):
@@ -508,7 +510,7 @@ class RunTests(unittest.TestCase):
             if path.name.startswith('IMG_0010'):
                 shutil.copy(path, images / path.name.replace('IMG_0010', 'IMG_0011'))
         result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'two_captures_out'),
-                         'CHECKS.max_sun_angle_discrepancy_deg': 0.1}, ROOT)
+                         'INPUTS.image_captures': 'IMG_0010, IMG_0011', 'CHECKS.max_sun_angle_discrepancy_deg': 0.1}, ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
         self.assertEqual(sum('Heading of the camera in the panel capture' in flag for flag in result['flags']), 1)
         self.assertEqual(sum('DLS of the panel capture' in flag for flag in result['flags']), 1)   # 0.2 deg > 0.1: once
@@ -728,7 +730,8 @@ class RunTests(unittest.TestCase):
             shutil.copy(path, images / new_name)
         pattern = r'(?P<capture>FLIGHT-\d+)-band(?P<index>\d+)\.tif$'
         result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'renamed'),
-                         'INPUTS.reference_panel_capture': 'FLIGHT-0005', 'INPUTS.file_pattern': pattern}, ROOT)
+                         'INPUTS.reference_panel_capture': 'FLIGHT-0005', 'INPUTS.image_captures': 'FLIGHT-0010',
+                         'INPUTS.file_pattern': pattern}, ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
         names = sorted(Path(path).name for path in result['outputs'])
         self.assertEqual(names, sorted(f'FLIGHT-0010-band{number}.TIF' for number in range(5, 11)))
@@ -973,9 +976,10 @@ class RunTests(unittest.TestCase):
             if path.name != 'IMG_0010_3.tif':
                 shutil.copy(path, images / path.name)
         result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'incomplete')}, ROOT)
-        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['status'], 'completed_with_errors')
         self.assertIn("missing: ['Red']", result['captures']['IMG_0010']['errors'][0])
-        self.assertEqual(result['outputs'], [])
+        self.assertEqual(sorted(Path(path).name for path in result['outputs']),            # the other capture is corrected
+                         [f'IMG_0422_{number}.tif' for number in range(1, 7)])
 
     def test_missing_irradiance_in_one_band_fails_the_dls_correction_of_the_capture(self):
         original = wf._read_capture

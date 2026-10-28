@@ -59,13 +59,9 @@ image_files = rct.read_band_files( rct.find_capture_paths(root_path / images_fol
 &emsp;&emsp;Finally, iterate over the bands, saving the images after transforming them from DNs to radiance and then to reflectance.
 
 ```
-# Images of both captures (the panel is detected inside the loop; the DLS ratios only need the metadata)
+# Images of both captures (the panel is detected inside the loop)
 reference_panel_objs = { band: rct.Image( *reference_panel_files[band] ) for band in bands }
 image_objs = { band: rct.Image( *image_files[band] ) for band in bands }
-
-# DLS ratios (E_panel / E_image) of all the bands. A missing or invalid irradiance in any band, Panchro included,
-# raises an error: nothing is estimated from other bands
-dls_ratios = rct.capture_dls_ratios( reference_panel_objs, image_objs ) if use_dls else {}
 
 band_records = []
 for band in bands: # Iterate over bands
@@ -83,20 +79,23 @@ for band in bands: # Iterate over bands
     # Image to be processed
     image_obj = image_objs[band]
 
+    # Factor applied to the image: the panel factor and, with the DLS, the DLS ratio E_panel / E_image.
+    # The list holds the panels and their weights (one panel here, weight 1). A missing or invalid
+    # irradiance, Panchro included, raises an error: nothing is estimated from other bands
+    factor_applied, panels_used = rct.combine_panels( [(reference_panel_obj, 1.0)],
+                                                      image_obj if use_dls else None )
+
     # Reflectance image
-    dls_ratio, dls_ratio_source = dls_ratios.get( band, (None, None) )
-    image_reflectance = image_obj.digital_numbers_to_reflectance( radiance_to_reflectance_factor,
-                                                                  dls_ratio=dls_ratio,
-                                                                  dls_ratio_source=dls_ratio_source )
+    image_reflectance = image_obj.digital_numbers_to_reflectance( factor_applied )
 
     ##
     # Save reflectance image
     output_path = root_path / results_folder / Path(image_files[band][0]).name
     tifffile.imwrite( output_path, image_reflectance )  # keeps the float values (no rescaling to integers)
-    band_records.append( rct.band_record(output_path, reference_panel_obj, image_obj, image_reflectance) )
+    band_records.append( rct.band_record(output_path, image_obj, image_reflectance, panels_used, factor_applied) )
 
 # Checks of the DLS data of the capture (the messages are also issued as warnings)
-checks = rct.check_dls_capture( reference_panel_objs, image_objs, dls_ratios or None )
+checks = rct.check_dls_capture( reference_panel_objs, image_objs )
 print( checks['flags'] )
 
 # Record of what was used to produce the results, saved with them
@@ -106,13 +105,13 @@ rct.write_provenance( root_path / results_folder / (image_to_process_name + '_pr
                       checks=checks )
 ```
 
-&emsp;&emsp;In summary, `rct.Image(image, metadata)` creates an object with the image and its information; `detect_reference_panel(...)` finds the reference panel on the undistorted radiance image and calculates the factor that converts radiance to reflectance; and `digital_numbers_to_reflectance(factor)` transforms the target image to radiance and multiplies it by that factor. `rct.find_capture_paths()` and `rct.read_band_files()` list the files of a capture and match them to the bands.
+&emsp;&emsp;In summary, `rct.Image(image, metadata)` creates an object with the image and its information; `detect_reference_panel(...)` finds the reference panel on the undistorted radiance image and calculates the factor that converts radiance to reflectance; `rct.combine_panels(...)` gives the factor applied to the image (with the DLS, the panel factor times the DLS ratio; with two panels, their weighted mean); and `digital_numbers_to_reflectance(factor)` transforms the target image to radiance and multiplies it by that factor. `rct.find_capture_paths()` and `rct.read_band_files()` list the files of a capture and match them to the bands.
 
 ## Checks and calibration record
 
 - Metadata are checked when an image is created: a missing or invalid field (non-numeric, wrong number of values, non-positive exposure or ISO and so on) raises a `rct.MetadataError` that names the file and the field.
 - `detect_reference_panel()` raises a clear error if the QR code is not found, if the band has no reflectance level or if all the panel pixels are saturated; saturated pixels (above `sat_threshold`) are left out of the panel mean. Afterwards `panel_audit` holds what was used to calibrate the band: the panel region, the number of pixels and of saturated pixels, the mean and standard deviation of the radiance, the reflectance level and the final factor.
-- `rct.band_record()` and `rct.write_provenance()` save a json file with what was used to produce the results (`IMG_0010_provenance.json` in the example): the ids of the image and panel captures and the attitude of the camera; for each band, the panel and image files, the panel audit, the DLS irradiances of the panel and of the image (recorded even when the DLS is not used) and, when it is used, the DLS ratio; the checks of the capture; the parameters of the run (the complete configuration, with the reflectance of the panel); and the software used: the versions of Python, numpy and opencv and the SHA-256 of `radiometric_correction_tools.py`, a fingerprint of the content of that file (see [Panel reflectance](reference-panel.md#panel-reflectance-from-its-spectral-response-file)), so that the exact code that made the results can be identified.
+- `rct.band_record()` and `rct.write_provenance()` save a json file with what was used to produce the results (`IMG_0010_provenance.json` in the example): the ids of the image and panel captures and the attitude of the camera; for each band, the image file, the factor applied and the panels used, each with its file, weight, factor, audit and DLS irradiance (recorded even when the DLS is not used) and, when the DLS is used, its DLS ratio and adjusted factor; the DLS irradiance of the image; the checks of the capture; the parameters of the run (the complete configuration, with the reflectance of the panel); and the software used: the versions of Python, numpy and opencv and the SHA-256 of `radiometric_correction_tools.py`, a fingerprint of the content of that file (see [Panel reflectance](reference-panel.md#panel-reflectance-from-its-spectral-response-file)), so that the exact code that made the results can be identified.
 
 ## Workflow runner (no user interface)
 

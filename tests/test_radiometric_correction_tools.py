@@ -377,33 +377,58 @@ class TwoPanelsTests(unittest.TestCase):
             with self.assertRaisesRegex(rct.MetadataError, 'IMG_1: EXIF:DateTimeOriginal'):
                 rct.capture_time(bad, 'IMG_1')
 
+    class Fake:
+        """ A band of a capture with what combine_panels and band_record read """
+        def __init__(self, name, factor=None, irradiance=None):
+            self.image_path, self.metadata, self.band_name = name, {'XMP:CaptureId': name[:2]}, 'Blue'
+            self.panel_audit = {'radiance_to_reflectance_factor': factor} if factor is not None else None
+            self.horizontal_irradiance, self.irradiance_scale_to_si = irradiance, None
+
+        def dls_irradiance(self):
+            return self.horizontal_irradiance
+
+        def dls_sun_angle_discrepancy_deg(self):
+            return None
+
     def test_without_the_dls_the_factors_are_averaged_with_the_weight(self):
-        self.assertEqual(rct.effective_panel_factor(2.0, 3.0, 0.0), 2.0)
-        self.assertEqual(rct.effective_panel_factor(2.0, None, 0.7), 2.0)
-        self.assertAlmostEqual(rct.effective_panel_factor(2.0, 3.0, 0.5), 2.5)
-        self.assertAlmostEqual(rct.effective_panel_factor(2.0, 3.0, 0.25), 2.25)
+        first, second = self.Fake('p1.tif', 2.0), self.Fake('p2.tif', 3.0)
+        self.assertEqual(rct.combine_panels([(first, 1.0), (second, 0.0)])[0], 2.0)
+        self.assertAlmostEqual(rct.combine_panels([(first, 0.5), (second, 0.5)])[0], 2.5)
+        self.assertAlmostEqual(rct.combine_panels([(first, 0.75), (second, 0.25)])[0], 2.25)
+        factor, used = rct.combine_panels([(first, 0.0), (second, 1.0)])
+        self.assertEqual((factor, [entry['panel'] for entry in used]), (3.0, [second]))       # a panel of weight 0 is left out
+        self.assertEqual((used[0]['dls_ratio'], used[0]['adjusted_factor']), (None, 3.0))
 
-    def test_with_the_dls_what_is_averaged_is_the_factor_times_the_irradiance(self):
-        # the same camera constant (factor x irradiance = 200) seen under different light: the panels agree
-        self.assertAlmostEqual(rct.effective_panel_factor(2.0, 2.5, 0.5, 100.0, 80.0), 2.0)
-        # a panel that gives another constant (210) moves the result, expressed for the irradiance of the first panel
-        self.assertAlmostEqual(rct.effective_panel_factor(2.0, 2.625, 0.5, 100.0, 80.0), (0.5 * 200 + 0.5 * 210) / 100)
+    def test_with_the_dls_each_panel_is_brought_to_the_light_of_the_image_before_they_are_combined(self):
+        image = self.Fake('img.tif', irradiance=125.0)
+        first, second = self.Fake('p1.tif', 1.0, 100.0), self.Fake('p2.tif', 0.8, 125.0)
+        factor, used = rct.combine_panels([(first, 0.0), (second, 1.0)], image)
+        self.assertAlmostEqual(factor, 0.8)                              # the last panel had the light of the image
+        self.assertEqual(used[0]['dls_ratio'], 1.0)
+        factor, used = rct.combine_panels([(first, 0.5), (second, 0.5)], image)
+        self.assertAlmostEqual(factor, 0.5 * 1.0 * 100 / 125 + 0.5 * 0.8)
+        self.assertEqual([entry['dls_ratio'] for entry in used], [0.8, 1.0])
+        self.assertAlmostEqual(used[0]['adjusted_factor'], 0.8)
 
-    def test_a_record_names_the_second_panel_and_the_factor_that_was_used(self):
-        class Fake:
-            def __init__(self, name):
-                self.image_path, self.metadata, self.band_name = name, {}, 'Blue'
-                self.panel_audit = {'radiance_to_reflectance_factor': 2.0}
-                self.horizontal_irradiance = self.irradiance_scale_to_si = self.dls_ratio = self.dls_ratio_source = None
+    def test_the_weights_of_the_panels_must_add_up_to_one(self):
+        with self.assertRaisesRegex(ValueError, 'add up to 1'):
+            rct.combine_panels([(self.Fake('p1.tif', 1.0), 0.5)])
+        with self.assertRaisesRegex(ValueError, 'at least one panel'):
+            rct.combine_panels([(self.Fake('p1.tif', 1.0), 0.0)])
 
-            def dls_sun_angle_discrepancy_deg(self):
-                return None
+    def test_a_record_names_the_panels_used_and_the_factor_applied(self):
         import numpy as np
-        record = rct.band_record('out.tif', Fake('p1.tif'), Fake('img.tif'), np.zeros((2, 2)), Fake('p2.tif'), 0.3, 2.3)
-        self.assertEqual((record['second_panel_file'], record['second_panel_weight'], record['effective_factor']),
-                         ('p2.tif', 0.3, 2.3))
-        plain = rct.band_record('out.tif', Fake('p1.tif'), Fake('img.tif'), np.zeros((2, 2)))
-        self.assertEqual((plain['second_panel_file'], plain['second_panel_weight']), (None, 0.0))
+        image = self.Fake('img.tif', irradiance=125.0)
+        first, second = self.Fake('p1.tif', 1.0, 100.0), self.Fake('p2.tif', 0.8, 125.0)
+        factor, used = rct.combine_panels([(first, 0.7), (second, 0.3)], image)
+        record = rct.band_record('out.tif', image, np.zeros((2, 2)), used, factor)
+        self.assertEqual(record['factor_applied'], factor)
+        self.assertEqual([(panel['file'], panel['weight'], panel['dls_ratio']) for panel in record['panels']],
+                         [('p1.tif', 0.7, 0.8), ('p2.tif', 0.3, 1.0)])
+        self.assertTrue(record['dls']['used'])
+        factor, used = rct.combine_panels([(first, 1.0)])
+        plain = rct.band_record('out.tif', image, np.zeros((2, 2)), used, factor)
+        self.assertEqual((len(plain['panels']), plain['dls']['used']), (1, False))
 
 
 class ValidatePolygonTests(unittest.TestCase):
@@ -543,6 +568,42 @@ class ExampleImageTests(unittest.TestCase):
         with self.assertRaisesRegex(rct.MetadataError, "'EXIF:ISOSpeed' is not numeric"):
             rct.Image(path, dict(metadata, **{'EXIF:ISOSpeed': 'abc'}))
 
+    @staticmethod
+    def micasense_radiance(image):
+        """
+        The radiance as MicaSense computes it (micasense/imageprocessing, Image.vignette with the 2D polynomial and
+        Image.radiance), with its transposes, written with the values of rct.Image
+        """
+        image_raw = np.copy(image.image).T
+        x_dim, y_dim = image.image.shape[1], image.image.shape[0]
+        x, y = np.meshgrid(np.arange(x_dim), np.arange(y_dim))
+        x, y = x.T, y.T
+        xv, yv = x.T / x_dim, y.T / y_dim
+        p2 = np.zeros_like(xv, dtype=float)
+        for i, c in enumerate(image.k):
+            p2 += c * xv ** image.e[2 * i] * yv ** image.e[2 * i + 1]
+        V = (1. / p2).T
+        R = 1.0 / (1.0 + image.a2 * y / image.exposure_time - image.a3 * y)
+        L = V * R * (image_raw - image.black_levels.mean())
+        L[L < 0] = 0
+        return (L.astype(float) / (image.gain * image.exposure_time) * image.a1 / float(2 ** image.bits_per_pixel)).T
+
+    def test_the_radiance_is_the_one_of_micasense_in_every_band(self):
+        for band in BANDS:
+            image = rct.Image(*self.band_files[band])
+            self.assertTrue(np.allclose(image.digital_numbers_to_radiance(), self.micasense_radiance(image),
+                                        rtol=1e-12, atol=0), band)
+
+    def test_the_vignetting_correction_is_larger_along_the_long_side_of_the_image(self):
+        # the image is wider than tall, so the middle of the left edge is further from the centre than the middle of the top
+        image = rct.Image(*self.band_files['Blue'])
+        correction = image.vignetting_correction()
+        height, width = correction.shape
+        self.assertEqual((width, height), (1456, 1088))
+        self.assertAlmostEqual(correction[height // 2, width // 2], 1.0, delta=0.02)
+        self.assertGreater(correction[height // 2, 0], correction[0, width // 2] + 0.3)
+        self.assertEqual(image.row_gradient_correction().shape, (height, 1))
+
     def test_panel_detection_records_an_audit(self):
         panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, self.exiftool_path)
         path, metadata = panel_files['Blue']
@@ -554,10 +615,9 @@ class ExampleImageTests(unittest.TestCase):
         self.assertAlmostEqual(audit['reflectance_level'] / audit['radiance_mean'], factor)
         self.assertEqual(audit['n_saturated'], 0)
         self.assertGreater(audit['n_pixels'], 0)
-        # the original code (panel region measured on the distorted image) gave 2.03712; sampling the region on the
-        # undistorted image, where the QR code is found, changes it by about -0.3 %
-        self.assertAlmostEqual(factor, 2.0371197142446085, delta=0.01 * 2.0371197142446085)
-        self.assertLess(factor, 2.0371197142446085)
+        # 2.0312 before the axes of the vignetting correction were fixed: the panel is in the upper part of the photo
+        # (row 265 of 1088), where the swapped correction made the radiance 18 % too high
+        self.assertAlmostEqual(factor, 2.3933485545501494, delta=1e-6 * 2.3933485545501494)
         self.assertLess(audit['radiance_std'] / audit['radiance_mean'], 0.03)
 
     def test_panel_detection_without_qr_code_is_a_clear_error(self):
@@ -732,7 +792,8 @@ class ExampleImageTests(unittest.TestCase):
         with warnings.catch_warnings(record=True):
             warnings.simplefilter('always')
             checks = rct.check_dls_capture(panel, target)
-        record = rct.band_record('out/x.tif', panel['Blue'], target['Blue'], target['Blue'].digital_numbers_to_radiance())
+        factor, used = rct.combine_panels([(panel['Blue'], 1.0)])
+        record = rct.band_record('out/x.tif', target['Blue'], target['Blue'].digital_numbers_to_radiance(), used, factor)
         self.assertIn('sun_angle_discrepancy_deg', record['dls'])
         self.assertEqual(set(record['dls']['attitude_as_written']), {'Roll', 'Pitch', 'Yaw'})
         with tempfile.TemporaryDirectory() as folder:
@@ -746,25 +807,31 @@ class ExampleImageTests(unittest.TestCase):
 
     def test_provenance_of_a_panel_only_run(self):
         panel, target, factor = self.panel_and_target('Blue')
-        reflectance = target.digital_numbers_to_reflectance(factor)
-        record = rct.band_record('out/IMG_0010_1.tif', panel, target, reflectance)
+        applied, used = rct.combine_panels([(panel, 1.0)])
+        reflectance = target.digital_numbers_to_reflectance(applied)
+        record = rct.band_record('out/IMG_0010_1.tif', target, reflectance, used, applied)
         self.assertEqual(record['band'], 'Blue')
-        self.assertTrue(record['panel_file'].endswith('IMG_0005_1.tif'))
+        self.assertTrue(record['panels'][0]['file'].endswith('IMG_0005_1.tif'))
         self.assertTrue(record['image_file'].endswith('IMG_0010_1.tif'))
         self.assertEqual(record['output_dtype'], 'float64')
         self.assertFalse(record['dls']['used'])
-        self.assertIsNone(record['dls']['ratio_panel_over_image'])
+        self.assertIsNone(record['panels'][0]['dls_ratio'])
         # the irradiances are recorded even when they are not used
         self.assertAlmostEqual(record['dls']['image_horizontal_irradiance'], 156.04327208007237)
-        self.assertEqual(record['panel']['radiance_to_reflectance_factor'], factor)
+        self.assertEqual((record['factor_applied'], record['panels'][0]['factor']), (factor, factor))
+        self.assertEqual(record['panels'][0]['audit']['radiance_to_reflectance_factor'], factor)
 
     def test_provenance_of_a_dls_run_is_saved_as_json(self):
         import json, tempfile
         panel, target, factor = self.panel_and_target('Blue')
-        reflectance = target.digital_numbers_to_reflectance(factor, panel_image=panel)
-        record = rct.band_record('out/IMG_0010_1.tif', panel, target, reflectance)
+        applied, used = rct.combine_panels([(panel, 1.0)], target)
+        reflectance = target.digital_numbers_to_reflectance(applied)
+        record = rct.band_record('out/IMG_0010_1.tif', target, reflectance, used, applied)
         self.assertTrue(record['dls']['used'])
-        self.assertAlmostEqual(record['dls']['ratio_panel_over_image'], 138.05218450296033 / 156.04327208007237)
+        self.assertAlmostEqual(record['panels'][0]['dls_ratio'], 138.05218450296033 / 156.04327208007237)
+        self.assertAlmostEqual(record['factor_applied'], factor * 138.05218450296033 / 156.04327208007237)
+        # the same as the DLS ratio given to digital_numbers_to_reflectance (the example of the documentation)
+        self.assertTrue(np.allclose(reflectance, target.digital_numbers_to_reflectance(factor, panel_image=panel)))
         with tempfile.TemporaryDirectory() as folder:
             path = rct.write_provenance(Path(folder) / 'provenance.json', [record],
                                         parameters={'percent_inner_area': 0.7, 'levels': REFLECTANCE_LEVELS})
@@ -772,41 +839,41 @@ class ExampleImageTests(unittest.TestCase):
         self.assertEqual(saved['method'], 'panel_and_dls')
         self.assertEqual(saved['parameters']['percent_inner_area'], 0.7)
         self.assertEqual(len(saved['software']['radiometric_correction_tools_sha256']), 64)
-        self.assertEqual(saved['bands'][0]['panel']['panel_bounds'], record['panel']['panel_bounds'])
+        self.assertEqual(saved['bands'][0]['panels'][0]['audit']['panel_bounds'],
+                         record['panels'][0]['audit']['panel_bounds'])
 
     def test_the_records_of_the_bands_are_written_without_repetitions(self):
         import copy
-        first = {'band': 'Blue', 'image_capture_id': 'a', 'panel_capture_id': 'p', 'second_panel_file': None,
-                 'second_panel': None, 'second_panel_weight': 0.0, 'effective_factor': None,
-                 'panel': {'image_path': 'p1.tif', 'band_name': 'Blue', 'geometry': 'undistorted', 'sat_threshold': 1,
-                           'percent_inner_area': 0.7, 'barcode_data': None, 'n_pixels': 5},
-                 'dls': {'used': False, 'ratio_panel_over_image': None, 'ratio_source': None,
-                         'attitude_as_written': {'Roll': 1.0, 'Pitch': '0.5', 'Yaw': 2.0}, 'sun_angle_discrepancy_deg': 3.0,
-                         'panel_irradiance_scale_to_si': None, 'image_irradiance_scale_to_si': None,
-                         'panel_horizontal_irradiance': 100.0, 'image_horizontal_irradiance': 110.0}}
+        panel = {'file': 'p1.tif', 'capture_id': 'p', 'weight': 1.0, 'factor': 2.0, 'dls_ratio': None,
+                 'adjusted_factor': 2.0, 'horizontal_irradiance': 100.0, 'irradiance_scale_to_si': None,
+                 'audit': {'image_path': 'p1.tif', 'band_name': 'Blue', 'geometry': 'undistorted', 'sat_threshold': 1,
+                           'percent_inner_area': 0.7, 'barcode_data': None, 'n_pixels': 5,
+                           'radiance_to_reflectance_factor': 2.0}}
+        first = {'band': 'Blue', 'image_capture_id': 'a', 'factor_applied': 2.0, 'panels': [panel],
+                 'dls': {'used': False, 'attitude_as_written': {'Roll': 1.0, 'Pitch': '0.5', 'Yaw': 2.0},
+                         'sun_angle_discrepancy_deg': 3.0, 'image_irradiance_scale_to_si': None,
+                         'image_horizontal_irradiance': 110.0}}
         second = copy.deepcopy(first)
         second['band'] = 'Green'
         capture, bands = rct.compact_band_records([first, second])
-        self.assertEqual(capture, {'image_capture_id': 'a', 'panel_capture_id': 'p',
+        self.assertEqual(capture, {'image_capture_id': 'a', 'panel_capture_ids': ['p'],
                                    'camera_attitude_as_written': {'Roll': 1.0, 'Pitch': 0.5, 'Yaw': 2.0}})
-        self.assertEqual(bands[0]['panel'], {'n_pixels': 5})
-        self.assertEqual(bands[0]['dls'], {'used': False, 'panel_horizontal_irradiance': 100.0,
-                                           'image_horizontal_irradiance': 110.0})
-        self.assertEqual(set(bands[0]), {'band', 'panel', 'dls'})
-        self.assertEqual(first['dls']['ratio_source'], None)                     # the records that were given are not changed
+        self.assertEqual(bands[0]['panels'], [{'file': 'p1.tif', 'weight': 1.0, 'factor': 2.0,
+                                               'horizontal_irradiance': 100.0, 'audit': {'n_pixels': 5}}])
+        self.assertEqual(bands[0]['dls'], {'used': False, 'image_horizontal_irradiance': 110.0})
+        self.assertEqual(set(bands[0]), {'band', 'factor_applied', 'panels', 'dls'})
+        self.assertIn('capture_id', first['panels'][0])                         # the records that were given are not changed
         # what is not the same in all the bands stays where it is
         second['image_capture_id'] = 'b'
         capture, bands = rct.compact_band_records([first, second])
         self.assertNotIn('image_capture_id', capture)
         self.assertEqual((bands[0]['image_capture_id'], bands[1]['image_capture_id']), ('a', 'b'))
-        # a second panel that was used is kept
+        # with the DLS the ratio and the adjusted factor of each panel are kept
         used = copy.deepcopy(first)
-        used.update({'second_panel_file': 'p2.tif', 'second_panel': dict(first['panel']), 'second_panel_weight': 0.3,
-                     'effective_factor': 2.0})
+        used['dls']['used'] = True
+        used['panels'][0].update({'dls_ratio': 0.9, 'adjusted_factor': 1.8})
         capture, bands = rct.compact_band_records([used])
-        self.assertEqual((bands[0]['second_panel_file'], bands[0]['second_panel_weight'], bands[0]['effective_factor']),
-                         ('p2.tif', 0.3, 2.0))
-        self.assertEqual(bands[0]['second_panel'], {'n_pixels': 5})
+        self.assertEqual((bands[0]['panels'][0]['dls_ratio'], bands[0]['panels'][0]['adjusted_factor']), (0.9, 1.8))
 
     def test_the_checks_are_written_without_what_says_nothing(self):
         checks = {'band_ratios': {'Blue': 0.9}, 'ratio_sources': {'Blue': 'metadata'}, 'unavailable': [], 'flags': []}
@@ -817,8 +884,9 @@ class ExampleImageTests(unittest.TestCase):
     def test_method_is_panel_only_without_dls(self):
         import json, tempfile
         panel, target, factor = self.panel_and_target('Blue')
-        reflectance = target.digital_numbers_to_reflectance(factor)
-        record = rct.band_record('out/IMG_0010_1.tif', panel, target, reflectance)
+        applied, used = rct.combine_panels([(panel, 1.0)])
+        reflectance = target.digital_numbers_to_reflectance(applied)
+        record = rct.band_record('out/IMG_0010_1.tif', target, reflectance, used, applied)
         with tempfile.TemporaryDirectory() as folder:
             saved = json.loads(rct.write_provenance(Path(folder) / 'p.json', [record]).read_text(encoding='utf-8'))
         self.assertEqual(saved['method'], 'panel_only')

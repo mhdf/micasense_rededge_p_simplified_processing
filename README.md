@@ -14,6 +14,7 @@
   - [The reference panel: reflectance and two panel captures](docs/reference-panel.md)
   - [Checking, accepting and drawing the panel regions](docs/panel-regions.md)
   - [Optional DLS correction](docs/dls-correction.md)
+  - [How the reflectance is calculated](docs/calculation.md)
   - [Python library and workflow runner](docs/python-and-command-line.md)
   - [Other cameras and other numbers of bands](docs/other-cameras.md)
   - [Development notes](docs/development.md)
@@ -54,6 +55,7 @@
 | [The reference panel](docs/reference-panel.md) | The reflectance of the panel, typed or computed from its spectral response file; one or two panel captures and how they are combined (by time or by illumination) |
 | [Panel regions](docs/panel-regions.md) | The tool that checks, accepts or draws the region of the panel in each band |
 | [Optional DLS correction](docs/dls-correction.md) | What the DLS ratio is, the checks of the DLS data and of the geometry, how the flags of a run are counted and the summary at its end |
+| [How the reflectance is calculated](docs/calculation.md) | The steps from the raw values to radiance (dark level, vignetting, row gradient, scale) and to reflectance, and the geometry of the images |
 | [Python library and workflow runner](docs/python-and-command-line.md) | The example in Python, the checks and the calibration record, and the command line |
 | [Other cameras](docs/other-cameras.md) | The band table, detecting the bands from a capture, camera presets, file names, and what the program assumes about the camera |
 | [Development notes](docs/development.md) | Project layout, how the UI is built and the tests |

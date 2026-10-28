@@ -226,7 +226,7 @@ def check_dls_capture(panel_images, images, ratios=None):
                                 'value': float(departure), 'limit': DLS_CHECKS['band_ratio_tolerance']})
 
     # 2. Irradiance of the DLS compared with the irradiance estimated from the panel. It differs between bands
-    #    (14 % in the example, a calibration difference between camera and DLS), so it is only reported here; compare it
+    #    (18 % in the example, a calibration difference between camera and DLS), so it is only reported here; compare it
     #    between two panel captures with compare_panel_captures()
     estimates = {}
     for band, panel in panel_images.items():
@@ -546,50 +546,61 @@ def panel_weight(mode, image_time=None, first_time=None, second_time=None, dista
     raise ValueError(f"panels_used must be one of {list(PANELS_USED)}, got {mode!r}")
 
 
-def effective_panel_factor(first_factor, second_factor=None, weight=0.0, first_irradiance=None, second_irradiance=None):
+def combine_panels(panels, image=None):
     """
-    The radiance to reflectance factor of an image from two panels. Without the DLS the factors are averaged with the weight
-    of the second one. With the DLS (irradiances of the panels given) what is averaged is factor x irradiance, which is a
-    constant of the camera that does not depend on the light, and the result is expressed for the irradiance of the
-    first panel, the one that the DLS ratio refers to: factor = ((1 - w) f1 E1 + w f2 E2) / E1
+    The radiance to reflectance factor of one band of an image, from the panel captures that calibrate it
+    Inputs: [(panel rct.Image of the band, after detect_reference_panel, weight)], with weights that add up to 1 (a panel
+            of weight 0 is left out) and, for the DLS correction, the image (rct.Image) of the same band. With the image,
+            each panel factor is first brought to the light of the image, adjusted factor = factor x E_panel / E_image
+            (see dls_irradiance_ratio); without it the factors are used as they are
+    Outputs: (factor applied to the radiance of the image = the sum of weight x adjusted factor,
+              one dictionary per panel used: {'panel' (the rct.Image), 'weight', 'factor', 'dls_ratio' (None without the
+              DLS), 'adjusted_factor'})
     """
-    if weight == 0 or second_factor is None:
-        return first_factor
-    if first_irradiance is None or second_irradiance is None:
-        return (1 - weight) * first_factor + weight * second_factor
-    return ((1 - weight) * first_factor * first_irradiance + weight * second_factor * second_irradiance) / first_irradiance
+    used = []
+    for panel, weight in panels:
+        if weight <= 0:
+            continue
+        factor = panel.panel_audit['radiance_to_reflectance_factor']
+        ratio = dls_irradiance_ratio(panel, image) if image is not None else None
+        used.append({'panel': panel, 'weight': float(weight), 'factor': factor, 'dls_ratio': ratio,
+                     'adjusted_factor': factor * ratio if ratio is not None else factor})
+    if not used:
+        raise ValueError("combine_panels needs at least one panel with a weight above 0")
+    total = sum(entry['weight'] for entry in used)
+    if abs(total - 1) > 1e-9:
+        raise ValueError(f"the weights of the panels must add up to 1, got {total}")
+    return sum(entry['weight'] * entry['adjusted_factor'] for entry in used), used
 
 
-def band_record(output_path, panel_image, image, reflectance, second_panel=None, second_weight=0.0, effective_factor=None):
+def band_record(output_path, image, reflectance, panels, factor_applied):
     """
     Describe how one output band was produced
-    Inputs: path of the saved file, panel and target rct.Image of the band (after detect_reference_panel() and
-            digital_numbers_to_reflectance()) and the reflectance array that was saved; optionally the image of the second
-            panel, its weight and the factor that was used when it was combined with the first
+    Inputs: path of the saved file, the image (rct.Image) of the band, the reflectance array that was saved, and the panels
+            and the factor from combine_panels (the reflectance is the radiance of the image x factor_applied)
     Outputs: dictionary that can be saved as json (see write_provenance)
     """
     return _jsonable({ 'band': image.band_name,
-                       'second_panel_file': str(second_panel.image_path) if second_panel is not None else None,
-                       'second_panel': getattr(second_panel, 'panel_audit', None),
-                       'second_panel_weight': second_weight,
-                       'effective_factor': effective_factor,
                        'output_file': str(output_path),
                        'output_dtype': str(reflectance.dtype),
                        'output_shape': reflectance.shape,
                        'image_file': str(image.image_path),
                        'image_capture_id': image.metadata.get('XMP:CaptureId'),
-                       'panel_file': str(panel_image.image_path),
-                       'panel_capture_id': panel_image.metadata.get('XMP:CaptureId'),
-                       'panel': getattr(panel_image, 'panel_audit', None),
-                       'dls': { 'used': image.dls_ratio is not None,
-                                'ratio_panel_over_image': image.dls_ratio,
-                                'ratio_source': image.dls_ratio_source,
+                       'factor_applied': factor_applied,
+                       'panels': [ { 'file': str(entry['panel'].image_path),
+                                     'capture_id': entry['panel'].metadata.get('XMP:CaptureId'),
+                                     'weight': entry['weight'],
+                                     'factor': entry['factor'],
+                                     'dls_ratio': entry['dls_ratio'],
+                                     'adjusted_factor': entry['adjusted_factor'],
+                                     'horizontal_irradiance': entry['panel'].horizontal_irradiance,
+                                     'irradiance_scale_to_si': entry['panel'].irradiance_scale_to_si,
+                                     'audit': getattr(entry['panel'], 'panel_audit', None) } for entry in panels ],
+                       'dls': { 'used': any(entry['dls_ratio'] is not None for entry in panels),
                                 'attitude_as_written': { key: image.metadata.get('XMP:' + key)
                                                                     for key in ('Roll', 'Pitch', 'Yaw') },
                                 'sun_angle_discrepancy_deg': image.dls_sun_angle_discrepancy_deg(),
-                                'panel_horizontal_irradiance': panel_image.horizontal_irradiance,
                                 'image_horizontal_irradiance': image.horizontal_irradiance,
-                                'panel_irradiance_scale_to_si': panel_image.irradiance_scale_to_si,
                                 'image_irradiance_scale_to_si': image.irradiance_scale_to_si } })
 
 
@@ -620,17 +631,22 @@ def compact_band_records(band_records):
     """
     The records of the bands of one capture (see band_record) without repetitions
     Outputs: (what is the same in all the bands: the ids of the captures and the attitude of the camera, the records without
-             it and without what is empty or not used: the second panel when it was not used, the DLS ratio when the DLS was
-             not used, the audits without what the configuration says)
+             it and without what is empty or not used: the DLS ratio and the adjusted factor when the DLS was not used, the
+             audits without what the configuration or the record already says)
     """
     records = json.loads(json.dumps(band_records))
     capture = {}
-    for key in ('image_capture_id', 'panel_capture_id'):
-        values = {record.get(key) for record in records}
-        if len(values) == 1:
-            capture[key] = values.pop()
-            for record in records:
-                record.pop(key, None)
+    values = {record.get('image_capture_id') for record in records}
+    if len(values) == 1:
+        capture['image_capture_id'] = values.pop()
+        for record in records:
+            record.pop('image_capture_id', None)
+    panel_ids = {json.dumps([panel.get('capture_id') for panel in record['panels']]) for record in records}
+    if len(panel_ids) == 1:
+        capture['panel_capture_ids'] = json.loads(panel_ids.pop())
+        for record in records:
+            for panel in record['panels']:
+                panel.pop('capture_id', None)
     attitudes = [json.dumps(record['dls'].get('attitude_as_written'), sort_keys=True) for record in records]
     if records and len(set(attitudes)) == 1 and records[0]['dls'].get('attitude_as_written'):
         capture['camera_attitude_as_written'] = {key: _number(value) for key, value
@@ -638,18 +654,17 @@ def compact_band_records(band_records):
     for record in records:
         record['dls'].pop('attitude_as_written', None)
         record['dls'].pop('sun_angle_discrepancy_deg', None)              # it is in the checks, once for the capture
-        record['dls'].pop('ratio_source', None)
-        if not record['dls'].get('used'):
-            record['dls'].pop('ratio_panel_over_image', None)
-        for key in ('panel_irradiance_scale_to_si', 'image_irradiance_scale_to_si'):
-            if record['dls'].get(key) is None:
-                record['dls'].pop(key, None)
-        record['panel'] = compact_panel_audit(record.get('panel'))
-        if record.get('second_panel_file') is None:
-            for key in ('second_panel_file', 'second_panel', 'second_panel_weight', 'effective_factor'):
-                record.pop(key, None)
-        else:
-            record['second_panel'] = compact_panel_audit(record.get('second_panel'))
+        if record['dls'].get('image_irradiance_scale_to_si') is None:
+            record['dls'].pop('image_irradiance_scale_to_si', None)
+        for panel in record['panels']:
+            if not record['dls'].get('used'):
+                panel.pop('dls_ratio', None)
+                panel.pop('adjusted_factor', None)
+            if panel.get('irradiance_scale_to_si') is None:
+                panel.pop('irradiance_scale_to_si', None)
+            panel['audit'] = compact_panel_audit(panel.get('audit'))
+            if panel['audit']:
+                panel['audit'].pop('radiance_to_reflectance_factor', None)     # it is the 'factor' of the panel
     return capture, records
 
 
@@ -956,59 +971,48 @@ class Image(object):
         return mean_value, stdev, num_pixels, saturated_count
 
 
+    # Vignetting correction: the multiplier of each pixel
+    def vignetting_correction(self):
+        """
+        1 / polynomial of the position of the pixel, with the coefficients (XMP:VignettingPolynomial2D) and the pairs of
+        exponents (XMP:VignettingPolynomial2DName) written by the camera, as in MicaSense's Image.vignette(): x is the
+        position across the width (column / width, 0 at the left) and y down the height (row / height, 0 at the top)
+        Outputs: array of the size of the image, 1 where the lens does not darken the image and above 1 towards the edges
+        """
+        height, width = self.image.shape[:2]
+        rows, columns = np.mgrid[0:height, 0:width]
+        x, y = columns / width, rows / height
+        polynomial = np.zeros((height, width), dtype=float)
+        for number, coefficient in enumerate(self.k):
+            polynomial += coefficient * x ** self.e[2 * number] * y ** self.e[2 * number + 1]
+        return 1.0 / polynomial
+
+
+    # Row gradient correction: the multiplier of each row
+    def row_gradient_correction(self):
+        """
+        1 / (1 + a2 * row / exposure time - a3 * row), with a2 and a3 from XMP:RadiometricCalibration, as in MicaSense's
+        Image.radiance(): the sensor reads the image row by row, so the rows further down need a small correction
+        Outputs: array of one column (height x 1), to be multiplied by the image
+        """
+        rows = np.arange(self.image.shape[0], dtype=float)[:, np.newaxis]
+        return 1.0 / (1.0 + self.a2 * rows / self.exposure_time - self.a3 * rows)
+
+
     # Convert DNs to radiance
     def digital_numbers_to_radiance(self):
-        
-        # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by MicaSense (vignette_map)
-        k = self.k
-        e = self.e
-
-        # Dark current pixel values
+        """
+        Radiance (W/m2/sr/nm) of every pixel, in the geometry of the original image, as in MicaSense's Image.radiance():
+        1. subtract the dark level (mean of EXIF:BlackLevel);
+        2. multiply by the vignetting and row gradient corrections; negative values (noise around the dark level) become 0;
+        3. divide by gain x exposure time (gain = ISO / 100), multiply by a1 (XMP:RadiometricCalibration) and divide by
+           2 ** bits per pixel, because the coefficients are given for values scaled to 0-1
+        """
         dark_level = self.black_levels.mean()
-        
-        # Coordinate grid across image, seem swapped because of transposed vignette
-        x, y = np.meshgrid( np.arange(self.size[1]), np.arange(self.size[0]) )
-
-        # Vignette
-        # meshgrid returns transposed arrays
-        x = x.T
-        y = y.T
-        ##
-        xv = x.T / self.size[1]
-        yv = y.T / self.size[0]
-        p2 = np.zeros_like(xv, dtype=float)
-        for valT, c in enumerate(k):
-            ex  = e[2 * valT]
-            ey  = e[2 * valT + 1]
-            p2 += c * xv ** ex * yv ** ey
-        V = (1. / p2).T  #
-        # plt.imshow( V )
-
-        # apply image correction methods to raw image
-        # step 1 - row gradient correction, vignette & radiometric calibration:
-        
-        # row gradient correction
-        R = 1.0 / (1.0 + self.a2 * y / self.exposure_time - self.a3 * y)
-        
-        # subtract the dark level and adjust for vignette and row gradient
-        # LT = VT  * RT * ( (imgT/normFactT) - (dark_level/normFactT) )
-        L = V * R * ( self.image - dark_level )
-        
-        # Floor any negative radiance's to zero (can happen due to noise around black_level)
+        L = self.vignetting_correction() * self.row_gradient_correction() * (self.image - dark_level)
         L[L < 0] = 0
-        # L = np.round(L).astype(np.uint16)
-        # plt.imshow( L )
-        
-        # Apply the radiometric calibration - i.e. scale by the gain-exposure product and
-        # multiply with the radiometric calibration coefficient
-        # need to normalize by 2^16 for 16 bit images
-        # because coefficients are scaled to work with input values of max 1.0
-        dn_maximum     = float(2**self.bits_per_pixel)
-        image_radiance = ( L.astype(float) / (self.gain * self.exposure_time) * self.a1 ) / dn_maximum
-        # plt.imshow( image_radiance )
-
-        #
-        return image_radiance
+        dn_maximum = float(2 ** self.bits_per_pixel)
+        return L.astype(float) / (self.gain * self.exposure_time) * self.a1 / dn_maximum
 
 
     # Horizontal irradiance measured by the DLS for this band

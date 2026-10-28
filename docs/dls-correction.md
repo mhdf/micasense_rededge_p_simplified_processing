@@ -24,11 +24,11 @@ reflectance(image) = radiance(image) * panel_reflectance / panel_radiance * E_pa
 
 &emsp;&emsp;The limits are in `rct.DLS_CHECKS`; they are first guesses, not validated values, so adjust them to your data. Each check issues a `RuntimeWarning` and the messages are saved in the provenance record. The checks only raise flags; they never change a result.
 
-- `rct.check_dls_capture(panel_images, images)`, for one capture:
+- `rct.check_dls_capture(panel_images, images)`, for one capture. With two panel captures, the workflow compares each image with the panel that weighs most in its calibration (the first one when both weigh the same) and records its name (`compared_with_panel`):
   - the DLS ratio of every band must be within 3 % of the median of the bands (the light changes all the bands together);
   - the ratio must be inside 0.5 to 2;
   - the sun angle: the solar zenith is 90 degrees minus the solar elevation (`XMP:SolarElevation`, as written in the file), and the DLS writes the direction of the direct sunlight in its own frame (`XMP:EstimatedDirectLightVector`). With a level DLS the angle between that direction and the axis of the DLS equals the zenith, so a difference above 10 degrees means that the DLS was tilted by at least that much, or that the angles are inconsistent. This was checked only against the example panel capture (0.2 degrees, with a level DLS); the image capture of the example shows about 15 degrees and is flagged;
-  - the DLS irradiance divided by the irradiance estimated from the panel (pi x radiance / reflectance) is reported per band. It differs between bands (about 14 % in the example, probably a calibration difference between camera and DLS), so it is not judged on one capture.
+  - the DLS irradiance divided by the irradiance estimated from the panel (pi x radiance / reflectance) is reported per band. It differs between bands (about 18 % in the example, probably a calibration difference between camera and DLS), so it is not judged on one capture.
 - `rct.compare_panel_captures(before, after)`, for a panel photographed twice (for example before and after the flight): the panel factor of each band, and the DLS irradiance divided by the panel estimate, must not change by more than 5 %. The first change shows that the light or the panel changed, the second that the DLS did not follow the light seen by the camera.
 - `rct.classify_irradiance_changes(irradiances)`, for the irradiance of one band along the flight in acquisition order: a *spike* is a single capture that jumps and comes back (a shaded or tilted DLS), a *step* is a change that persists (the sun going behind a cloud).
 

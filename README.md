@@ -30,7 +30,7 @@
 
 ## Quick start
 
-1. **Install** Python 3.10 or newer with Tkinter, in a dedicated environment, the packages of `requirements.txt` (or `conda env create -f environment.yml`) and ExifTool, a separate program that reads the metadata of the images. The details, and what to check on a new computer, are in [Installing and launching](docs/installation.md).
+1. **Install** Python 3.10 or newer (with Tkinter) and, in a dedicated environment, the packages of `requirements.txt` (or run `conda env create -f environment.yml`), plus ExifTool, a separate program that reads the metadata of the images. On Windows, the QR code reader (pyzbar) also needs the Microsoft Visual C++ 2013 Redistributable (x64). The details, and what to check on a new computer, are in [Installing and launching](docs/installation.md).
 2. **Open the UI**: double-click `open_radiometric_window.cmd` (Windows) or run `python -m radiometric_app window --root .` in the project folder. It asks which Python to use, checks the packages and ExifTool, and opens.
 3. **Correct the example images** in `images/raw`: `IMG_0005` shows the reference panel, `IMG_0010` is the capture to correct and `IMG_0422` is a second panel capture, taken after the flight (the example images are three captures of a longer flight; the complete flight is not included). Go through the pages of the UI, described in [The user interface](docs/user-interface.md):
    - *Inputs*: the images folder, the results folder, the capture that shows the panel and the captures to correct.

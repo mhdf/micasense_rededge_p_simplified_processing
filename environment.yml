@@ -1,6 +1,9 @@
 # conda environment for the radiometric correction program:  conda env create -f environment.yml
 # Then choose its python.exe with launchers\select_python.cmd (see docs/installation.md).
 # ExifTool, the program that reads the metadata of the images, is not included: install it separately.
+# pyzbar comes from pip because conda-forge has no Windows build of zbar. On Windows it needs the Microsoft Visual C++ 2013
+# Redistributable (x64): winget install Microsoft.VCRedist.2013.x64
+# Do not run pip install -r requirements.txt in this environment (pip would add a second OpenCV).
 name: radiometric
 channels:
   - conda-forge

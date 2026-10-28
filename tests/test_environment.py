@@ -73,7 +73,20 @@ class PythonAndPackagesTests(unittest.TestCase):
         self.assertEqual(found['status'], 'broken')
         self.assertIn('zbar', found['fix'])
 
-    def test_the_exiftool_module_of_another_package_is_recognised(self):
+    def test_pyzbar_without_the_visual_cpp_runtime_names_the_package_to_install_on_windows(self):
+        def import_module(name):
+            if name == 'pyzbar.pyzbar':
+                raise FileNotFoundError("Could not find module 'site-packages\\pyzbar\\libzbar-64.dll' (or one of its "
+                                        "dependencies). Try using the full path with constructor syntax.")
+            return types.ModuleType(name)
+        with mock.patch.object(env.importlib, 'import_module', side_effect=import_module):
+            found = env.package_item('pyzbar', ('pyzbar',), 'pyzbar', 'the QR code', deep=True)
+        self.assertEqual(found['status'], 'broken')
+        self.assertIn('libzbar-64.dll', found['detail'])
+        self.assertIn('winget install Microsoft.VCRedist.2013.x64', found['fix'])
+        self.assertIn('vcredist_x64.exe', found['fix'])
+
+    def test_the_exiftool_module_of_another_package_is_recognized(self):
         other = types.ModuleType('exiftool')
         other.__spec__ = importlib.machinery.ModuleSpec('exiftool', None)
         with mock.patch.dict(sys.modules, {'exiftool': other}):

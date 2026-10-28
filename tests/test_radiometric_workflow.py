@@ -136,7 +136,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('ExifTool not found', text)
 
     def test_captures_are_listed_from_the_file_names(self):
-        self.assertEqual(rct.list_capture_names(RAW), ['IMG_0005', 'IMG_0010', 'IMG_0422'])
+        self.assertEqual(rct.list_capture_names(RAW), ['IMG_0003', 'IMG_0005', 'IMG_0009', 'IMG_0010', 'IMG_0422', 'IMG_0423'])
         self.assertEqual(wf.capture_names(' A , B,,C '), ['A', 'B', 'C'])
 
     def test_panel_regions_are_saved_and_loaded_keeping_other_captures(self):
@@ -1000,7 +1000,8 @@ class RunTests(unittest.TestCase):
         for path in RAW.glob('*.tif'):
             if path.name != 'IMG_0010_3.tif':
                 shutil.copy(path, images / path.name)
-        result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'incomplete')}, ROOT)
+        result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'incomplete'),
+                         'INPUTS.reference_panel_capture': 'IMG_0003, IMG_0005, IMG_0009, IMG_0423'}, ROOT)
         self.assertEqual(result['status'], 'completed_with_errors')
         self.assertIn("missing: ['Red']", result['captures']['IMG_0010']['errors'][0])
         self.assertEqual(sorted(Path(path).name for path in result['outputs']),            # the other capture is corrected
@@ -1077,6 +1078,17 @@ class RunTests(unittest.TestCase):
         self.assertEqual(alone['status'], 'completed', alone['errors'])
         self.assertIn("There are panel captures of one moment only: 'Average of before and after' uses them alone",
                       alone['flags'])
+
+    def test_the_panel_captures_of_the_example_flight_that_depart_are_flagged(self):
+        # three panel captures before the flight (20 s apart) and two after it, as they were taken
+        config = config_for(self.folder / 'example_panels', **{
+            'INPUTS.reference_panel_capture': 'IMG_0003, IMG_0005, IMG_0009, IMG_0422, IMG_0423'})
+        for use_dls, flagged in ((False, ['IMG_0009']), (True, ['IMG_0003', 'IMG_0009'])):
+            rows, _ = wf.check_panel_captures(dict(config, **{'CORRECTION.use_dls': use_dls}), ROOT)
+            self.assertEqual([(row['capture'], row['moment']) for row in rows],
+                             [('IMG_0003', 'before'), ('IMG_0005', 'before'), ('IMG_0009', 'before'),
+                              ('IMG_0422', 'after'), ('IMG_0423', 'after')])
+            self.assertEqual([row['capture'] for row in rows if row['flag']], flagged, use_dls)
 
     def test_the_panel_captures_can_be_checked_without_a_run(self):
         rows, flags = wf.check_panel_captures(config_for(self.folder / 'check', **{
@@ -1168,7 +1180,8 @@ class RunTests(unittest.TestCase):
 
     def test_captures_to_leave_out_are_not_corrected(self):
         result = wf.run(config_for(self.folder / 'left_out', **{'INPUTS.image_captures': '',
-                                                                 'INPUTS.excluded_captures': 'IMG_0422'}), ROOT)
+                                                                 'INPUTS.excluded_captures': 'IMG_0003, IMG_0009, IMG_0422, IMG_0423'}),
+                        ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
         self.assertEqual(list(result['captures']), ['IMG_0010'])
         config = wf.merge_config(config_for(self.folder / 'x', **{'INPUTS.excluded_captures': 'IMG_0010, IMG_9999'}))

@@ -1322,12 +1322,12 @@ class CaptureChoiceTests(unittest.TestCase):
     def test_panel_captures_are_typed_or_chosen_by_looking_at_the_captures(self):
         entry = self.frame.entries['INPUTS.reference_panel_capture']
         self.assertEqual(entry.winfo_class(), 'TEntry')
-        self.assertEqual(self.frame.capture_names(), ['IMG_0005', 'IMG_0010', 'IMG_0422'])
-        self.assertEqual(self.frame.capture_names(True), ['', 'IMG_0005', 'IMG_0010', 'IMG_0422'])
+        self.assertEqual(self.frame.capture_names(), ['IMG_0003', 'IMG_0005', 'IMG_0009', 'IMG_0010', 'IMG_0422', 'IMG_0423'])
+        self.assertEqual(self.frame.capture_names(True), [''] + ['IMG_0003', 'IMG_0005', 'IMG_0009', 'IMG_0010', 'IMG_0422', 'IMG_0423'])
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
             self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
         args, kwargs = picker.call_args
-        self.assertEqual(args[1], ['IMG_0005', 'IMG_0010', 'IMG_0422'])
+        self.assertEqual(args[1], ['IMG_0003', 'IMG_0005', 'IMG_0009', 'IMG_0010', 'IMG_0422', 'IMG_0423'])
         self.assertEqual(kwargs['selected'], ['IMG_0005'])
         self.assertTrue(kwargs['multiple'])                                      # one capture or several, averaged
         self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture'), 'IMG_0010')
@@ -1351,9 +1351,9 @@ class CaptureChoiceTests(unittest.TestCase):
 
     def test_captures_to_correct_are_chosen_from_a_list(self):
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
-            self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
+            self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0003, IMG_0005, IMG_0009, IMG_0423')
             self.frame.choose_captures()
-        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel capture is not offered
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel captures are not offered
         self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')      # shown in the field, even if it is all
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0001')
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']):
@@ -1373,7 +1373,7 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertIn('Not found in the images folder: IMG_7', self.frame.captures_summary.cget('text'))
         self.assertTrue(self.frame.captures_summary.winfo_manager())
         self.frame.set_value('INPUTS.image_captures', '')
-        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0003, IMG_0005, IMG_0009, IMG_0423')
         self.frame._update_captures_summary()
         text = self.frame.captures_details()[1]
         self.assertIn('All the other captures of the folder will be corrected (2):', text)
@@ -1382,11 +1382,11 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertFalse(self.frame.captures_summary.winfo_manager())
 
     def test_captures_to_leave_out_are_chosen_from_a_list_and_not_corrected(self):
-        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0003, IMG_0005, IMG_0009, IMG_0423')
         self.frame.set_value('INPUTS.image_captures', '')
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0422']) as picker:
             self.frame.choose_captures('INPUTS.excluded_captures')
-        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel capture is not offered
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel captures are not offered
         self.assertEqual(picker.call_args.kwargs['title'], 'Select the captures to leave out')
         self.assertEqual(self.frame.model.get('INPUTS.excluded_captures'), 'IMG_0422')
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
@@ -1405,7 +1405,7 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertEqual(title, 'In the images folder')
         self.assertIn('{capture}_{index}.tif', text)
         self.assertIn('- IMG_0005_1.tif -> capture IMG_0005, file 1', text)
-        self.assertIn('3 captures (3 with 6 files)', text)
+        self.assertIn('6 captures (6 with 6 files)', text)
         self.assertEqual(self.frame.pattern_preview.cget('text'), '')
         self.frame.set_value('INPUTS.file_pattern', r'(?P<capture>X.+)\.tif$')
         self.frame._update_pattern_preview()

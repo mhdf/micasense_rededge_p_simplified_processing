@@ -41,8 +41,4 @@ reflectance  = radiance x panel factor x E_panel / E_image  (with the DLS)
 
 &emsp;&emsp;The lens also distorts the geometry of the image (straight lines look curved towards the edges). The panel is found and measured on the undistorted image, where its QR code and its square shape are reliable. The output images keep the original, distorted geometry of the camera, like the raw images, because photogrammetry software (Metashape, for example) corrects the distortion itself when it builds the orthomosaic.
 
-## Correction of the vignetting (version of 2026-10-28)
-
-&emsp;&emsp;Before this version, steps 2 and 3 used the axes of the image in the wrong order: the vignetting polynomial received the row where it expects the column and the other way around, and the row gradient used the column. In the example images this made the reflectance at the middle of the left and right edges up to about 40 % too low, at the middle of the top and bottom up to about 18 % too high, and changed the panel factor by -3 to +18 % depending on the band (the panel was in the upper part of its photo). Results made with earlier versions should be processed again. The calculation is now checked against a transcription of the code of MicaSense in the tests.
-
 </div>

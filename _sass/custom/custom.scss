@@ -1,0 +1,12 @@
+// The title of the site in the header of the side bar: smaller, and the header grows with it, so a title on two lines is
+// not cut (the header of the theme has a fixed height)
+.site-header {
+  height: auto;
+  min-height: 3.75rem;
+}
+
+.site-title {
+  font-size: 1.1rem !important;
+  line-height: 1.3;
+  white-space: normal;
+}

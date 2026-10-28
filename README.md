@@ -1,8 +1,8 @@
-# Radiometric Correction for Micasense Multispectral Cameras
+# Radiometric Correction for MicaSense Multispectral Cameras
 
 <div align="justify">
 
-&emsp;&emsp;This Python module provides a simplified alternative for converting raw images from Micasense multispectral cameras into radiance or reflectance, using the reference panel and, optionally, the Downwelling Light Sensor (DLS) data to correct changes in illumination. It was written for the RedEdge-P and tested only with it (see [What has been tested](#what-has-been-tested)). It can be used through a user interface (UI), opened with a launcher on Windows, from the command line (the workflow runner) or as a Python library.
+&emsp;&emsp;This Python module provides a simplified alternative for converting raw images from MicaSense multispectral cameras into radiance or reflectance, using the reference panel and, optionally, the Downwelling Light Sensor (DLS) data to correct changes in illumination. It was written for the RedEdge-P and tested only with it (see [What has been tested](#what-has-been-tested)). It can be used through a user interface (UI), opened with a launcher on Windows, from the command line (the workflow runner) or as a Python library.
 
 **Contents**
 
@@ -60,8 +60,8 @@
 
 ## Background and credits
 
-&emsp;&emsp;All functions are derived from the original [Micasense image processing repository](https://github.com/micasense/imageprocessing) but have been streamlined to mitigate issues caused by Exif metadata inconsistencies. These issues were encountered while pre-processing images captured with the camera firmware v1.4.5 in preparation for geometric correction using photogrammetry software.
+&emsp;&emsp;All functions are derived from the original [MicaSense image processing repository](https://github.com/micasense/imageprocessing) but have been streamlined to mitigate issues caused by Exif metadata inconsistencies. These issues were encountered while pre-processing images captured with the camera firmware v1.4.5 in preparation for geometric correction using photogrammetry software.
 
-&emsp;&emsp;For more details about the steps required for pre-processing Micasense multispectral images see the tutorials (e.g. ['Tutorial 1'](https://github.com/micasense/imageprocessing/blob/master/MicaSense%20Image%20Processing%20Tutorial%201.ipynb)) provided by Micasense in their repository.
+&emsp;&emsp;For more details about the steps required for pre-processing MicaSense multispectral images see the tutorials (e.g. ['Tutorial 1'](https://github.com/micasense/imageprocessing/blob/master/MicaSense%20Image%20Processing%20Tutorial%201.ipynb)) provided by MicaSense in their repository.
 
 </div>

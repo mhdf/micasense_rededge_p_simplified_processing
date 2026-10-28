@@ -1,0 +1,19 @@
+// No title box at the top of the side bar on a wide screen: the side bar starts with the list of the pages (the name of
+// the program is the title of the home page and of the browser tab). On a small screen the header stays, with a smaller
+// title, because it holds the button that opens the menu
+@media (min-width: 50rem) {
+  .side-bar .site-header {
+    display: none;
+  }
+}
+
+.site-header {
+  height: auto;
+  min-height: 3.75rem;
+}
+
+.site-title {
+  font-size: 1.1rem !important;
+  line-height: 1.3;
+  white-space: normal;
+}

@@ -1,0 +1,60 @@
+# The documentation as a website (GitHub Pages, built from the root of the branch main): the README is the home page and the
+# pages of docs/ are in the side bar, in the order of the README. The Markdown files are not changed for the website, so
+# they read the same on GitHub. Theme: Just the Docs (https://just-the-docs.com)
+title: MicaSense Radiometric Correction
+description: Raw images of MicaSense multispectral cameras to reflectance (reference panel, optional DLS) or radiance
+remote_theme: just-the-docs/just-the-docs@v0.12.0
+color_scheme: dark                    # like the UI; the side bar has no title box on a wide screen (_sass/custom/custom.scss)
+plugins:
+  - jekyll-remote-theme
+
+# the Markdown inside <div align="justify"> is converted too, as GitHub does
+kramdown:
+  parse_block_html: true
+
+search_enabled: true
+heading_anchors: true
+aux_links:
+  "Repository on GitHub": "https://github.com/mhdf/micasense_radiometric_correction"
+back_to_top: true
+
+# only the documentation is published: not the program, its tests or the example images
+exclude:
+  - radiometric_app/
+  - tests/
+  - launchers/
+  - images/
+  - reference_panel_spectral_response/
+  - config/
+  - results/
+  - __pycache__/
+  - "*.py"
+  - "*.cmd"
+  - "*.ps1"
+  - environment.yml
+  - requirements.txt
+  - README.html
+  - README_files/
+
+# the title and the place in the side bar of each page (no front matter in the files, which GitHub would show as a table)
+defaults:
+  - scope: {path: "README.md"}
+    values: {title: "Home", nav_order: 1, permalink: "/"}
+  - scope: {path: "docs/installation.md"}
+    values: {title: "Installing and launching", nav_order: 2}
+  - scope: {path: "docs/user-interface.md"}
+    values: {title: "The user interface (UI)", nav_order: 3}
+  - scope: {path: "docs/reference-panel.md"}
+    values: {title: "The reference panel", nav_order: 4}
+  - scope: {path: "docs/panel-regions.md"}
+    values: {title: "Panel regions", nav_order: 5}
+  - scope: {path: "docs/dls-correction.md"}
+    values: {title: "Optional DLS correction", nav_order: 6}
+  - scope: {path: "docs/calculation.md"}
+    values: {title: "How the reflectance is calculated", nav_order: 7}
+  - scope: {path: "docs/python-and-command-line.md"}
+    values: {title: "Python library and workflow runner", nav_order: 8}
+  - scope: {path: "docs/other-cameras.md"}
+    values: {title: "Other cameras", nav_order: 9}
+  - scope: {path: "docs/development.md"}
+    values: {title: "Development notes", nav_order: 10}

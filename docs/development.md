@@ -12,6 +12,7 @@ radiometric_app/                  the program: configuration and runner, UI, pan
     presets/                      the camera presets that come with the program
 tests/                            the tests
 docs/                             the guide pages, the figure of the tools and the screenshots of the UI
+_config.yml                       the website of the documentation (GitHub Pages: the README and docs/, see below)
 launchers/                        launchers for Windows (double-click), the choice of the Python and the check of the computer
 config/                           your configuration, profiles, presets and chosen Python (not kept in git)
 requirements.txt, environment.yml the Python packages (pip) and the conda environment (see docs/installation.md)
@@ -22,6 +23,10 @@ results/                          what the program writes (not kept in git)
 ```
 
 &emsp;&emsp;The commands in the guide are run from the project folder (the one with `radiometric_correction_tools.py`), for example `python -m radiometric_app.radiometric_window`. `radiometric_app` can be copied into another program together with `radiometric_correction_tools.py` (the modules of the folder import each other with relative imports).
+
+## The website of the documentation
+
+&emsp;&emsp;GitHub Pages publishes the README (the home page) and the pages of `docs/` as a website, built by GitHub from the branch `main` (Settings > Pages > Deploy from a branch > `main`, `/ (root)`) every time it changes. `_config.yml` chooses the theme (Just the Docs), leaves out the program, the tests and the images, and gives each page its title and its place in the side bar: a new page of `docs/` needs a line there, in the order of the table of the README (a test checks it). The Markdown files have no front matter, so they read the same on GitHub; the links between them are converted to the pages of the website.
 
 ## How the UI is built
 

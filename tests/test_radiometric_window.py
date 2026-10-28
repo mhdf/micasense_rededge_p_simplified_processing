@@ -1074,7 +1074,7 @@ class WindowTests(unittest.TestCase):
         for phrase in ('E_panel / E_image', 'XMP:HorizontalIrradiance', 'a ratio of 0.885 means that the light was 13 % stronger',
                        'the reflectance is multiplied by 0.885', 'XMP:EstimatedDirectLightVector',
                        'The solar zenith is 90 degrees minus it', 'the DLS was tilted and they differ',
-                       'Only the metadata of the image and of the panel capture is used'):
+                       'Only the metadata of the image and of the panel captures is used'):
             self.assertIn(phrase, texts)
         self.assertIn('Checks of the DLS data (limits)', self.dls_labels())
 

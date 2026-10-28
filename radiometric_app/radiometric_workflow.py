@@ -64,15 +64,19 @@ GROUP_NOTES = {
         "- For each band: DLS ratio = E_panel / E_image, with E read from XMP:HorizontalIrradiance of the "
         "panel capture and of the image.\n"
         "- Reflectance = reflectance from the panel x DLS ratio.\n"
+        "- With two panel captures, each panel used gets its own ratio, and the panels are combined after that "
+        "(see 'Panel selection approach').\n"
         "- Example: a ratio of 0.885 means that the light was 13 % stronger at the image than at the panel, "
         "so the reflectance is multiplied by 0.885.\n"
-        "Only the metadata of the image and of the panel capture is used: nothing is averaged along the "
+        "Only the metadata of the image and of the panel captures is used: nothing is averaged along the "
         "flight and no value is estimated from other bands. A missing irradiance in any band, Panchro "
         "included, is an error.",
     "Checks of the DLS data (limits)":
         "These checks look for DLS data that should not be trusted. They only raise flags: the correction is "
         "applied anyway and the images are written. The flags are shown in the log, and saved in the result "
         "file and in the provenance record of each capture, so that you can look at those captures.\n"
+        "With two panel captures, an image is compared with the panel that weighs most in its calibration (the "
+        "first one when both weigh the same).\n"
         "# What is checked\n"
         "- Band ratio: the DLS ratio of each band is compared with the median of the ratios of all the bands "
         "of the same capture. The light changes all the bands together, so they should agree.\n"
@@ -273,8 +277,8 @@ FIELDS = [
                   "turns on 'Correct illumination changes with the DLS' (DLS page), and turning that off takes the choice "
                   "back to the first panel.\n"
                   "This choice changes the result: it decides which panel data are used.\n"
-                  "With the DLS correction each panel is used with its own DLS irradiance, so the result does not "
-                  "depend on a 'reference panel' of the DLS: only the panels that are used matter.")},
+                  "With the DLS correction on, each panel is first adjusted to the light of the image with its own DLS "
+                  "reading (panel factor x E_panel / E_image), and then the panels are combined.")},
     {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
      'label': 'Inner area of the panel', 'help': ("The size of the square that is measured on the panel, as a fraction of the "
                   "side of the panel: above 0 and up to 1. With 0.7 it is a square in the middle of the panel with 70 % "
@@ -304,10 +308,11 @@ FIELDS = [
                   "The buttons below check the inputs and open the tool that accepts or draws the regions.")},
     {'key': 'CORRECTION.use_dls', 'group': 'Correction with the DLS', 'kind': 'bool', 'default': False,
      'label': 'Correct illumination changes with the DLS',
-     'help': ("Multiply the reflectance of each band (Panchro included) by the DLS ratio E_panel / E_image.\n"
+     'help': ("Multiply the reflectance of each band (Panchro included) by the DLS ratio E_panel / E_image of the "
+                  "panel that calibrates it.\n"
                   "Off: only the panel is used, so changes of the light between the panel photo and an image are not "
                   "corrected.\n"
-                  "On: every band of the image and of the panel capture needs a valid irradiance "
+                  "On: every band of the image and of the panel captures used needs a valid irradiance "
                   "(XMP:HorizontalIrradiance); otherwise the run stops with an error.")},
     {'key': 'CHECKS.band_ratio_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['band_ratio_tolerance'],
      'label': 'Band ratio tolerance', 'help': ("Largest departure accepted (0.03 = 3 %) of the DLS ratio of a band from the median of the ratios of "
@@ -925,11 +930,11 @@ def _run_stages(config, root, results_folder, result, progress):
         entry = {'outputs': [], 'errors': []}
         result['captures'][name] = entry
         written, flags, details = [], [], []
+        checked_panel = panel_name
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter('always')
                 objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
-                ratios = rct.capture_dls_ratios(panels['before'], objects) if use_dls else {}
                 second = panels.get('after')
                 weight, distances = _second_panel_weight(config['PANEL.panels_used'], second is not None, objects,
                                                          panels['before'], second, (name, panel_name, panel_after_name))
@@ -937,26 +942,27 @@ def _run_stages(config, root, results_folder, result, progress):
                                    'weight_of_the_second_panel': weight}
                 if distances:
                     entry['panels']['light_difference'] = distances
+                weighted = [(panels['before'], 1 - weight)] + ([(second, weight)] if second is not None else [])
+                # the factors of all the bands first, so that nothing is written for a capture that cannot be corrected
+                factors = {band: rct.combine_panels([(capture[band], share) for capture, share in weighted],
+                                                    objects[band] if use_dls else None) for band in bands}
                 records = []
                 for band in bands:
-                    image, panel = objects[band], panels['before'][band]
-                    ratio, source = ratios.get(band, (None, None))
-                    factor = panel.panel_audit['radiance_to_reflectance_factor']
-                    if weight > 0:
-                        factor = rct.effective_panel_factor(
-                            factor, second[band].panel_audit['radiance_to_reflectance_factor'], weight,
-                            panel.dls_irradiance() if use_dls else None, second[band].dls_irradiance() if use_dls else None)
-                    reflectance = image.digital_numbers_to_reflectance(factor, dls_ratio=ratio, dls_ratio_source=source)
+                    image = objects[band]
+                    factor, used = factors[band]
+                    reflectance = image.digital_numbers_to_reflectance(factor)
                     output_path = results_folder / Path(image.image_path).name
                     tifffile.imwrite(output_path, reflectance)
-                    records.append(rct.band_record(output_path, panel, image, reflectance,
-                                                   second[band] if weight > 0 else None, weight,
-                                                   factor if weight > 0 else None))
+                    records.append(rct.band_record(output_path, image, reflectance, used, factor))
                     written.append(str(output_path))
                     entry['outputs'].append(output_path.name)           # the files are in the results folder
-                checks = rct.check_dls_capture(panels['before'], objects, ratios or None)
+                # the DLS checks compare the image with the panel that weighs most in its calibration (the first if equal)
+                label = 'after' if weight > 0.5 else 'before'
+                checked_panel = result['panel'][label]['capture']
+                checks = rct.check_dls_capture(panels[label], objects)
+                checks['compared_with_panel'] = checked_panel
                 geometry = rct.check_image_geometry(objects)
-                checks['geometry'] = {'panel': result['panel']['before']['geometry'], 'image': geometry['values']}
+                checks['geometry'] = {'panel': result['panel'][label]['geometry'], 'image': geometry['values']}
                 checks['flags'] = list(checks['flags']) + geometry['flags']
                 checks['unavailable'] = list(checks['unavailable']) + geometry['unavailable']
                 flags, details = list(checks['flags']), checks['flag_details'] + geometry['flag_details']
@@ -988,7 +994,7 @@ def _run_stages(config, root, results_folder, result, progress):
             if detail is None:
                 result['flags'].append(f"{name}: {flag}")
             elif detail['scope'] == 'panel':                         # the same in every capture: once, with the panel
-                flag = f"{panel_name}: {flag}"
+                flag = f"{checked_panel}: {flag}"
                 if flag not in result['flags']:
                     result['flags'].append(flag)
             else:

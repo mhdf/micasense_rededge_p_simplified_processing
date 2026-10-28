@@ -24,7 +24,7 @@ reflectance(image) = radiance(image) * panel_reflectance / panel_radiance * E_pa
 
 &emsp;&emsp;The limits are in `rct.DLS_CHECKS`; they are first guesses, not validated values, so adjust them to your data. Each check issues a `RuntimeWarning` and the messages are saved in the provenance record. The checks only raise flags; they never change a result.
 
-- `rct.check_dls_capture(panel_images, images)`, for one capture:
+- `rct.check_dls_capture(panel_images, images)`, for one capture. With two panel captures, the workflow compares each image with the panel that weighs most in its calibration (the first one when both weigh the same) and records its name (`compared_with_panel`):
   - the DLS ratio of every band must be within 3 % of the median of the bands (the light changes all the bands together);
   - the ratio must be inside 0.5 to 2;
   - the sun angle: the solar zenith is 90 degrees minus the solar elevation (`XMP:SolarElevation`, as written in the file), and the DLS writes the direction of the direct sunlight in its own frame (`XMP:EstimatedDirectLightVector`). With a level DLS the angle between that direction and the axis of the DLS equals the zenith, so a difference above 10 degrees means that the DLS was tilted by at least that much, or that the angles are inconsistent. This was checked only against the example panel capture (0.2 degrees, with a level DLS); the image capture of the example shows about 15 degrees and is flagged;

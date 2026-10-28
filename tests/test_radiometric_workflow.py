@@ -443,22 +443,25 @@ class RunTests(unittest.TestCase):
         self.assertNotIn('dls_checks_limits', provenance)
         self.assertNotIn('ratio_sources', provenance['checks'])
         self.assertNotIn('unavailable', provenance['checks'])
-        self.assertEqual(set(provenance['capture']), {'image_capture_id', 'panel_capture_id', 'camera_attitude_as_written'})
+        self.assertEqual(set(provenance['capture']), {'image_capture_id', 'panel_capture_ids', 'camera_attitude_as_written'})
+        self.assertEqual(provenance['checks']['compared_with_panel'], 'IMG_0005')
         self.assertIsInstance(provenance['capture']['camera_attitude_as_written']['Pitch'], float)
         for band in provenance['bands']:
-            for key in ('image_capture_id', 'panel_capture_id', 'second_panel', 'effective_factor'):
-                self.assertNotIn(key, band)
-            for key in ('attitude_as_written', 'sun_angle_discrepancy_deg', 'ratio_panel_over_image'):
+            self.assertNotIn('image_capture_id', band)
+            for key in ('attitude_as_written', 'sun_angle_discrepancy_deg'):
                 self.assertNotIn(key, band['dls'])
-            self.assertNotIn('image_path', band['panel'])
-            self.assertIn('radiance_to_reflectance_factor', band['panel'])
+            panel = band['panels'][0]
+            for key in ('capture_id', 'dls_ratio', 'adjusted_factor'):                # the DLS is not used in this run
+                self.assertNotIn(key, panel)
+            self.assertNotIn('image_path', panel['audit'])
+            self.assertEqual(band['factor_applied'], panel['factor'])
             self.assertIn('image_horizontal_irradiance', band['dls'])           # what the DLS read is still there
 
     def test_dls_run_corrects_every_band_including_panchro(self):
         folder = self.folder / 'dls'
         provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
         self.assertEqual(provenance['method'], 'panel_and_dls')
-        ratios = {band['band']: band['dls']['ratio_panel_over_image'] for band in provenance['bands']}
+        ratios = {band['band']: band['panels'][0]['dls_ratio'] for band in provenance['bands']}
         self.assertEqual(set(ratios), set(wf.BAND_NAMES))
         self.assertAlmostEqual(ratios['Blue'], 138.05218450296033 / 156.04327208007237)
         self.assertAlmostEqual(ratios['Panchro'], 99.211212701455025 / 112.20932502581493)
@@ -753,9 +756,9 @@ class RunTests(unittest.TestCase):
                                            tifffile.imread(self.folder / 'panel_only' / f'IMG_0010_{number}.tif')))
         provenance = json.loads((self.folder / 'mean_panels' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
         blue = provenance['bands'][0]
-        self.assertEqual(blue['second_panel_weight'], 0.5)
-        self.assertTrue(blue['second_panel_file'].endswith('IMG_0005_1.tif'))
-        self.assertEqual(blue['effective_factor'], blue['panel']['radiance_to_reflectance_factor'])
+        self.assertEqual([panel['weight'] for panel in blue['panels']], [0.5, 0.5])
+        self.assertTrue(all(panel['file'].endswith('IMG_0005_1.tif') for panel in blue['panels']))
+        self.assertEqual(blue['factor_applied'], blue['panels'][0]['factor'])
 
     def test_the_last_panel_alone_calibrates_the_images(self):
         result = self.run_with_two_panels('last_panel', 'last')
@@ -766,7 +769,7 @@ class RunTests(unittest.TestCase):
             self.assertTrue(np.array_equal(tifffile.imread(self.folder / 'last_panel' / f'IMG_0010_{number}.tif'),
                                            tifffile.imread(self.folder / 'panel_only' / f'IMG_0010_{number}.tif')))
         provenance = json.loads((self.folder / 'last_panel' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
-        self.assertEqual(provenance['bands'][0]['second_panel_weight'], 1.0)
+        self.assertEqual([panel['weight'] for panel in provenance['bands'][0]['panels']], [1.0])
         single = self.run_with_two_panels('last_without_second', 'last', **{'INPUTS.reference_panel_capture_after': ''})
         self.assertEqual(single['status'], 'failed')                              # there is no last panel to use
         self.assertIn('there is no second panel capture', single['errors'][0])
@@ -778,6 +781,11 @@ class RunTests(unittest.TestCase):
             last = tifffile.imread(self.folder / 'last_dls' / f'IMG_0010_{number}.tif')
             first = tifffile.imread(self.folder / 'dls' / f'IMG_0010_{number}.tif')
             self.assertTrue(np.allclose(last, 0.5 * first, rtol=0.01, atol=0), number)    # R = L f E_panel / E_image
+        # the DLS checks compare the image with the panel that calibrates it: the last one, with half the light
+        provenance = json.loads((self.folder / 'last_dls' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(provenance['checks']['compared_with_panel'], 'IMG_0007')
+        self.assertAlmostEqual(result['captures']['IMG_0010']['dls']['median_ratio'], 0.5 * 0.884, places=2)
+        self.assertTrue(any('outside the plausible range' in flag for flag in provenance['checks']['flags']))
 
     def test_the_mean_with_the_dls_uses_the_irradiance_of_each_panel(self):
         result = self.run_with_two_panels('mean_dls', 'mean', **{'CORRECTION.use_dls': True})
@@ -792,7 +800,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['captures']['IMG_0010']['panels'], {'used': 'first', 'weight_of_the_second_panel': 0.0})
         self.assertIn('comparison', result['panel'])
         provenance = json.loads((self.folder / 'first_panel' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
-        self.assertNotIn('second_panel_file', provenance['bands'][0])             # a panel that was not used is not repeated
+        self.assertEqual(len(provenance['bands'][0]['panels']), 1)                # a panel that was not used is not repeated
 
     def test_a_second_panel_that_is_not_used_when_there_is_only_one(self):
         entry = self.panel_only['captures']['IMG_0010']
@@ -840,8 +848,8 @@ class RunTests(unittest.TestCase):
         self.assertEqual(near['status'], 'completed', near['errors'])
         self.assertEqual(near['captures']['IMG_0010']['panels'], {'used': 'nearest_time', 'weight_of_the_second_panel': 1.0})
         provenance = json.loads((self.folder / 'nearest_near' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
-        self.assertTrue(provenance['bands'][0]['second_panel_file'].endswith('IMG_0007_1.tif'))
-        self.assertEqual(provenance['bands'][0]['second_panel_weight'], 1.0)
+        panels = provenance['bands'][0]['panels']
+        self.assertEqual([(Path(panel['file']).name, panel['weight']) for panel in panels], [('IMG_0007_1.tif', 1.0)])
 
     def test_the_time_of_the_images_is_needed_to_interpolate(self):
         original = wf._read_capture
@@ -900,7 +908,8 @@ class RunTests(unittest.TestCase):
         self.assertAlmostEqual(weight, first ** 2 / (first ** 2 + second ** 2))
         self.assertGreater(weight, 0.99)
         provenance = json.loads((self.folder / 'light_near' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
-        self.assertEqual(provenance['bands'][0]['second_panel_weight'], 1.0)
+        self.assertEqual([panel['weight'] for panel in provenance['bands'][0]['panels']], [1.0])
+        self.assertAlmostEqual(provenance['bands'][0]['panels'][0]['dls_ratio'], 1.0, delta=0.02)   # the light of the image
         self.assertEqual(sorted(provenance['checks']['panel_light_difference']), ['first', 'second'])
 
     def test_a_panel_with_other_light_is_not_used(self):

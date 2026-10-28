@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -1000,6 +1001,49 @@ class RunTests(unittest.TestCase):
         self.assertIn("missing: ['Red']", result['captures']['IMG_0010']['errors'][0])
         self.assertEqual(sorted(Path(path).name for path in result['outputs']),            # the other capture is corrected
                          [f'IMG_0422_{number}.tif' for number in range(1, 7)])
+
+    def test_the_closest_panel_capture_before_and_after_reproduces_metashape(self):
+        # one capture in each moment: the same as the interpolation in time
+        for mode in ('adjacent_time', 'interpolate_time'):
+            result = self.run_with_two_panels(f'two_{mode}', mode, **{'INPUTS.reference_panel_capture_after': 'IMG_0422',
+                                                                     'CORRECTION.use_dls': True})
+            self.assertEqual(result['status'], 'completed', result['errors'])
+        for number in range(1, 7):
+            self.assertTrue(np.allclose(tifffile.imread(self.folder / 'two_adjacent_time' / f'IMG_0010_{number}.tif'),
+                                        tifffile.imread(self.folder / 'two_interpolate_time' / f'IMG_0010_{number}.tif'),
+                                        rtol=1e-6, atol=0), number)
+
+        def capture(time):
+            return {'Blue': SimpleNamespace(metadata={'EXIF:DateTimeOriginal': f'2023:02:02 {time}'})}
+        panels = {'before': {'P1': capture('13:00:00'), 'P2': capture('13:00:10')},
+                  'after': {'P3': capture('13:20:10'), 'P4': capture('13:20:20')}}
+        shares = wf.adjacent_panel_shares(panels, capture('13:10:10'), 'I')
+        self.assertEqual(set(shares), {'P2', 'P3'})                              # the others do not count, as in Metashape
+        self.assertAlmostEqual(shares['P3'], 0.5)
+        self.assertEqual(wf.adjacent_panel_shares(panels, capture('12:59:00'), 'I'), {'P1': 1.0})
+        self.assertEqual(wf.adjacent_panel_shares(panels, capture('13:30:00'), 'I'), {'P4': 1.0})
+        self.assertEqual(wf.adjacent_panel_shares({'before': panels['before']}, capture('13:10:10'), 'I'), {'P2': 1.0})
+        config = wf.merge_config(config_for(self.folder / 'x', **{'PANEL.panels_used': 'adjacent_time'}))
+        self.assertEqual(wf.validate_config(config, ROOT), [])                   # a second moment is not needed
+
+    def test_the_orientation_of_the_panel_captures(self):
+        self.assertEqual(wf.panel_orientation({'heading_to_sun_deg': 20}), 'facing_sun')
+        self.assertEqual(wf.panel_orientation({'heading_to_sun_deg': 170}), 'back_to_sun')
+        self.assertEqual(wf.panel_orientation({'heading_to_sun_deg': 87}), 'side')
+        self.assertEqual(wf.panel_orientation({'heading_to_sun_deg': None}), 'unknown')
+
+        def capture(factor):
+            return {'Blue': SimpleNamespace(panel_audit={'radiance_to_reflectance_factor': factor})}
+        group = {'F1': capture(2.0), 'F2': capture(2.0), 'B1': capture(2.1)}
+        difference = wf.orientation_difference(group, {'F1': 'facing_sun', 'F2': 'facing_sun', 'B1': 'back_to_sun'}, False)
+        self.assertAlmostEqual(difference['Blue'], 0.05)
+        self.assertEqual(wf.orientation_difference(group, {name: 'facing_sun' for name in group}, False), {})
+        # the example panel capture has the sun at its side (87 degrees): only 'all' uses it
+        side = wf.run(config_for(self.folder / 'side'), ROOT)
+        self.assertEqual(side['panel']['before']['captures']['IMG_0005']['orientation'], 'side')
+        facing = wf.run(config_for(self.folder / 'facing', **{'PANEL.panel_orientation': 'facing_sun'}), ROOT)
+        self.assertEqual(facing['status'], 'failed')
+        self.assertIn('None of the panel captures IMG_0005 was taken facing the sun', facing['errors'][0])
 
     def test_a_panel_capture_that_departs_from_its_moment_is_named(self):
         # three copies of the panel capture; the DLS of IMG_0007 read 10 % more light than in the other two

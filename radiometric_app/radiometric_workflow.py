@@ -289,7 +289,8 @@ FIELDS = [
      'labels': {'first': 'First panel only', 'last': 'Last panel only', 'mean': 'Average of the two panels',
                 'interpolate_time': 'Both panels, weighted by time', 'nearest_time': 'Nearest panel in time',
                 'nearest_illumination': 'Nearest panel in light (uses the DLS)',
-                'interpolate_illumination': 'Both panels, weighted by light (uses the DLS)'},
+                'interpolate_illumination': 'Both panels, weighted by light (uses the DLS)',
+                'adjacent_time': 'Closest capture before and after each image, by time (as Metashape)'},
      'group': 'Panel measurement', 'label': 'Panel selection approach',
      'help': ("How the panel captures calibrate the images when there are two (before and after the flight). Only used "
                   "when there is a second panel capture.\n"
@@ -312,9 +313,29 @@ FIELDS = [
                   "The two choices by the light use the DLS data of the images and of both panel captures: choosing one "
                   "turns on 'Correct illumination changes with the DLS' (DLS page), and turning that off takes the choice "
                   "back to the first panel.\n"
+                  "- Closest capture before and after each image, by time (adjacent_time): of all the panel captures "
+                  "(of both moments), only the last one taken before the image and the first one after it are used, "
+                  "weighted by time; an image before the first or after the last uses the closest. This is what "
+                  "Metashape 2.3.1 does; the other options average the captures of each moment.\n"
                   "This choice changes the result: it decides which panel data are used.\n"
                   "With the DLS correction on, each panel is first adjusted to the light of the image with its own DLS "
                   "reading (panel factor x E_panel / E_image), and then the panels are combined.")},
+    {'key': 'PANEL.panel_orientation', 'kind': 'choice', 'choices': ['all', 'facing_sun', 'back_to_sun'],
+     'default': 'all', 'group': 'Panel measurement', 'label': 'Panel captures used, by orientation',
+     'labels': {'all': 'All the panel captures', 'facing_sun': 'Only those taken facing the sun',
+                'back_to_sun': 'Only those taken with the back to the sun'},
+     'help': ("The panel can be photographed with the camera facing the sun or with its back to it, and the two can "
+                  "give different factors (the panel does not reflect the same in every direction, and a shadow falls "
+                  "differently).\n"
+                  "The orientation of each panel capture is read from its metadata: the heading of the camera "
+                  "(XMP:Yaw) against the direction of the sun (XMP:SolarAzimuth): under 60 degrees it faces the sun, "
+                  "over 120 its back is to the sun, and in between the sun is at its side.\n"
+                  "- All the panel captures (all): every capture listed is used. When one moment has captures of both "
+                  "orientations and they differ more than the spread limit (DLS page), a flag says so.\n"
+                  "- Only those facing the sun (facing_sun) or only those with the back to the sun (back_to_sun): the "
+                  "other captures listed (also those with the sun at the side) are not used, so that one protocol is "
+                  "followed.\n"
+                  "The heading is only as good as XMP:Yaw: check the heading of each panel capture in the log.")},
     {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
      'label': 'Inner area of the panel', 'help': ("The size of the square that is measured on the panel, as a fraction of the "
                   "side of the panel: above 0 and up to 1. With 0.7 it is a square in the middle of the panel with 70 % "
@@ -750,7 +771,7 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
     # the panel calibrates the images, or (reflectance from the DLS alone) is only compared with the DLS when it is given
     calibrates = output == 'panel_reflectance'
     needs_panel = calibrates or (output == 'dls_reflectance' and bool(before_names))
-    if calibrates and config['PANEL.panels_used'] != 'first' and not after_names:
+    if calibrates and config['PANEL.panels_used'] not in ('first', 'adjacent_time') and not after_names:
         problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}' but there is no second panel capture "
                         "(INPUTS.reference_panel_capture_after)")
     if calibrates and config['PANEL.panels_used'] in rct.PANELS_BY_ILLUMINATION and not config['CORRECTION.use_dls']:
@@ -1011,6 +1032,56 @@ def _averaged_values(group, use_dls):
             for band in next(iter(group.values()))}
 
 
+ORIENTATIONS = {'facing_sun': 'facing the sun', 'back_to_sun': 'with the back to the sun', 'all': 'in any orientation'}
+
+
+def panel_orientation(geometry):
+    """
+    How a panel capture was taken, from the angle between the heading of the camera and the sun (see
+    rct.heading_to_sun_deg): 'facing_sun' under 60 degrees, 'back_to_sun' over 120, 'side' in between (the sun at the
+    side), 'unknown' without a heading
+    """
+    heading = geometry.get('heading_to_sun_deg')
+    if heading is None:
+        return 'unknown'
+    return 'facing_sun' if heading < 60 else 'back_to_sun' if heading > 120 else 'side'
+
+
+def orientation_difference(group, orientations, use_dls):
+    """
+    When a moment has panel captures of both orientations: how much those with the back to the sun differ from those facing
+    it, band by band, on what is averaged (see group_spread): mean of one / mean of the other - 1. {} otherwise
+    """
+    facing = [name for name, side in orientations.items() if side == 'facing_sun']
+    back = [name for name, side in orientations.items() if side == 'back_to_sun']
+    if not facing or not back:
+        return {}
+    difference = {}
+    for band, values in _averaged_values(group, use_dls).items():
+        difference[band] = float(np.mean([values[name] for name in back]) / np.mean([values[name] for name in facing]) - 1)
+    return difference
+
+
+def adjacent_panel_shares(panels, image, name):
+    """
+    The panel capture taken last before the image and the one taken first after it, among all the panel captures of both
+    moments, weighted by time (as Metashape 2.3.1 does); an image before the first or after the last uses the closest
+    Outputs: {capture: weight}
+    """
+    times = sorted((_capture_time(images, capture), capture) for group in panels.values()
+                   for capture, images in group.items())
+    time = _capture_time(image, name)
+    before = [item for item in times if item[0] <= time]
+    after = [item for item in times if item[0] >= time]
+    if not before or not after:
+        return {(after or before)[0 if after else -1][1]: 1.0}
+    (first_time, first), (second_time, second) = before[-1], after[0]
+    if first == second or second_time == first_time:
+        return {first: 1.0}
+    weight = (time - first_time) / (second_time - first_time)
+    return {first: 1.0 - weight, second: weight}
+
+
 def group_departures(group, use_dls):
     """
     How far each capture of a group of three or more is from the others, band by band: what is averaged (see group_spread)
@@ -1176,13 +1247,36 @@ def _run_stages(config, root, results_folder, result, progress):
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter('always')
                 geometry = rct.check_panel_geometry(objects)
+            orientation = panel_orientation(geometry['values'])
+            used = config['PANEL.panel_orientation'] in ('all', orientation)
             result['panel'][label]['captures'][name] = {
                 'bands': {band: rct._jsonable(rct.compact_panel_audit(image.panel_audit)) for band, image in objects.items()},
-                'geometry': rct._jsonable(geometry['values'])}
+                'geometry': rct._jsonable(geometry['values']), 'orientation': orientation, 'used': used}
             result['flags'].extend(f"{name}: {flag}" for flag in geometry['flags'])
+            if not used:
+                del group[name]
+        if not group:
+            raise RuntimeError(f"None of the panel captures {', '.join(group_names)} was taken "
+                               f"{ORIENTATIONS[config['PANEL.panel_orientation']]} (PANEL.panel_orientation)")
+        group_names = list(group)
         panels[label] = group
         if not calibrates:
             continue
+        orientations = {name: result['panel'][label]['captures'][name]['orientation'] for name in group}
+        try:
+            difference = orientation_difference(group, orientations, use_dls)
+        except rct.MetadataError:
+            difference = {}
+        if difference:
+            result['panel'][label]['orientation_difference'] = difference
+            band, value = max(difference.items(), key=lambda item: abs(item[1]))
+            if abs(value) > spread_limit:
+                facing = [name for name, side in orientations.items() if side == 'facing_sun']
+                back = [name for name, side in orientations.items() if side == 'back_to_sun']
+                result['flags'].append(f"Panel captures facing the sun ({', '.join(facing)}) and with the back to the sun "
+                                       f"({', '.join(back)}): those with the back to the sun differ {100 * value:+.1f} % "
+                                       f"(band '{band}'; limit {100 * spread_limit:g} %). Choose one orientation "
+                                       f"(Panel captures used, by orientation) or check the photos")
         try:
             spread, departures = group_spread(group, use_dls), group_departures(group, use_dls)
         except rct.MetadataError as error:
@@ -1243,16 +1337,26 @@ def _run_stages(config, root, results_folder, result, progress):
                     result['outputs'].extend(written)
                     raise _Done
                 second = panels.get('after')
-                weight, distances = _second_panel_weight(config['PANEL.panels_used'], objects, panels['before'], second,
-                                                         name)
-                entry['panels'] = {'used': config['PANEL.panels_used'] if second is not None else 'first',
-                                   'weight_of_the_second_panel': weight}
-                if distances:
-                    entry['panels']['light_difference'] = distances
-                # the weight of a group is shared by its captures
-                weighted = [(capture, (1 - weight) / len(panels['before'])) for capture in panels['before'].values()]
-                if second is not None:
-                    weighted += [(capture, weight / len(second)) for capture in second.values()]
+                if config['PANEL.panels_used'] == 'adjacent_time':
+                    shares = adjacent_panel_shares(panels, objects, name)
+                    weight = sum(share for capture, share in shares.items() if capture in (second or {}))
+                    distances = None
+                    entry['panels'] = {'used': 'adjacent_time', 'weight_of_the_second_panel': weight,
+                                       'captures': shares}
+                    weighted = [(group[capture], share) for group in panels.values() for capture, share in shares.items()
+                                if capture in group]
+                else:
+                    shares = None
+                    weight, distances = _second_panel_weight(config['PANEL.panels_used'], objects, panels['before'],
+                                                             second, name)
+                    entry['panels'] = {'used': config['PANEL.panels_used'] if second is not None else 'first',
+                                       'weight_of_the_second_panel': weight}
+                    if distances:
+                        entry['panels']['light_difference'] = distances
+                    # the weight of a group is shared by its captures
+                    weighted = [(capture, (1 - weight) / len(panels['before'])) for capture in panels['before'].values()]
+                    if second is not None:
+                        weighted += [(capture, weight / len(second)) for capture in second.values()]
                 # the factors of all the bands first, so that nothing is written for a capture that cannot be corrected
                 factors = {band: rct.combine_panels([(capture[band], share) for capture, share in weighted],
                                                     objects[band] if use_dls else None) for band in bands}
@@ -1269,7 +1373,11 @@ def _run_stages(config, root, results_folder, result, progress):
                 # the DLS checks compare the image with the panel capture closest in time of the group that weighs most
                 # in its calibration (the first group if both weigh the same)
                 label = 'after' if weight > 0.5 else 'before'
-                checked_panel = _nearest_capture(panels[label], objects, name)
+                if shares:                                   # the closest captures: the one that weighs most
+                    checked_panel = max(shares, key=shares.get)
+                    label = 'after' if checked_panel in (second or {}) else 'before'
+                else:
+                    checked_panel = _nearest_capture(panels[label], objects, name)
                 checks = rct.check_dls_capture(panels[label][checked_panel], objects)
                 checks['compared_with_panel'] = checked_panel
                 geometry = rct.check_image_geometry(objects)
@@ -1448,7 +1556,8 @@ def build_summary(result, config):
         if stats:
             stats['outside'] = None if outside is None else sum(outside(value) for value in values if value is not None)
             images[name] = stats
-    panels = {name: dict(capture['geometry'], capture=name)
+    panels = {name: dict(capture['geometry'], capture=name, orientation=capture.get('orientation'),
+                         used=capture.get('used', True))
               for label in ('before', 'after') for name, capture in result['panel'].get(label, {}).get('captures', {}).items()
               if capture.get('geometry')}
     weights = [entry['panels']['weight_of_the_second_panel'] for entry in done if entry.get('panels')]
@@ -1478,10 +1587,13 @@ def summary_lines(result):
     lines = [f"Summary: {summary['corrected']} of {summary['captures']} capture(s) corrected, {summary['files']} file(s) "
              f"written, {summary['flags']} flag(s)."]
     for panel in summary['panels'].values():
+        orientation = {'facing_sun': 'facing the sun', 'back_to_sun': 'the back to the sun',
+                       'side': 'the sun at the side'}.get(panel.get('orientation'), 'orientation unknown')
         lines.append(f"Panel {panel['capture']}: camera tilt {number(panel.get('camera_tilt_deg'), 1)} deg; heading "
-                     f"{number(panel.get('heading_to_sun_deg'))} deg from the sun (0 = facing it, 180 = the back to it); "
-                     f"DLS tilt {number(panel.get('dls_tilt_deg'), 1)} deg; sun elevation "
-                     f"{number(panel.get('sun_elevation_deg'))} deg.")
+                     f"{number(panel.get('heading_to_sun_deg'))} deg from the sun ({orientation}; 0 = facing it, 180 = the "
+                     f"back to it); DLS tilt {number(panel.get('dls_tilt_deg'), 1)} deg; sun elevation "
+                     f"{number(panel.get('sun_elevation_deg'))} deg" +
+                     ('.' if panel.get('used', True) else '; not used (Panel captures used, by orientation).'))
     for capture, bands in (result.get('panel', {}).get('dls_only_check') or {}).items():
         values = ', '.join(f"{band} {100 * value:+.0f} %" for band, value in bands.items() if value is not None)
         lines.append(f"Reflectance from the DLS only of the panel in {capture}, against its known reflectance: "

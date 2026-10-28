@@ -492,7 +492,7 @@ def _jsonable(value):
 
 # Two panel captures (before and after the flight)
 PANELS_USED = ('first', 'last', 'mean', 'interpolate_time', 'nearest_time', 'nearest_illumination',
-               'interpolate_illumination')
+               'interpolate_illumination', 'adjacent_time')
 PANELS_BY_ILLUMINATION = ('nearest_illumination', 'interpolate_illumination')      # they compare the light read by the DLS
 ILLUMINATION_POWER = 2         # interpolate_illumination weighs each panel by 1 / distance ** ILLUMINATION_POWER
 

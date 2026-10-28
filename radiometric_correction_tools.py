@@ -187,9 +187,9 @@ DLS_CHECKS = { 'ratio_range': (0.5, 2.0),            # plausible E_panel / E_ima
                 'max_sun_angle_discrepancy_deg': 10.0,  # see Image.dls_sun_angle_discrepancy_deg
                 'jump_threshold': 0.10,               # relative change between consecutive captures
                 'panel_drift_tolerance': 0.05,        # relative change of the panel factor (and of E_DLS / E_panel_estimate)
+                                                      # between two panel captures
                 'panel_illumination_tolerance': 0.15 }  # how different the light of a capture may be from that of the nearest panel
                                                         # (see illumination_distance; 0.15 is about 15 %)
-                                                      # between two panel captures
 
 
 def check_dls_capture(panel_images, images, ratios=None):
@@ -213,7 +213,7 @@ def check_dls_capture(panel_images, images, ratios=None):
     values = { band: ratio for band, (ratio, _) in ratios.items() }
     result = { 'band_ratios': values, 'ratio_sources': { band: source for band, (_, source) in ratios.items() } }
 
-    # 1. Same illumination change in all bands
+    # Same illumination change in all bands
     if values:
         median = float(np.median(list(values.values())))
         departures = { band: value / median - 1 for band, value in values.items() }
@@ -225,7 +225,7 @@ def check_dls_capture(panel_images, images, ratios=None):
                 details.append({'criterion': 'band_ratio_departure', 'scope': 'image', 'band': band,
                                 'value': float(departure), 'limit': DLS_CHECKS['band_ratio_tolerance']})
 
-    # 2. Irradiance of the DLS compared with the irradiance estimated from the panel. It differs between bands
+    # Irradiance of the DLS compared with the irradiance estimated from the panel. It differs between bands
     #    (18 % in the example, a calibration difference between camera and DLS), so it is only reported here; compare it
     #    between two panel captures with compare_panel_captures()
     estimates = {}
@@ -241,7 +241,7 @@ def check_dls_capture(panel_images, images, ratios=None):
         result['dls_over_panel_estimate'] = estimates
         result['dls_over_panel_estimate_variation_across_bands'] = cv
 
-    # 3. DLS pointing: sun angle seen by the DLS against the solar zenith
+    # DLS pointing: sun angle seen by the DLS against the solar zenith
     result['sun_angle_discrepancy_deg'] = {}
     for name, group in (('panel', panel_images), ('image', images)):
         angles = [ image.dls_sun_angle_discrepancy_deg() for image in group.values() ]
@@ -256,7 +256,7 @@ def check_dls_capture(panel_images, images, ratios=None):
             details.append({'criterion': 'dls_tilt', 'scope': name, 'band': None, 'value': float(np.median(angles)),
                             'limit': DLS_CHECKS['max_sun_angle_discrepancy_deg']})
 
-    # 5. Plausible range (also warned by dls_irradiance_ratio)
+    # Plausible range (also warned by dls_irradiance_ratio)
     low, high = DLS_CHECKS['ratio_range']
     for band, value in values.items():
         if not low <= value <= high:
@@ -270,7 +270,7 @@ def check_dls_capture(panel_images, images, ratios=None):
     return result
 
 
-# 4. Changes of the irradiance along a flight
+# Changes of the irradiance along a flight
 def classify_irradiance_changes(irradiances, threshold=None):
     """
     Find the changes between consecutive captures of the irradiance of one band, in acquisition order
@@ -302,7 +302,7 @@ def classify_irradiance_changes(irradiances, threshold=None):
     return events
 
 
-# 6. Panel captured before and after the flight
+# Panel captured before and after the flight
 def compare_panel_captures(before, after, tolerance=None):
     """
     Compare two panel captures (e.g. before and after the flight)
@@ -324,7 +324,8 @@ def compare_panel_captures(before, after, tolerance=None):
         try:
             entry['irradiance_ratio'] = after[band].dls_irradiance() / before[band].dls_irradiance()
             # DLS and camera should change together: this ratio of ratios is 1 if the DLS followed the light
-            estimate_ratio = after[band].panel_audit['panel_irradiance_estimate'] /                              before[band].panel_audit['panel_irradiance_estimate']
+            estimate_ratio = (after[band].panel_audit['panel_irradiance_estimate'] /
+                              before[band].panel_audit['panel_irradiance_estimate'])
             entry['dls_over_panel_estimate_ratio'] = entry['irradiance_ratio'] / estimate_ratio
         except MetadataError:
             pass
@@ -339,7 +340,7 @@ def compare_panel_captures(before, after, tolerance=None):
     return { 'bands': result, 'flags': flags }
 
 
-# 7. Geometry of the acquisition: tilt of the camera and direction in which it points with respect to the sun
+# Geometry of the acquisition: tilt of the camera and direction in which it points with respect to the sun
 # The camera writes its attitude (XMP:Roll, XMP:Pitch, XMP:Yaw, in degrees) and the sun (XMP:SolarAzimuth, from north
 # clockwise, and XMP:SolarElevation, in radians). The heading of the camera is the direction of the top of its image.
 # The angle between the heading and the sun goes from 0 (facing the sun) to 90 (the sun at the side) and 180 (the back to
@@ -425,16 +426,18 @@ def _check_geometry(images, kind):
             flags.append(f"Heading of the camera in the panel capture: {heading:.0f} deg from the sun; for the panel "
                          f"expect within {GEOMETRY_CHECKS['panel_heading_tolerance_deg']:g} deg of 0 (facing the sun) or "
                          f"180 (the back to the sun)")
+            # the value shown is the heading; what is compared with the limit is its departure from 0 or 180
             details.append({'criterion': 'heading', 'scope': 'panel', 'band': None, 'value': float(heading),
-                            'limit': GEOMETRY_CHECKS['panel_heading_tolerance_deg']})
+                            'departure': float(off_line), 'limit': GEOMETRY_CHECKS['panel_heading_tolerance_deg']})
     else:
         departure = abs(heading - 90)                            # from the sun at the side
         values['heading_departure_deg'] = departure
         if departure > GEOMETRY_CHECKS['image_heading_tolerance_deg']:
             flags.append(f"Heading of the camera in the image capture: {heading:.0f} deg from the sun; for mapping "
                          f"expect within {GEOMETRY_CHECKS['image_heading_tolerance_deg']:g} deg of 90 (the sun at the side)")
+            # the value shown is the heading; what is compared with the limit is its departure from 90
             details.append({'criterion': 'heading', 'scope': 'image', 'band': None, 'value': float(heading),
-                            'limit': GEOMETRY_CHECKS['image_heading_tolerance_deg']})
+                            'departure': float(departure), 'limit': GEOMETRY_CHECKS['image_heading_tolerance_deg']})
     for flag in flags:
         warnings.warn(flag, RuntimeWarning)
     return {'values': values, 'flags': flags, 'flag_details': details, 'unavailable': unavailable}
@@ -924,8 +927,6 @@ class Image(object):
         # Downwelling light sensor (DLS) - optional, only needed when the DLS correction is requested
         self.horizontal_irradiance = self.metadata.get('XMP:HorizontalIrradiance')
         self.irradiance_scale_to_si = self.metadata.get('XMP:IrradianceScaleToSIUnits')
-        self.dls_ratio = None   # set by digital_numbers_to_reflectance() when the DLS correction is used
-        self.dls_ratio_source = None
 
 
     # Undistort the image
@@ -958,9 +959,9 @@ class Image(object):
         """
         if image is None:
             image = self.image
-        rev_panel_pts = np.fliplr( region )  # image coords are reversed
-        w, h = image.shape[0:2]
-        mask = measure.grid_points_in_poly((w, h), rev_panel_pts)
+        rev_panel_pts = np.fliplr( region )  # the region is (x, y); the mask works in (row, column)
+        rows, columns = image.shape[0:2]
+        mask = measure.grid_points_in_poly((rows, columns), rev_panel_pts)
         num_pixels = mask.sum()
         panel_pixels = image[mask]
         stdev = panel_pixels.std()
@@ -1050,28 +1051,13 @@ class Image(object):
         return float(abs(incidence - (90 - np.degrees(elevation))))
 
 
-    # Convert radiance to reflectance, optionally correcting the illumination change with the DLS
-    def digital_numbers_to_reflectance(self, radiance_to_reflectance_factor, panel_image=None,
-                                       dls_ratio=None, dls_ratio_source=None):
+    # Convert radiance to reflectance
+    def digital_numbers_to_reflectance(self, radiance_to_reflectance_factor):
         """
-        Inputs: radiance to reflectance factor from detect_reference_panel() of the same band and, optionally,
-                the panel image (rct.Image) of that band. When given, the DLS is used (see dls_irradiance_ratio)
-                and the result is panel-anchored: reflectance = radiance * factor * (E_panel / E_image)
-                Alternatively, give a ready DLS ratio (e.g. from capture_dls_ratios) and where it came from
-        Outputs: reflectance image (float)
+        Inputs: the factor applied to the image, from combine_panels() (the panel factor and, with the DLS, the DLS ratio)
+        Outputs: reflectance image (float) = radiance x factor
         """
-        reflectance = self.digital_numbers_to_radiance() * radiance_to_reflectance_factor
-        self.dls_ratio = None
-        self.dls_ratio_source = None
-        if dls_ratio is not None:
-            self.dls_ratio = float(dls_ratio)
-            self.dls_ratio_source = dls_ratio_source or 'given'
-        elif panel_image is not None:
-            self.dls_ratio = dls_irradiance_ratio(panel_image, self)
-            self.dls_ratio_source = 'metadata'
-        if self.dls_ratio is not None:
-            reflectance = reflectance * self.dls_ratio
-        return reflectance
+        return self.digital_numbers_to_radiance() * radiance_to_reflectance_factor
 
 
     # Undistorted raw image, kept because the panel region is measured on it
@@ -1123,13 +1109,11 @@ class Image(object):
             barcode_bounds.append([point.x, point.y])
         barcode_bounds = np.asarray(barcode_bounds, np.int32)
 
-        # Measures describing panel size and position
+        # Layout of the panel by its version (digits 2-3 of the QR code), in mm, as in MicaSense's Panel.panel_corners():
+        # s is half the side of the panel, p half the side of the QR code and T the centre of the panel from the centre of
+        # the QR code. Only the inner part of the panel is measured: percent_inner_area of its side (MicaSense uses 0.5)
         if int(barcode_data[2:4]) < 3:
-            # use the actual panel measures here - we use units of [mm]
-            # the panel is 154.4 x 152.4 mm , vs. the 84 x 84 mm for the QR code
-            # it is left 143.20 mm from the QR code 
-            # use the inner 50% square of the panel
-            s = 76.2
+            s = 76.2                     # panel 152.4 mm wide, QR code 84 mm, panel 143.2 mm to the left of the QR code
             p = 42
             T = np.array([-143.2, 0])
         elif (int(barcode_data[2:4]) >= 3) and (int(barcode_data[2:4]) < 6):
@@ -1137,15 +1121,10 @@ class Image(object):
             p = 45
             T = np.array([-145.8, 0])
         elif int(barcode_data[2:4]) >= 6:
-            # use the actual panel measures here - we use units of [mm]
-            # the panel is 100 x 100 mm , vs. the 91 x 91 mm for the QR code
-            # it is down 125.94 mm from the QR code 
-            # use the inner 50% square of the panel
-            p = 41
+            p = 41                       # panel 100 mm wide, QR code 82 mm, panel below the QR code
             s = 50
             T = np.array([0, -130.84])
 
-        #
         reference_panel_pts = np.asarray([[-s, s], [s, s], [s, -s], [-s, -s]], dtype=np.float32) * percent_inner_area + T
         reference_qr_pts    = np.asarray([[-p, p], [p, p], [p, -p], [-p, -p]], dtype=np.float32)
         bounds = []

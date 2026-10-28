@@ -33,6 +33,16 @@ def config_for(results_folder, **changes):
 
 class ConfigurationTests(unittest.TestCase):
 
+    def test_a_results_folder_too_long_for_windows_is_a_clear_problem(self):
+        long_folder = Path(tempfile.gettempdir()) / ('x' * 230)
+        with mock.patch.object(wf, 'windows_long_paths_enabled', return_value=False):
+            problems = wf.path_length_problems(long_folder)
+            self.assertEqual(len(problems), 1)
+            self.assertIn('too long for Windows', problems[0])
+            self.assertEqual(wf.path_length_problems(Path(tempfile.gettempdir()) / 'results'), [])
+        with mock.patch.object(wf, 'windows_long_paths_enabled', return_value=True):
+            self.assertEqual(wf.path_length_problems(long_folder), [])
+
     def test_the_configuration_is_found_in_what_a_run_wrote(self):
         values = {'PANEL.percent_inner_area': 0.5}
         self.assertEqual(wf.configuration_from_json(values), values)                      # a configuration or a profile

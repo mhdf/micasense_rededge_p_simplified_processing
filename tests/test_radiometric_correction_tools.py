@@ -648,24 +648,21 @@ class ExampleImageTests(unittest.TestCase):
 
     def test_dls_reproduces_panel_only_result_at_the_panel_capture(self):
         panel, _, factor = self.panel_and_target('Blue')
-        panel_only = panel.digital_numbers_to_reflectance(factor)
-        with_dls = panel.digital_numbers_to_reflectance(factor, panel_image=panel)
-        self.assertEqual(panel.dls_ratio, 1.0)
-        self.assertTrue((panel_only == with_dls).all())
+        applied, used = rct.combine_panels([(panel, 1.0)], panel)
+        self.assertEqual((used[0]['dls_ratio'], applied), (1.0, factor))
 
     def test_panel_only_mode_is_the_original_conversion(self):
         _, target, factor = self.panel_and_target('Blue')
         self.assertTrue((target.digital_numbers_to_reflectance(factor) ==
                          target.digital_numbers_to_radiance() * factor).all())
-        self.assertIsNone(target.dls_ratio)
 
     def test_doubling_the_image_irradiance_halves_the_reflectance(self):
         panel, target, factor = self.panel_and_target('Blue')
         _, doubled, _ = self.panel_and_target('Blue', **{'XMP:HorizontalIrradiance': 2 * target.horizontal_irradiance})
-        stable = target.digital_numbers_to_reflectance(factor, panel_image=panel)
+        stable = target.digital_numbers_to_reflectance(rct.combine_panels([(panel, 1.0)], target)[0])
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)   # ratio 0.44 is outside the plausible range
-            brighter = doubled.digital_numbers_to_reflectance(factor, panel_image=panel)
+            brighter = doubled.digital_numbers_to_reflectance(rct.combine_panels([(panel, 1.0)], doubled)[0])
         self.assertTrue(abs(brighter - stable / 2).max() < 1e-12)
 
     def test_common_irradiance_scale_cancels_in_the_ratio(self):
@@ -722,10 +719,8 @@ class ExampleImageTests(unittest.TestCase):
         panel, target = self.capture_dicts()
         expected = 99.211212701455025 / 112.20932502581493
         self.assertAlmostEqual(rct.dls_irradiance_ratio(panel['Panchro'], target['Panchro']), expected)
-        target['Panchro'].digital_numbers_to_reflectance(
-            panel['Panchro'].panel_audit['radiance_to_reflectance_factor'], panel_image=panel['Panchro'])
-        self.assertAlmostEqual(target['Panchro'].dls_ratio, expected)
-        self.assertEqual(target['Panchro'].dls_ratio_source, 'metadata')
+        _, used = rct.combine_panels([(panel['Panchro'], 1.0)], target['Panchro'])
+        self.assertAlmostEqual(used[0]['dls_ratio'], expected)
 
     def test_capture_ratios_use_the_metadata_of_every_band(self):
         panel, target = self.capture_dicts()
@@ -830,8 +825,8 @@ class ExampleImageTests(unittest.TestCase):
         self.assertTrue(record['dls']['used'])
         self.assertAlmostEqual(record['panels'][0]['dls_ratio'], 138.05218450296033 / 156.04327208007237)
         self.assertAlmostEqual(record['factor_applied'], factor * 138.05218450296033 / 156.04327208007237)
-        # the same as the DLS ratio given to digital_numbers_to_reflectance (the example of the documentation)
-        self.assertTrue(np.allclose(reflectance, target.digital_numbers_to_reflectance(factor, panel_image=panel)))
+        self.assertTrue(np.allclose(reflectance, target.digital_numbers_to_radiance() * factor *
+                                    rct.dls_irradiance_ratio(panel, target)))
         with tempfile.TemporaryDirectory() as folder:
             path = rct.write_provenance(Path(folder) / 'provenance.json', [record],
                                         parameters={'percent_inner_area': 0.7, 'levels': REFLECTANCE_LEVELS})

@@ -624,6 +624,34 @@ def save_panel_regions(path, capture, regions, origins=None):
     return path
 
 
+# Windows refuses paths of 260 characters or more unless long paths are turned on; the longest file of the results folder
+# is about this long (a capture name, '_provenance.json', and the temporary radiometric_result.json.tmp)
+WINDOWS_PATH_LIMIT = 259
+RESULT_NAME_ALLOWANCE = 40
+
+
+def windows_long_paths_enabled():
+    """ Whether Windows accepts paths longer than 260 characters (LongPathsEnabled in the registry); True elsewhere """
+    if os.name != 'nt':
+        return True
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SYSTEM\CurrentControlSet\Control\FileSystem') as key:
+            return winreg.QueryValueEx(key, 'LongPathsEnabled')[0] == 1
+    except OSError:
+        return False
+
+
+def path_length_problems(results_folder):
+    """ A problem when the files of the results folder would have paths too long for Windows """
+    length = len(str(Path(results_folder).resolve())) + 1 + RESULT_NAME_ALLOWANCE
+    if length <= WINDOWS_PATH_LIMIT or windows_long_paths_enabled():
+        return []
+    return [f"The results folder path is too long for Windows: {len(str(Path(results_folder).resolve()))} characters, "
+            f"and with the names of the files it would pass the limit of {WINDOWS_PATH_LIMIT + 1}. Choose a shorter "
+            f"folder (or turn on long paths in Windows)"]
+
+
 def validate_config(config, root='.', regions_file_may_be_missing=False):
     """
     Return the list of problems of a configuration (empty if it is valid). Paths are resolved from root
@@ -715,6 +743,8 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
         problems.append(f"Images folder not found: {images}")
     if not config['INPUTS.results_folder'].strip():
         problems.append("INPUTS.results_folder is empty")
+    else:
+        problems.extend(path_length_problems(resolve_path(root, config['INPUTS.results_folder'])))
     exiftool_path, exiftool_source = find_exiftool(config, root)
     if exiftool_path is None:
         if config['INPUTS.exiftool_path'].strip():

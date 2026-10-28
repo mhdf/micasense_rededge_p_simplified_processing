@@ -1,7 +1,7 @@
 """
 Choose a folder while looking at what it contains: the files of the folder (folders first, with their sizes) and, at the
 right, a picture of the image file that is selected, so that the folder of the raw images, or the one of the results, can be
-recognised before it is chosen.
+recognized before it is chosen.
 
     ask_folder(parent, title, initialdir)   the dialog; returns the path of the folder that was chosen, or '' if cancelled
 
@@ -74,7 +74,7 @@ def preview_picture(path, bounds=PREVIEW_BOUNDS):
     """
     A picture of an image file for the eye only (the file is not changed): one band of a raw or reflectance .tif (16 bits,
     floating point, with or without invalid values) is reduced and stretched between its 1 % and 99.5 % percentiles, a
-    colour picture (.png, .jpg) is shown as it is
+    color picture (.png, .jpg) is shown as it is
     Outputs: (PIL image that fits in bounds, (width, height) of the file, text of the type of its values);
              ValueError if the file is not an image, and what the readers raise if it cannot be read
     """

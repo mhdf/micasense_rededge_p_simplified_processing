@@ -1134,7 +1134,7 @@ class RadiometricFrame:
     def _browse(self, key, kind):
         """
         Choose a folder or a file for a field. A folder is chosen in a window that lists its files and shows a picture of
-        the image that is selected (folder_browser), to recognise the folder of the raw images or the one of the results
+        the image that is selected (folder_browser), to recognize the folder of the raw images or the one of the results
         """
         current = self.model.get(key)
         start = wf.resolve_path(self.root_folder, current) if current else self.root_folder

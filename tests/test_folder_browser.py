@@ -110,9 +110,9 @@ class LogicTests(unittest.TestCase):
         self.assertLessEqual(picture.size[0], 400)
         self.assertLessEqual(picture.size[1], 300)
 
-    def test_a_colour_picture_is_shown_as_it_is_and_what_is_not_an_image_is_an_error(self):
+    def test_a_color_picture_is_shown_as_it_is_and_what_is_not_an_image_is_an_error(self):
         from PIL import Image
-        path = self.tree / 'colour.png'
+        path = self.tree / 'color.png'
         Image.new('RGB', (30, 20), (200, 10, 10)).save(path)
         picture, size, kind = fb.preview_picture(path)
         self.assertEqual((size, kind, picture.getpixel((0, 0))), ((30, 20), 'RGB', (200, 10, 10)))

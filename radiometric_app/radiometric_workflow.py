@@ -147,7 +147,7 @@ FIELDS = [
      'help': ("A second capture of the panel, taken at the end of the flight (optional).\n"
                   "It is always compared with the first panel capture: a change of the panel factor of a band, or of "
                   "the DLS irradiance relative to the panel, larger than the panel drift tolerance raises a flag.\n"
-                  "Whether it also calibrates the images is chosen in 'Panel selection approach' (Reference panel"
+                  "Whether it also calibrates the images is chosen in 'Panel selection approach' (Reference panel "
                   "page).")},
     {'key': 'INPUTS.image_captures', 'group': 'Images to correct', 'kind': 'text', 'default': '',
      'label': 'Select captures',
@@ -267,7 +267,7 @@ FIELDS = [
                   "the bands).\n"
                   "- Both panels, weighted by light (interpolate_illumination): the same comparison, but both panels are "
                   "used, each weighted by 1 / (difference of the light) squared: a panel with the light of the image counts "
-                  "alone, and the weight changes smoothly with the light, so there is no step between neighbouring images "
+                  "alone, and the weight changes smoothly with the light, so there is no step between neighboring images "
                   "that would use different panels.\n"
                   "The two choices by the light use the DLS data of the images and of both panel captures: choosing one "
                   "turns on 'Correct illumination changes with the DLS' (DLS page), and turning that off takes the choice "
@@ -316,14 +316,14 @@ FIELDS = [
                   "be almost the same in every band. A band that departs more than this points to a problem with the "
                   "irradiance of that band in that capture.")},
     {'key': 'CHECKS.ratio_range_min', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['ratio_range'][0],
-     'label': 'Smallest plausible DLS ratio', 'help': ("Ratios below this are flagged. A ratio of 0.5 means that the DLS measured twice as much light at the "
+     'label': 'Smallest plausible DLS ratio', 'help': ("Ratios below this are flagged. A ratio of 0.5 means that the DLS estimated twice as much light at the "
                   "image as at the panel.\n"
                   "That is hardly credible within one flight. It happens, for example, if the panel was photographed in "
                   "shade or under cloud and the image was taken in full sun, or if the irradiance of the image is "
                   "wrong.\n"
                   "The correction is still applied; the flag asks you to look at that capture.")},
     {'key': 'CHECKS.ratio_range_max', 'group': 'Checks of the DLS data (limits)', 'kind': 'float', 'default': rct.DLS_CHECKS['ratio_range'][1],
-     'label': 'Largest plausible DLS ratio', 'help': ("Ratios above this are flagged. A ratio of 2 means that the DLS measured half as much light at the "
+     'label': 'Largest plausible DLS ratio', 'help': ("Ratios above this are flagged. A ratio of 2 means that the DLS estimated half as much light at the "
                   "image as at the panel.\n"
                   "It is credible when the panel was photographed in full sun and the image was taken under heavy cloud "
                   "or in shade. It also happens when the DLS was covered or pointing away from the sun at that moment, "
@@ -1025,7 +1025,7 @@ FLAG_CRITERIA = (                                # (criterion, label from the li
 def capture_list_text(names, order, texts=None):
     """
     The captures of a flag as text, all of them, in the order of the run (order: the names of all the captures): three or
-    more neighbours are written as 'first to last'. texts: {capture: text written after its name}; the captures are then
+    more neighbors are written as 'first to last'. texts: {capture: text written after its name}; the captures are then
     written one by one
     """
     position = {name: number for number, name in enumerate(order)}

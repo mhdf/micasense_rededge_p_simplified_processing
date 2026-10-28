@@ -3,12 +3,12 @@
 RedEdge Image Class for Radiometric Correction
 
 Simplified from the MicaSense RedEdge Image Processing Library to avoid issues with missing 
-Exif metadata in RedEdge-P images (frameware v1.3.1 and v1.4.5)
+Exif metadata in RedEdge-P images (firmware v1.3.1 and v1.4.5)
 
 For the original/complete library, see:
 https://github.com/micasense/imageprocessing
 
-The MicaSense imagerocessing Library is licensed under the MIT License
+The MicaSense imageprocessing Library is licensed under the MIT License
 """
 
 # Standard Library Imports
@@ -276,7 +276,7 @@ def classify_irradiance_changes(irradiances, threshold=None):
     Find the changes between consecutive captures of the irradiance of one band, in acquisition order
     Inputs: positive irradiances; threshold is the relative change to report (default DLS_CHECKS['jump_threshold'])
     Outputs: list of dictionaries {'index', 'kind', 'change'}: 'spike' is a value that jumps and comes back to the level
-             of its neighbours (a single capture, e.g. a shaded or tilted DLS); 'step' is a change that persists
+             of its neighbors (a single capture, e.g. a shaded or tilted DLS); 'step' is a change that persists
              (e.g. the sun going behind a cloud). 'index' is the first capture after the change; 'change' is the
              relative change from the previous capture
     """
@@ -1104,7 +1104,7 @@ class Image(object):
         if( len(barcode) > 0 ):
             barcode = barcode[0]
             barcode_source = 'undistorted'
-        else: # if barcode is not detected in the undistroted image, use the QR code from the original image
+        else: # if barcode is not detected in the undistorted image, use the QR code from the original image
             gray = (self.image // 256).astype(np.uint8)
             barcode = decode(gray, symbols=[ZBarSymbol.QRCODE])
             if( len(barcode) == 0 ):

@@ -619,6 +619,26 @@ class ExampleImageTests(unittest.TestCase):
         centre = image.vignetting_correction()[470, 624]                       # half a pixel from the centre
         self.assertAlmostEqual(centre, 1.0, delta=1e-5)
 
+    def test_the_vignetting_correction_is_computed_once_for_a_band(self):
+        first, second = rct.Image(*self.band_files['Blue']), rct.Image(*self.band_files['Blue'])
+        self.assertIs(first.vignetting_correction(), second.vignetting_correction())
+        self.assertFalse(first.vignetting_correction().flags.writeable)         # shared: nobody can change it
+        self.assertIsNot(first.vignetting_correction(), rct.Image(*self.band_files['Green']).vignetting_correction())
+
+    def test_the_statistics_of_a_region_are_those_of_the_whole_image_mask(self):
+        from skimage import measure
+        image = rct.Image(*self.band_files['Blue'])
+        rows, columns = image.image.shape
+        for region in ([[730, 211], [834, 215], [829, 319], [727, 316]],            # a panel region
+                       [[-50, -40], [120.5, -10], [100, 90.7], [-20, 60]],            # partly outside the image
+                       [[1400, 1000], [1600, 1000], [1600, 1200], [1400, 1200]]):    # at the corner
+            mask = measure.grid_points_in_poly((rows, columns), np.fliplr(np.asarray(region, dtype=float)))
+            pixels = image.image[mask]
+            mean, std, count, saturated = image.region_stats(region, sat_threshold=60000)
+            self.assertEqual((count, saturated), (mask.sum(), (pixels > 60000).sum()), region)
+            self.assertAlmostEqual(mean, pixels.mean())
+            self.assertAlmostEqual(std, pixels.std())
+
     def test_an_image_without_a_vignetting_model_is_a_clear_error(self):
         path, metadata = self.band_files['Blue']
         metadata = {key: value for key, value in metadata.items() if 'VignettingPolynomial2D' not in key}

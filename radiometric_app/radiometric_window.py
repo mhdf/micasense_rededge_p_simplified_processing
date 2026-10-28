@@ -1229,9 +1229,12 @@ class RadiometricFrame:
         self.buttons['panel_check'].state(['disabled'])
         self.status.configure(text='Measuring the panel captures...', style='Muted.TLabel')
 
+        def report(event):
+            self.events.put(('panel_check_progress', event['message']))
+
         def work():
             try:
-                self.events.put(('panel_check', wf.check_panel_captures(config, self.root_folder)))
+                self.events.put(('panel_check', wf.check_panel_captures(config, self.root_folder, report)))
             except Exception as error:
                 self.events.put(('panel_check_failed', f"{type(error).__name__}: {error}"))
         threading.Thread(target=work, daemon=True).start()
@@ -1857,6 +1860,9 @@ class RadiometricFrame:
             self._set_busy(False)
         elif kind == 'orientations':
             self._show_orientations(*payload)
+        elif kind == 'panel_check_progress':
+            self.status.configure(text=f"Checking the panel captures: {payload[0].lower() + payload[1:]}...",
+                                  style='Muted.TLabel')
         elif kind == 'panel_check':
             self.buttons['panel_check'].state(['!disabled'])
             self._show_panel_check(*payload)

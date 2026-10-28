@@ -935,6 +935,10 @@ def read_band_definitions(image_paths, exiftool_path=None):
 
 
 #
+# The vignetting corrections already computed, by model, size and coefficients (see Image.vignetting_correction)
+_VIGNETTING_CACHE = {}
+
+
 class Image(object):
 
     """
@@ -1028,11 +1032,18 @@ class Image(object):
         """
         if image is None:
             image = self.image
-        rev_panel_pts = np.fliplr( region )  # the region is (x, y); the mask works in (row, column)
+        rev_panel_pts = np.fliplr( np.asarray(region, dtype=float) )  # the region is (x, y); the mask works in (row, column)
         rows, columns = image.shape[0:2]
-        mask = measure.grid_points_in_poly((rows, columns), rev_panel_pts)
-        num_pixels = mask.sum()
-        panel_pixels = image[mask]
+        # only the pixels of the box around the region are tested (the same pixels as on the whole image, much faster)
+        top, left = (max(int(np.floor(value)), 0) for value in rev_panel_pts.min(axis=0))
+        bottom, right = int(np.ceil(rev_panel_pts[:, 0].max())) + 1, int(np.ceil(rev_panel_pts[:, 1].max())) + 1
+        bottom, right = min(bottom, rows), min(right, columns)
+        if bottom <= top or right <= left:
+            panel_pixels = image[:0, :0].ravel()
+        else:
+            mask = measure.grid_points_in_poly((bottom - top, right - left), rev_panel_pts - [top, left])
+            panel_pixels = image[top:bottom, left:right][mask]
+        num_pixels = panel_pixels.size
         stdev = panel_pixels.std()
         mean_value = panel_pixels.mean()
         saturated_count = 0
@@ -1052,15 +1063,29 @@ class Image(object):
         Outputs: array of the size of the image, 1 where the lens does not darken the image and above 1 towards the edges
         """
         height, width = self.image.shape[:2]
-        rows, columns = np.mgrid[0:height, 0:width]
         if self.vignetting_model == 'radial':
+            key = ('radial', height, width, tuple(self.vignetting_center), tuple(self.vignetting_polynomial))
+        else:
+            key = ('2d', height, width, tuple(self.k), tuple(self.e))
+        cached = _VIGNETTING_CACHE.get(key)                 # the same for every image of one band of one camera
+        if cached is not None:
+            return cached
+        if self.vignetting_model == 'radial':
+            rows, columns = np.mgrid[0:height, 0:width]
             distance = np.hypot(columns - self.vignetting_center[0], rows - self.vignetting_center[1])
-            return 1.0 / np.polyval(list(reversed(self.vignetting_polynomial)) + [1.0], distance)
-        x, y = columns / width, rows / height
-        polynomial = np.zeros((height, width), dtype=float)
-        for number, coefficient in enumerate(self.k):
-            polynomial += coefficient * x ** self.e[2 * number] * y ** self.e[2 * number + 1]
-        return 1.0 / polynomial
+            correction = 1.0 / np.polyval(list(reversed(self.vignetting_polynomial)) + [1.0], distance)
+        else:
+            # each term is c x^ex y^ey, with x of the column and y of the row: the sum over the terms is the product of
+            # a (rows x terms) matrix of y^ey and a (terms x columns) matrix of c x^ex
+            x, y = np.arange(width) / width, np.arange(height) / height
+            ys = np.stack([y ** self.e[2 * number + 1] for number in range(len(self.k))], axis=1)
+            xs = np.stack([coefficient * x ** self.e[2 * number] for number, coefficient in enumerate(self.k)])
+            correction = 1.0 / (ys @ xs)
+        correction.setflags(write=False)
+        if len(_VIGNETTING_CACHE) >= 16:                    # a few bands of a few cameras at most
+            _VIGNETTING_CACHE.pop(next(iter(_VIGNETTING_CACHE)))
+        _VIGNETTING_CACHE[key] = correction
+        return correction
 
 
     # Row gradient correction: the multiplier of each row

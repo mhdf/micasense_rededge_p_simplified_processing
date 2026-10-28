@@ -1281,9 +1281,9 @@ def _check_moments(config, panels, info, use_dls, result):
                                            f"{100 * value:.1f} % between them (limit {100 * spread_limit:g} %)")
 
 
-def check_panel_captures(config, root='.'):
+def check_panel_captures(config, root='.', progress=None):
     """
-    Measure and check the panel captures without correcting anything, for the table of the UI
+    Measure and check the panel captures without correcting anything, for the table of the UI (progress: as in run)
     Outputs: (rows, the flags): one row per panel capture {'capture', 'time', 'moment', 'heading', 'orientation', 'used',
              'departure' (the largest of its moment, or None), 'band', 'flag' (text, '' when nothing is wrong)}
     """
@@ -1295,7 +1295,7 @@ def check_panel_captures(config, root='.'):
     use_dls = config['CORRECTION.use_dls'] and config['INPUTS.output_product'] == 'panel_reflectance'
     with warnings.catch_warnings(record=True):
         warnings.simplefilter('always')
-        calibrate_panel_captures(config, root, levels, flight_names, True, use_dls, result)
+        calibrate_panel_captures(config, root, levels, flight_names, True, use_dls, result, progress)
     limit = config['CHECKS.panel_capture_spread_tolerance']
     rows = []
     for moment in ('before', 'after'):

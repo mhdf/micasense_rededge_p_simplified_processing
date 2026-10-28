@@ -568,6 +568,42 @@ class ExampleImageTests(unittest.TestCase):
         with self.assertRaisesRegex(rct.MetadataError, "'EXIF:ISOSpeed' is not numeric"):
             rct.Image(path, dict(metadata, **{'EXIF:ISOSpeed': 'abc'}))
 
+    @staticmethod
+    def micasense_radiance(image):
+        """
+        The radiance as MicaSense computes it (micasense/imageprocessing, Image.vignette with the 2D polynomial and
+        Image.radiance), with its transposes, written with the values of rct.Image
+        """
+        image_raw = np.copy(image.image).T
+        x_dim, y_dim = image.image.shape[1], image.image.shape[0]
+        x, y = np.meshgrid(np.arange(x_dim), np.arange(y_dim))
+        x, y = x.T, y.T
+        xv, yv = x.T / x_dim, y.T / y_dim
+        p2 = np.zeros_like(xv, dtype=float)
+        for i, c in enumerate(image.k):
+            p2 += c * xv ** image.e[2 * i] * yv ** image.e[2 * i + 1]
+        V = (1. / p2).T
+        R = 1.0 / (1.0 + image.a2 * y / image.exposure_time - image.a3 * y)
+        L = V * R * (image_raw - image.black_levels.mean())
+        L[L < 0] = 0
+        return (L.astype(float) / (image.gain * image.exposure_time) * image.a1 / float(2 ** image.bits_per_pixel)).T
+
+    def test_the_radiance_is_the_one_of_micasense_in_every_band(self):
+        for band in BANDS:
+            image = rct.Image(*self.band_files[band])
+            self.assertTrue(np.allclose(image.digital_numbers_to_radiance(), self.micasense_radiance(image),
+                                        rtol=1e-12, atol=0), band)
+
+    def test_the_vignetting_correction_is_larger_along_the_long_side_of_the_image(self):
+        # the image is wider than tall, so the middle of the left edge is further from the centre than the middle of the top
+        image = rct.Image(*self.band_files['Blue'])
+        correction = image.vignetting_correction()
+        height, width = correction.shape
+        self.assertEqual((width, height), (1456, 1088))
+        self.assertAlmostEqual(correction[height // 2, width // 2], 1.0, delta=0.02)
+        self.assertGreater(correction[height // 2, 0], correction[0, width // 2] + 0.3)
+        self.assertEqual(image.row_gradient_correction().shape, (height, 1))
+
     def test_panel_detection_records_an_audit(self):
         panel_files = rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0005'), BANDS, self.exiftool_path)
         path, metadata = panel_files['Blue']
@@ -579,10 +615,9 @@ class ExampleImageTests(unittest.TestCase):
         self.assertAlmostEqual(audit['reflectance_level'] / audit['radiance_mean'], factor)
         self.assertEqual(audit['n_saturated'], 0)
         self.assertGreater(audit['n_pixels'], 0)
-        # the original code (panel region measured on the distorted image) gave 2.03712; sampling the region on the
-        # undistorted image, where the QR code is found, changes it by about -0.3 %
-        self.assertAlmostEqual(factor, 2.0371197142446085, delta=0.01 * 2.0371197142446085)
-        self.assertLess(factor, 2.0371197142446085)
+        # 2.0312 before the axes of the vignetting correction were fixed: the panel is in the upper part of the photo
+        # (row 265 of 1088), where the swapped correction made the radiance 18 % too high
+        self.assertAlmostEqual(factor, 2.3933485545501494, delta=1e-6 * 2.3933485545501494)
         self.assertLess(audit['radiance_std'] / audit['radiance_mean'], 0.03)
 
     def test_panel_detection_without_qr_code_is_a_clear_error(self):

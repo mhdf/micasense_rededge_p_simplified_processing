@@ -226,7 +226,7 @@ def check_dls_capture(panel_images, images, ratios=None):
                                 'value': float(departure), 'limit': DLS_CHECKS['band_ratio_tolerance']})
 
     # 2. Irradiance of the DLS compared with the irradiance estimated from the panel. It differs between bands
-    #    (14 % in the example, a calibration difference between camera and DLS), so it is only reported here; compare it
+    #    (18 % in the example, a calibration difference between camera and DLS), so it is only reported here; compare it
     #    between two panel captures with compare_panel_captures()
     estimates = {}
     for band, panel in panel_images.items():
@@ -971,59 +971,48 @@ class Image(object):
         return mean_value, stdev, num_pixels, saturated_count
 
 
+    # Vignetting correction: the multiplier of each pixel
+    def vignetting_correction(self):
+        """
+        1 / polynomial of the position of the pixel, with the coefficients (XMP:VignettingPolynomial2D) and the pairs of
+        exponents (XMP:VignettingPolynomial2DName) written by the camera, as in MicaSense's Image.vignette(): x is the
+        position across the width (column / width, 0 at the left) and y down the height (row / height, 0 at the top)
+        Outputs: array of the size of the image, 1 where the lens does not darken the image and above 1 towards the edges
+        """
+        height, width = self.image.shape[:2]
+        rows, columns = np.mgrid[0:height, 0:width]
+        x, y = columns / width, rows / height
+        polynomial = np.zeros((height, width), dtype=float)
+        for number, coefficient in enumerate(self.k):
+            polynomial += coefficient * x ** self.e[2 * number] * y ** self.e[2 * number + 1]
+        return 1.0 / polynomial
+
+
+    # Row gradient correction: the multiplier of each row
+    def row_gradient_correction(self):
+        """
+        1 / (1 + a2 * row / exposure time - a3 * row), with a2 and a3 from XMP:RadiometricCalibration, as in MicaSense's
+        Image.radiance(): the sensor reads the image row by row, so the rows further down need a small correction
+        Outputs: array of one column (height x 1), to be multiplied by the image
+        """
+        rows = np.arange(self.image.shape[0], dtype=float)[:, np.newaxis]
+        return 1.0 / (1.0 + self.a2 * rows / self.exposure_time - self.a3 * rows)
+
+
     # Convert DNs to radiance
     def digital_numbers_to_radiance(self):
-        
-        # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by MicaSense (vignette_map)
-        k = self.k
-        e = self.e
-
-        # Dark current pixel values
+        """
+        Radiance (W/m2/sr/nm) of every pixel, in the geometry of the original image, as in MicaSense's Image.radiance():
+        1. subtract the dark level (mean of EXIF:BlackLevel);
+        2. multiply by the vignetting and row gradient corrections; negative values (noise around the dark level) become 0;
+        3. divide by gain x exposure time (gain = ISO / 100), multiply by a1 (XMP:RadiometricCalibration) and divide by
+           2 ** bits per pixel, because the coefficients are given for values scaled to 0-1
+        """
         dark_level = self.black_levels.mean()
-        
-        # Coordinate grid across image, seem swapped because of transposed vignette
-        x, y = np.meshgrid( np.arange(self.size[1]), np.arange(self.size[0]) )
-
-        # Vignette
-        # meshgrid returns transposed arrays
-        x = x.T
-        y = y.T
-        ##
-        xv = x.T / self.size[1]
-        yv = y.T / self.size[0]
-        p2 = np.zeros_like(xv, dtype=float)
-        for valT, c in enumerate(k):
-            ex  = e[2 * valT]
-            ey  = e[2 * valT + 1]
-            p2 += c * xv ** ex * yv ** ey
-        V = (1. / p2).T  #
-        # plt.imshow( V )
-
-        # apply image correction methods to raw image
-        # step 1 - row gradient correction, vignette & radiometric calibration:
-        
-        # row gradient correction
-        R = 1.0 / (1.0 + self.a2 * y / self.exposure_time - self.a3 * y)
-        
-        # subtract the dark level and adjust for vignette and row gradient
-        # LT = VT  * RT * ( (imgT/normFactT) - (dark_level/normFactT) )
-        L = V * R * ( self.image - dark_level )
-        
-        # Floor any negative radiance's to zero (can happen due to noise around black_level)
+        L = self.vignetting_correction() * self.row_gradient_correction() * (self.image - dark_level)
         L[L < 0] = 0
-        # L = np.round(L).astype(np.uint16)
-        # plt.imshow( L )
-        
-        # Apply the radiometric calibration - i.e. scale by the gain-exposure product and
-        # multiply with the radiometric calibration coefficient
-        # need to normalize by 2^16 for 16 bit images
-        # because coefficients are scaled to work with input values of max 1.0
-        dn_maximum     = float(2**self.bits_per_pixel)
-        image_radiance = ( L.astype(float) / (self.gain * self.exposure_time) * self.a1 ) / dn_maximum
-        # plt.imshow( image_radiance )
-
-        #
-        return image_radiance
+        dn_maximum = float(2 ** self.bits_per_pixel)
+        return L.astype(float) / (self.gain * self.exposure_time) * self.a1 / dn_maximum
 
 
     # Horizontal irradiance measured by the DLS for this band

@@ -1,5 +1,5 @@
 """
-Radiometric correction workflow for Micasense RedEdge-P captures - configuration, validation and runner
+Radiometric correction workflow for MicaSense RedEdge-P captures - configuration, validation and runner
 
 This module has no user interface. Everything the workflow needs is in a flat configuration dictionary
 (FIELDS describes each key, so that a window can be built from it) and the result is a dictionary that is also saved
@@ -1201,7 +1201,7 @@ def _write_result(path, result):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Radiometric correction of Micasense RedEdge-P captures")
+    parser = argparse.ArgumentParser(description="Radiometric correction of MicaSense RedEdge-P captures")
     parser.add_argument('--config', help="json file with the values to change from the defaults (also the "
                                          "radiometric_result.json or a provenance file of a past run, to repeat it)")
     parser.add_argument('--request-json', help="json request: {'version': 1, 'root': folder, 'config': {...}}")

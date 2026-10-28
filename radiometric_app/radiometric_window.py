@@ -47,7 +47,7 @@ SECTIONS = [('INPUTS', 'Inputs'), ('PANEL', 'Reference panel'), ('CORRECTION', '
 # the keys that are shown in another page than their prefix says
 PAGE_TITLES = {'CORRECTION': 'DLS (Downwelling Light Sensor)'}          # where it is not the title in the list of pages
 PAGE_PREFIXES = {'CORRECTION': ('CORRECTION', 'CHECKS')}
-FIELD_PAGE = {}
+FIELD_PAGE = {'PANEL.panels_used': 'INPUTS', 'PANEL.panel_orientation': 'INPUTS'}
 
 # The keys that hold the name of a capture, typed or chosen by looking at the captures of the images folder: the text
 # of the choice of no capture, for the key that may be empty
@@ -64,7 +64,7 @@ PAGE_HELP = {
                "- Choose the images folder and the results folder.\n"
                "- Choose what is written: reflectance with the panel (the usual), reflectance from the DLS only, or "
                "radiance.\n"
-               "- Choose the capture that shows the reference panel (and the one taken after the flight, if there is one).\n"
+               "- Choose the captures that show the reference panel, before and after the flight, and check them.\n"
                "- Choose the captures to correct.\n"
                "- Then check the inputs and the regions of the panel in the Reference panel page."),
     'PANEL': ("Reference panel",
@@ -74,7 +74,8 @@ PAGE_HELP = {
               "- Bands of the camera: the table of the bands, with the buttons to detect them from a capture or to fill them "
               "from a camera preset.\n"
               "- Reflectance of the panel: where the value of each band comes from.\n"
-              "- Panel measurement: how the panel is measured, and what is done with a second panel capture.\n"
+              "- Panel measurement: how the panel is measured in its image (the panel captures and how they are used are "
+              "chosen in the Inputs page).\n"
               "- Reference panel regions: check the inputs, then check, accept or draw the region of the panel in each band."),
     'CORRECTION': ("DLS (Downwelling Light Sensor)", wf.GROUP_NOTES['Correction with the DLS'],
                    'Checks of the DLS data (limits)', wf.GROUP_NOTES['Checks of the DLS data (limits)']),
@@ -142,6 +143,21 @@ PROFILE_NOTES = {
                             "Running does not make a profile, but every run writes the complete configuration that it used "
                             "in radiometric_result.json (and in the provenance record of each capture), next to the results."),
 }
+
+# What each output uses: the reflectance from the DLS alone only compares the panel with the DLS (the panel captures and
+# their measurement stay, the choice of the panels does not), and the radiance uses neither the panel nor the DLS
+PANEL_CHOICE_KEYS = ('PANEL.panels_used', 'PANEL.panel_orientation')
+PANEL_KEYS = ('INPUTS.reference_panel_capture', 'PANEL.reflectance_source', 'PANEL.spectral_file',
+              'PANEL.percent_inner_area', 'PANEL.saturation_threshold', 'PANEL.manual_regions_file') + PANEL_CHOICE_KEYS
+DLS_LIMIT_KEYS = ('CHECKS.band_ratio_tolerance', 'CHECKS.ratio_range_min', 'CHECKS.ratio_range_max',
+                  'CHECKS.max_sun_angle_discrepancy_deg', 'CHECKS.jump_threshold', 'CHECKS.panel_drift_tolerance',
+                  'CHECKS.panel_capture_spread_tolerance', 'CHECKS.panel_illumination_tolerance')
+PANEL_CHECK_NOTE = ("Measures all the panel captures listed, without correcting anything, and shows them in a table: the "
+                    "moment of each one (before or after the flight, from its time), its heading against the sun, and how "
+                    "far it is from the other captures of its moment (the largest band). A capture that departs more than "
+                    "the spread limit (DLS page) is flagged.\n"
+                    "Leave out the selected removes them from the panel captures and adds them to the captures to leave "
+                    "out.")
 
 # The fields that show live information in the help column, and the information
 DETAILS = {'INPUTS.image_captures': 'captures_details', 'INPUTS.file_pattern': 'pattern_details',
@@ -295,6 +311,7 @@ class RadiometricFrame:
         except (ValueError, OSError) as error:
             self.model = ConfigModel()
             self.load_message = f"{self.config_path} was not used: {error}"
+        merged = self._merge_old_panel_field()
         self.variables = {}
         self.entries = {}
         self.pages = {}
@@ -302,6 +319,11 @@ class RadiometricFrame:
         self.source_widgets = {'values': [], 'spectral_file': []}
         self.band_table = None
         self.buttons = {}
+        self.field_widgets = {}                      # the widgets of each field, to enable and disable them
+        self.orientation_names = {}                  # the text shown in the list of the orientations -> value saved
+        self.orientation_after = None
+        self.output_forced = None                    # the DLS correction set by the user before an output forced it
+        self.forcing_output = False
         self.syncing = False
         self.loading_values = False                  # a profile is being loaded: its values are not corrected
         self.results_before = None                   # the results folder before the last change (see _follow_results_folder)
@@ -326,8 +348,12 @@ class RadiometricFrame:
         self._update_pattern_preview()
         self.exiftool_after = self.exiftool_state = None
         self._check_exiftool()
+        self._apply_output_state()
+        self._schedule_orientations(10)
         if self.load_message:
             self.log(self.load_message, 'error')
+        if merged:
+            self.log(merged)
         self._after_id = self.parent.after(100, self._poll)
 
     def close(self):
@@ -344,6 +370,12 @@ class RadiometricFrame:
             except self.tk.TclError:
                 pass
             self.preview_after = None
+        if getattr(self, 'orientation_after', None) is not None:
+            try:
+                self.parent.after_cancel(self.orientation_after)
+            except self.tk.TclError:
+                pass
+            self.orientation_after = None
         if self.summary_after is not None:
             try:
                 self.parent.after_cancel(self.summary_after)
@@ -487,9 +519,16 @@ class RadiometricFrame:
         row.pack(fill='x', pady=(0, 9))
         details = getattr(self, DETAILS[key]) if key in DETAILS else None
         self.help_panel.describe(row, field['label'], field_help(field), '', '', details)
+        widgets = self.field_widgets.setdefault(key, [])
+        if key == 'PANEL.panel_orientation':
+            self._build_orientation_field(row, field, widgets)
+            self._build_panel_check(page)
+            return
         if kind == 'bool':
             variable = tk.BooleanVar(value=self.model.get(key))
-            ttk.Checkbutton(row, text=field['label'], variable=variable).pack(anchor='w')
+            check = ttk.Checkbutton(row, text=field['label'], variable=variable)
+            check.pack(anchor='w')
+            widgets.append(check)
             variable.trace_add('write', lambda *_, key=key, variable=variable: self._changed(key, variable.get()))
             self.variables[key] = variable
         else:
@@ -506,6 +545,7 @@ class RadiometricFrame:
                     variable.trace_add('write', lambda *_, key=key, band=band, variable=variable:
                                        self._band_changed(key, band, variable.get()))
                     self.variables[key][band], self.entries[key][band] = variable, entry
+                    widgets.append(entry)
                     if key == 'PANEL.reflectance_by_band':
                         self.source_widgets['values'].append(entry)
             else:
@@ -528,18 +568,22 @@ class RadiometricFrame:
                 else:
                     entry = ttk.Entry(line, textvariable=variable, width=12 if kind in ('float', 'int') else 56)
                 entry.pack(side='left', fill='x', expand=kind in ('folder', 'file', 'text'))
+                widgets.append(entry)
                 if kind in ('folder', 'file'):
                     command = self.browse_spectrum if key == 'PANEL.spectral_file' else (
                         lambda key=key, kind=kind: self._browse(key, kind))
                     browse = ttk.Button(line, text='Browse...', command=command)
                     browse.pack(side='left', padx=(6, 0))
+                    widgets.append(browse)
                     if key == 'PANEL.spectral_file':
                         importer = ttk.Button(line, text='Preview and format...', command=self.import_spectrum)
                         importer.pack(side='left', padx=(6, 0))
+                        widgets.append(importer)
                         self.source_widgets['spectral_file'].extend([entry, browse, importer])
                 if key in CAPTURE_KEYS:
-                    ttk.Button(line, text='Select...', command=lambda key=key: self.choose_panel_capture(key)).pack(
-                        side='left', padx=(6, 0))
+                    select = ttk.Button(line, text='Select...', command=lambda key=key: self.choose_panel_capture(key))
+                    select.pack(side='left', padx=(6, 0))
+                    widgets.append(select)
                 if key in ('INPUTS.image_captures', 'INPUTS.excluded_captures'):
                     ttk.Button(line, text='Select...', command=lambda key=key: self.choose_captures(key)).pack(
                         side='left', padx=(6, 0))
@@ -655,6 +699,7 @@ class RadiometricFrame:
         self.buttons['check_here'].pack(side='left')
         self.buttons['regions'] = ttk.Button(line, text='Check / draw panel regions...', command=self.draw_regions)
         self.buttons['regions'].pack(side='left', padx=(6, 0))
+        self.field_widgets.setdefault('PANEL.manual_regions_file', []).append(self.buttons['regions'])
         self.inputs_status = ttk.Label(holder, text='', style='Muted.TLabel', wraplength=760, justify='left')
         self.inputs_status.pack(anchor='w', pady=(6, 0))
 
@@ -808,10 +853,9 @@ class RadiometricFrame:
         if not names:
             self.log('There are no captures in the images folder (check the folder and the file name pattern).', 'error')
             return
-        moment = 'before the flight' if key == 'INPUTS.reference_panel_capture' else 'after the flight (none: no second)'
         chosen = pick_captures(self.parent.winfo_toplevel(), names, selected=wf.capture_names(self.model.get(key)),
-                               multiple=True, title=f'Select the panel capture(s) {moment}',
-                               message='Click the panel capture, or several taken in a row (averaged)',
+                               multiple=True, title='Select the panel captures (before and after the flight)',
+                               message='Click every capture of the panel, before and after the flight',
                                **self._picker_arguments())
         if chosen is not None:
             self.set_value(key, ', '.join(chosen))
@@ -1002,7 +1046,7 @@ class RadiometricFrame:
     def _dls_correction_changed(self):
         """ Turning the DLS correction off while a choice that needs it is made goes back to 'first', and says so """
         chosen = self.variables.get('PANEL.panels_used')
-        if self.loading_values or chosen is None or self._panels_used_allowed(chosen.get()):
+        if self.loading_values or self.forcing_output or chosen is None or self._panels_used_allowed(chosen.get()):
             return                                   # a profile keeps its values: the check of the inputs reports them
         previous = self.model.fields['PANEL.panels_used']['labels'][chosen.get()]
         chosen.set('first')
@@ -1039,6 +1083,11 @@ class RadiometricFrame:
             self.preview_after = self.parent.after(400, self._update_pattern_preview)
         if key == 'INPUTS.exiftool_path':
             self._check_exiftool()
+        if key in ('INPUTS.images_folder', 'INPUTS.file_pattern', 'INPUTS.reference_panel_capture',
+                   'INPUTS.exiftool_path', 'CHECKS.heading_offset_deg'):
+            self._schedule_orientations()
+        if key == 'INPUTS.output_product':
+            self._apply_output_state()
         if key == 'PANEL.reflectance_source':
             self._apply_source_state()
         if key.startswith('PANEL.spectral_') or key in ('PANEL.band_center_wavelengths', 'PANEL.band_bandwidths',
@@ -1047,14 +1096,249 @@ class RadiometricFrame:
                 self.parent.after_cancel(self.summary_after)
             self.summary_after = self.parent.after(400, self._update_spectral_summary)
 
+    # --- the panel captures: the old second field, the orientations, the check, the fields of each output ----------
+
+    def _merge_old_panel_field(self):
+        """
+        The panel captures after the flight of an earlier configuration (INPUTS.reference_panel_capture_after) join the
+        panel captures, where the moments are found from the times. Outputs: the text for the log, or None
+        """
+        after = wf.capture_names(self.model.get('INPUTS.reference_panel_capture_after'))
+        if not after:
+            return None
+        captures = wf.capture_names(self.model.get('INPUTS.reference_panel_capture'))
+        merged = captures + [name for name in after if name not in captures]
+        if 'INPUTS.reference_panel_capture' in self.variables:
+            self.set_value('INPUTS.reference_panel_capture', ', '.join(merged), replace=True)
+            self.set_value('INPUTS.reference_panel_capture_after', '', replace=True)
+        else:
+            self.model.set('INPUTS.reference_panel_capture', ', '.join(merged))
+            self.model.set('INPUTS.reference_panel_capture_after', '')
+        return (f"The panel captures after the flight of this configuration ({', '.join(after)}) are now in Reference panel "
+                f"captures: their moments are found from their times.")
+
+    def _build_orientation_field(self, row, field, widgets):
+        """ The orientation: a list of the orientations found among the panel captures (see _show_orientations) """
+        tk, ttk = self.tk, self.ttk
+        key = field['key']
+        ttk.Label(row, text=field['label'], style='Heading.TLabel').pack(anchor='w')
+        line = ttk.Frame(row)
+        line.pack(fill='x', pady=(3, 0))
+        variable = tk.StringVar(value=self.model.get(key))
+        shown = tk.StringVar()
+        entry = ttk.Combobox(line, textvariable=shown, state='readonly', width=70)
+        entry.pack(side='left')
+        self.orientation_info = ttk.Label(row, text='', style='Muted.TLabel', wraplength=760, justify='left')
+        self.orientation_info.pack(anchor='w', pady=(3, 0))
+        shown.trace_add('write', lambda *_: variable.set(self.orientation_names.get(shown.get(), variable.get())))
+        variable.trace_add('write', lambda *_: (self._changed(key, variable.get()), self._show_orientation_value()))
+        self.variables[key], self.entries[key], self.orientation_shown = variable, entry, shown
+        widgets.append(entry)
+        self._show_orientations(None, None)
+
+    def _build_panel_check(self, page):
+        """ The button that measures the panel captures and shows them in a table """
+        ttk = self.ttk
+        holder = ttk.Frame(page)
+        holder.pack(fill='x', pady=(0, 9))
+        self.help_panel.describe(holder, 'Check panel captures', PANEL_CHECK_NOTE)
+        self.buttons['panel_check'] = ttk.Button(holder, text='Check panel captures...', command=self.check_panel_captures)
+        self.buttons['panel_check'].pack(anchor='w')
+        self.field_widgets.setdefault('INPUTS.reference_panel_capture', []).append(self.buttons['panel_check'])
+
+    @staticmethod
+    def _orientation_value_text(value):
+        return 'All the panel captures' if str(value).strip().lower() == 'all' else f"Heading {value} deg"
+
+    def _show_orientations(self, groups, problem):
+        """
+        Fill the list of the orientations: all the panel captures, and one entry for each orientation found (groups: see
+        wf.orientation_groups; None while they are not known). With one orientation only, the list is not needed
+        """
+        self.orientation_names = {}
+        value = self.model.get('PANEL.panel_orientation')
+        if groups and len(groups) > 1:
+            counts = '; '.join(f"heading {group['heading']}: {len(group['captures'])}" for group in groups)
+            self.orientation_names[f"All the panel captures ({counts})"] = 'all'
+        else:
+            self.orientation_names['All the panel captures'] = 'all'
+        for group in groups or []:
+            self.orientation_names[f"Only {wf.orientation_label(group)}"] = str(group['heading'])
+        if value not in self.orientation_names.values():
+            self.orientation_names[f"{self._orientation_value_text(value)} (not among these panel captures)"] = value
+        self.entries['PANEL.panel_orientation'].configure(values=list(self.orientation_names))
+        self._show_orientation_value()
+        if problem:
+            text = f"The orientations of the panel captures are not known: {problem}"
+        elif groups is None:
+            text = ''
+        elif len(groups) == 1:
+            text = f"All the panel captures have one orientation: {wf.orientation_label(groups[0])}."
+        else:
+            text = f"{len(groups)} orientations among the panel captures."
+        self.orientation_info.configure(text=text)
+        self.orientation_single = groups is not None and len(groups) <= 1 and value == 'all'
+        self._apply_output_state()
+
+    def _show_orientation_value(self):
+        value = self.model.get('PANEL.panel_orientation')
+        for text, name in self.orientation_names.items():
+            if name == value:
+                if self.orientation_shown.get() != text:
+                    self.orientation_shown.set(text)
+                return
+
+    def _schedule_orientations(self, delay=800):
+        """ Read the headings of the panel captures a moment after their list changes, in another thread """
+        if getattr(self, 'orientation_after', None) is not None:
+            self.parent.after_cancel(self.orientation_after)
+        self.orientation_after = self.parent.after(delay, self._start_orientations)
+
+    def _start_orientations(self):
+        self.orientation_after = None
+        config, problems = self.model.config()
+        if problems:
+            return
+        threading.Thread(target=self._orientations_worker, args=(config,), daemon=True).start()
+
+    def _orientations_worker(self, config):
+        """ The heading against the sun of each panel capture, from the metadata of its first file """
+        try:
+            folder = wf.resolve_path(self.root_folder, config['INPUTS.images_folder'])
+            exiftool = wf.exiftool_executable(config, self.root_folder)
+            headings = {}
+            for name in wf.panel_capture_groups(config)[0]:
+                paths = rct.find_capture_paths(folder, name, config['INPUTS.file_pattern'])
+                metadata = rct._read_metadata(paths[:1], exiftool)[0]
+                headings[name] = rct.heading_to_sun_deg(metadata, config['CHECKS.heading_offset_deg'])
+            self.events.put(('orientations', (wf.orientation_groups(headings), None)))
+        except Exception as error:
+            self.events.put(('orientations', (None, f"{type(error).__name__}: {error}")))
+
+    def check_panel_captures(self):
+        """ Measure the panel captures without correcting anything, and show them in a table (in another thread) """
+        config, problems = self.model.config()
+        if not problems:
+            problems = wf.validate_config(config, self.root_folder, regions_file_may_be_missing=True)
+        if problems:
+            for problem in problems:
+                self.log(problem, 'error')
+            self.status.configure(text='The panel captures cannot be checked: see the problems in the log.',
+                                  style='Error.TLabel')
+            return
+        self.buttons['panel_check'].state(['disabled'])
+        self.status.configure(text='Measuring the panel captures...', style='Muted.TLabel')
+
+        def work():
+            try:
+                self.events.put(('panel_check', wf.check_panel_captures(config, self.root_folder)))
+            except Exception as error:
+                self.events.put(('panel_check_failed', f"{type(error).__name__}: {error}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_panel_check(self, rows, flags):
+        """ The table of the panel captures, with the button that leaves out the selected ones """
+        tk, ttk = self.tk, self.ttk
+        self.status.configure(text=f"{len(rows)} panel capture(s) checked.", style='Muted.TLabel')
+        window = tk.Toplevel(self.parent.winfo_toplevel())
+        window.title('Panel captures')
+        window.transient(self.parent.winfo_toplevel())
+        window.configure(background=COLORS['background'])
+        frame = ttk.Frame(window, padding=12)
+        frame.pack(fill='both', expand=True)
+        limit = 100 * self.model.config()[0]['CHECKS.panel_capture_spread_tolerance']
+        ttk.Label(frame, text=f"Each capture against the median of the others of its moment, on what is averaged (largest "
+                              f"band). Flagged above {limit:g} %.", style='Muted.TLabel').pack(anchor='w', pady=(0, 6))
+        columns = ('time', 'moment', 'heading', 'orientation', 'departure', 'flag')
+        tree = ttk.Treeview(frame, columns=columns, selectmode='extended', height=min(max(len(rows), 4), 16))
+        for column, title, width in (('#0', 'Capture', 110), ('time', 'Time', 80), ('moment', 'Moment', 70),
+                                     ('heading', 'Heading', 70), ('orientation', 'Orientation', 170),
+                                     ('departure', 'Departure', 130), ('flag', 'Flag', 300)):
+            tree.heading(column, text=title, anchor='w')
+            tree.column(column, width=width, anchor='w', stretch=column == 'flag')
+        tree.tag_configure('flagged', foreground=COLORS['automatic'])                 # the colour of the flags of the log
+        for row in rows:
+            departure = '' if row['departure'] is None else f"{100 * row['departure']:+.1f} % ({row['band']})"
+            heading = '' if row['heading'] is None else f"{row['heading']:.0f} deg"
+            tree.insert('', 'end', iid=row['capture'], text=row['capture'], tags=('flagged',) if row['flag'] else (),
+                        values=(str(row['time'])[11:], row['moment'], heading, row['orientation'], departure, row['flag']))
+        tree.pack(fill='both', expand=True)
+        other = [flag for flag in flags if not flag.startswith('Panel capture ')]
+        if other:
+            ttk.Label(frame, text='\n'.join(other), style='Muted.TLabel', wraplength=900, justify='left').pack(
+                anchor='w', pady=(6, 0))
+        line = ttk.Frame(frame)
+        line.pack(fill='x', pady=(8, 0))
+
+        def leave_out():
+            chosen = list(tree.selection())
+            if chosen:
+                self.leave_out_panel_captures(chosen)
+                for name in chosen:
+                    tree.delete(name)
+        ttk.Button(line, text='Close', command=window.destroy).pack(side='right')
+        ttk.Button(line, text='Leave out the selected', command=leave_out).pack(side='right', padx=(0, 6))
+        self.panel_check_window = window
+
+    def leave_out_panel_captures(self, names):
+        """ Remove captures from the panel captures, and add them to the captures to leave out (so they are not corrected) """
+        captures = [name for name in wf.capture_names(self.model.get('INPUTS.reference_panel_capture')) if name not in names]
+        excluded = wf.capture_names(self.model.get('INPUTS.excluded_captures'))
+        self.set_value('INPUTS.reference_panel_capture', ', '.join(captures), replace=True)
+        self.set_value('INPUTS.excluded_captures', ', '.join(excluded + [name for name in names if name not in excluded]),
+                       replace=True)
+        self.log(f"Left out of the panel captures: {', '.join(names)} (also added to the captures to leave out).")
+
+    def _set_field_state(self, key, enabled):
+        for widget in self.field_widgets.get(key, []):
+            widget.state(['!disabled'] if enabled else ['disabled'])
+
+    def _apply_output_state(self):
+        """
+        Only the fields that the chosen output uses can be edited: the reflectance from the DLS alone does not choose among
+        the panels and always uses the DLS (its check box is on); the radiance uses neither the panel nor the DLS (its check
+        box is off). The DLS correction chosen before is given back when the output is the panel reflectance again
+        """
+        if not self.field_widgets:
+            return
+        output = self.model.get('INPUTS.output_product')
+        uses_panel, chooses_panels = output != 'radiance', output == 'panel_reflectance'
+        for key in PANEL_KEYS:
+            self._set_field_state(key, uses_panel and (chooses_panels or key not in PANEL_CHOICE_KEYS))
+        if getattr(self, 'orientation_single', False):
+            self._set_field_state('PANEL.panel_orientation', False)       # one orientation: nothing to choose
+        for key in DLS_LIMIT_KEYS:
+            self._set_field_state(key, output != 'radiance')
+        self._set_field_state('CORRECTION.use_dls', chooses_panels)
+        use = self.variables.get('CORRECTION.use_dls')
+        if use is not None and not self.loading_values:
+            self.forcing_output = True
+            try:
+                if chooses_panels and self.output_forced is not None:
+                    use.set(self.output_forced)
+                    self.output_forced = None
+                elif not chooses_panels:
+                    if self.output_forced is None:
+                        self.output_forced = bool(use.get())
+                    use.set(output == 'dls_reflectance')
+            finally:
+                self.forcing_output = False
+        if uses_panel:
+            self._apply_source_state()
+        elif self.band_table is not None:
+            self.band_table.set_reflectance_state(False)
+
+
     def _apply_source_state(self):
         """ Only the controls of the chosen source of the panel reflectance can be edited """
         source = self.model.get('PANEL.reflectance_source')
+        usable = self.model.get('INPUTS.output_product') != 'radiance'
         for name, widgets in self.source_widgets.items():
             for widget in widgets:
-                widget.state(['!disabled'] if name == source else ['disabled'])
+                widget.state(['!disabled'] if name == source and usable else ['disabled'])
         if self.band_table is not None:
-            self.band_table.set_reflectance_state(source == 'values')
+            self.band_table.set_reflectance_state(source == 'values' and
+                                                 self.model.get('INPUTS.output_product') != 'radiance')
 
     def _update_spectral_summary(self):
         self.summary_after = None
@@ -1319,6 +1603,10 @@ class RadiometricFrame:
                 self.set_value(key, ConfigModel.to_raw(field, values[key]), replace=True)
         finally:
             self.loading_values = False
+        merged = self._merge_old_panel_field()
+        if merged:
+            self.log(merged)
+        self._apply_output_state()
         if wf.configuration_from_json(data) is not data:                   # what a run wrote: its folders come with it
             self.status.configure(text=f"Settings of the run loaded from {path}. The results folder is the one of that run: "
                                        f"{values['INPUTS.results_folder']}", style='Muted.TLabel')
@@ -1567,6 +1855,15 @@ class RadiometricFrame:
         elif kind == 'regions_failed':
             self.log(payload, 'error')
             self._set_busy(False)
+        elif kind == 'orientations':
+            self._show_orientations(*payload)
+        elif kind == 'panel_check':
+            self.buttons['panel_check'].state(['!disabled'])
+            self._show_panel_check(*payload)
+        elif kind == 'panel_check_failed':
+            self.buttons['panel_check'].state(['!disabled'])
+            self.log(f"The panel captures were not checked: {payload}", 'error')
+            self.status.configure(text=f"The panel captures were not checked: {payload}", style='Error.TLabel')
 
     def _show_result(self, result):
         self.last_result = result

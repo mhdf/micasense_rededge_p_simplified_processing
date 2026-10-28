@@ -23,7 +23,9 @@
 
 ## Two panel captures (before and after the flight)
 
-&emsp;&emsp;A second panel capture (`INPUTS.reference_panel_capture_after`) is always compared with the first: the panel factor of every band, and the DLS irradiance relative to the irradiance estimated from the panel, must not change by more than `CHECKS.panel_drift_tolerance` (5 %), or a flag is raised. `PANEL.panels_used` (the "Panel selection approach" of the UI) says whether the second capture also calibrates the images:
+&emsp;&emsp;All the panel captures of a flight go in one field, "Reference panel captures" (`INPUTS.reference_panel_capture`, names separated by commas). The program sorts them by their time (`EXIF:DateTimeOriginal`): those taken before the first capture to correct are the panel **before** the flight, and those taken after the last one are the panel **after** it (one taken during the flight goes to the closer end). Configurations of earlier versions, which had a second field for the panel after the flight (`INPUTS.reference_panel_capture_after`), still work: its captures are after the flight whatever their time, and the UI moves them to the one field.
+
+&emsp;&emsp;The panel after the flight is always compared with the one before: the panel factor of every band, and the DLS irradiance relative to the irradiance estimated from the panel, must not change by more than `CHECKS.panel_drift_tolerance` (5 %), or a flag is raised. `PANEL.panels_used` (the "Panel selection approach" of the UI, next to the panel captures) says whether the panel after the flight also calibrates the images; with panel captures of one moment only, every approach uses them alone, and a flag says so:
 
 - `first` (default): only the first panel calibrates the images; the second is only compared.
 - `last`: only the second panel, the one after the flight, calibrates the images; the first is only compared.
@@ -54,18 +56,24 @@ distance = sqrt( mean over the bands of ( ln(E_capture / E_panel) )^2 )
 
 ### Several captures of one moment
 
-&emsp;&emsp;Each of the two fields can have several captures, separated by commas, for example `IMG_0005, IMG_0006, IMG_0007` when several photos of the panel are taken one after the other. The captures of one moment are averaged: the weight of the moment is shared equally among them, so one bad photo (a shadow, a tilted panel, a hand) counts less. The time of the moment is the mean of their times, and its light (for the options by illumination) the mean of their DLS irradiances.
+&emsp;&emsp;Several photos of the panel are often taken one after the other, for example `IMG_0005, IMG_0006, IMG_0007` before the flight. The captures of one moment are averaged: the weight of the moment is shared equally among them, so one bad photo (a shadow, a tilted panel, a hand) counts less. The time of the moment is the mean of their times, and its light (for the options by illumination) the mean of their DLS irradiances.
 
 &emsp;&emsp;How much the captures of one moment disagree is checked, band by band, on what is averaged: the panel factor without the DLS, and the panel factor x the DLS irradiance with it. With three or more captures, each one is compared with the median of its moment, and a capture that departs by more than `CHECKS.panel_capture_spread_tolerance` (0.02, 2 %) is flagged by name, so that it can be left out; with two, the one that is wrong cannot be told, and the spread of the pair (standard deviation / mean) is flagged instead. The spread and the departures are written in the result file (`panel.before.spread`, `panel.before.departures`). In the flight of the example, the six panel captures after the flight agree within 0.3 %, but in the seven before it the DLS irradiance rose by about 28 % in 20 seconds while the camera saw the panel change by about 4 %: with the DLS, those captures disagree by 9 %, a sign that the DLS was shaded or not yet stable: six of the seven are flagged, from IMG_0003 (-22 % from the median) to IMG_0009 (+7 %). Without the DLS four are flagged, by 2.2 to 2.7 %. Leave out the captures that disagree, or rely on the other moment.
 
+&emsp;&emsp;"Check panel captures..." (Inputs page, under the panel captures) measures all of them without correcting anything and shows a table: the time, moment, heading and orientation of each capture, and how far it is from the other captures of its moment (the largest band), with the flagged ones in yellow. "Leave out the selected" removes the selected captures from the panel captures and adds them to the captures to leave out, so they are not corrected either.
+
+<p align="center">
+  <img src="screenshots/panel_check.png" width="760" alt="The table of Check panel captures: the time, moment, heading, orientation and departure of each panel capture">
+</p>
+
 ### Panel captures in different orientations
 
-&emsp;&emsp;The panel can be photographed with the camera facing the sun or with its back to it, and the two can give different factors: the panel does not reflect the same light in every direction, and the shadow of the operator or of the aircraft falls differently. The orientation of each panel capture is read from its metadata, the heading of the camera (`XMP:Yaw`) against the direction of the sun (`XMP:SolarAzimuth`): under 60 degrees it faces the sun, over 120 its back is to the sun, and in between the sun is at its side. The log gives it for each panel capture, and the result file keeps it (`orientation`).
+&emsp;&emsp;The panel can be photographed with the camera facing the sun, with its back to it or with the sun at its side, and the orientations can give different factors: the panel does not reflect the same light in every direction, and the shadow of the operator or of the aircraft falls differently. The orientation of each panel capture is read from its metadata, the heading of the camera (`XMP:Yaw`) against the direction of the sun (`XMP:SolarAzimuth`): 0 degrees facing the sun, 90 the sun at the side and 180 the back to the sun. The captures whose headings are within 20 degrees of each other are one orientation. "Panel captures used, by orientation" (`PANEL.panel_orientation`, next to the panel captures) offers the orientations found among the panel captures, with their headings and the number of captures:
 
-- With all the captures used (`PANEL.panel_orientation` = `all`, the default), a moment with captures of both orientations is averaged, and a flag says when those with the back to the sun differ from those facing it by more than the spread limit (`panel.before.orientation_difference` in the result file).
-- `facing_sun` or `back_to_sun` uses only the captures of that orientation (those with the sun at the side are not used either), so that one protocol is followed when the photos of both were taken. A moment with none of that orientation stops the run with a clear message.
+- All the panel captures (`all`, the default): when one moment has captures of several orientations, they are averaged, and a flag says when an orientation differs from the one with the most captures by more than the spread limit (`panel.before.orientation_difference` in the result file).
+- One orientation (its heading is saved, for example `30`): only the captures within 20 degrees of it are used, so that one protocol is followed. When none is left, the run stops and lists the headings found.
 
-&emsp;&emsp;The orientation is only as good as `XMP:Yaw`. In the flights of this project each set of panel photos has one heading (for example 87 degrees for all seven before the 2023-02-02 flight), so they cannot be compared here; check the headings in the log of your own runs.
+&emsp;&emsp;The orientation is only as good as `XMP:Yaw`. In the flights of this project each set of panel photos has one heading, for example 87 degrees for all seven before the 2023-02-02 flight, and 63 degrees before and 30 degrees after the 2024-02-08 flight; check the headings in "Check panel captures".
 
 &emsp;&emsp;The DLS checks of each image compare it with the panel capture closest in time, in the moment that weighs most in its calibration.
 

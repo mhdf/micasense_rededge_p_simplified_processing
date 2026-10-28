@@ -181,21 +181,32 @@ def capture_dls_ratios(panel_images, images):
     return { band: (dls_irradiance_ratio(panel_images[band], image), 'metadata') for band, image in images.items() }
 
 
+# Firmware from which these cameras write a reliable XMP:HorizontalIrradiance (MicaSense's horizontal_irradiance_valid())
+HORIZONTAL_IRRADIANCE_FIRMWARE = {'RedEdge': '5.1.7', 'RedEdge-M': '5.1.7', 'Altum': '1.2.3'}
+
+
+def _version(text):
+    """ A firmware version such as 'v7.5.0-beta6' as a tuple of numbers, (7, 5, 0); () if there is none """
+    numbers = re.findall(r'\d+', str(text or '').split('-')[0])
+    return tuple(int(number) for number in numbers)
+
+
 # Checks of the DLS data - thresholds (adjust them if needed). They are guesses, not validated limits
 DLS_CHECKS = { 'ratio_range': (0.5, 2.0),            # plausible E_panel / E_image
                 'band_ratio_tolerance': 0.03,         # largest relative departure of a band from the median ratio
                 'max_sun_angle_discrepancy_deg': 10.0,  # see Image.dls_sun_angle_discrepancy_deg
                 'jump_threshold': 0.10,               # relative change between consecutive captures
                 'panel_drift_tolerance': 0.05,        # relative change of the panel factor (and of E_DLS / E_panel_estimate)
+                                                      # between two panel captures
                 'panel_illumination_tolerance': 0.15 }  # how different the light of a capture may be from that of the nearest panel
                                                         # (see illumination_distance; 0.15 is about 15 %)
-                                                      # between two panel captures
 
 
 def check_dls_capture(panel_images, images, ratios=None):
     """
     Check the DLS data of one capture against the panel (see DLS_CHECKS for the limits)
-    Inputs: dictionaries {band name: rct.Image} for the panel capture (after detect_reference_panel) and the image
+    Inputs: dictionaries {band name: rct.Image} for the panel capture (after detect_reference_panel; {} without a panel, then
+            only the image is checked) and the image
             capture, and optionally the output of capture_dls_ratios
     Outputs: dictionary with the values checked and 'flags', a list of messages (also issued as RuntimeWarning), and
              'flag_details', one dictionary per flag (same order) saying what was checked, so that the same criterion can be
@@ -206,6 +217,8 @@ def check_dls_capture(panel_images, images, ratios=None):
     if ratios is None:
         ratios = {}
         for band, image in images.items():
+            if band not in panel_images:           # no panel capture (reflectance from the DLS alone): no ratio
+                continue
             try:
                 ratios[band] = (dls_irradiance_ratio(panel_images[band], image), 'metadata')
             except MetadataError as error:
@@ -213,7 +226,7 @@ def check_dls_capture(panel_images, images, ratios=None):
     values = { band: ratio for band, (ratio, _) in ratios.items() }
     result = { 'band_ratios': values, 'ratio_sources': { band: source for band, (_, source) in ratios.items() } }
 
-    # 1. Same illumination change in all bands
+    # Same illumination change in all bands
     if values:
         median = float(np.median(list(values.values())))
         departures = { band: value / median - 1 for band, value in values.items() }
@@ -225,7 +238,7 @@ def check_dls_capture(panel_images, images, ratios=None):
                 details.append({'criterion': 'band_ratio_departure', 'scope': 'image', 'band': band,
                                 'value': float(departure), 'limit': DLS_CHECKS['band_ratio_tolerance']})
 
-    # 2. Irradiance of the DLS compared with the irradiance estimated from the panel. It differs between bands
+    # Irradiance of the DLS compared with the irradiance estimated from the panel. It differs between bands
     #    (18 % in the example, a calibration difference between camera and DLS), so it is only reported here; compare it
     #    between two panel captures with compare_panel_captures()
     estimates = {}
@@ -241,9 +254,11 @@ def check_dls_capture(panel_images, images, ratios=None):
         result['dls_over_panel_estimate'] = estimates
         result['dls_over_panel_estimate_variation_across_bands'] = cv
 
-    # 3. DLS pointing: sun angle seen by the DLS against the solar zenith
+    # DLS pointing: sun angle seen by the DLS against the solar zenith
     result['sun_angle_discrepancy_deg'] = {}
     for name, group in (('panel', panel_images), ('image', images)):
+        if not group:
+            continue
         angles = [ image.dls_sun_angle_discrepancy_deg() for image in group.values() ]
         angles = [ angle for angle in angles if angle is not None ]
         if not angles:
@@ -256,7 +271,7 @@ def check_dls_capture(panel_images, images, ratios=None):
             details.append({'criterion': 'dls_tilt', 'scope': name, 'band': None, 'value': float(np.median(angles)),
                             'limit': DLS_CHECKS['max_sun_angle_discrepancy_deg']})
 
-    # 5. Plausible range (also warned by dls_irradiance_ratio)
+    # Plausible range (also warned by dls_irradiance_ratio)
     low, high = DLS_CHECKS['ratio_range']
     for band, value in values.items():
         if not low <= value <= high:
@@ -270,7 +285,7 @@ def check_dls_capture(panel_images, images, ratios=None):
     return result
 
 
-# 4. Changes of the irradiance along a flight
+# Changes of the irradiance along a flight
 def classify_irradiance_changes(irradiances, threshold=None):
     """
     Find the changes between consecutive captures of the irradiance of one band, in acquisition order
@@ -302,7 +317,7 @@ def classify_irradiance_changes(irradiances, threshold=None):
     return events
 
 
-# 6. Panel captured before and after the flight
+# Panel captured before and after the flight
 def compare_panel_captures(before, after, tolerance=None):
     """
     Compare two panel captures (e.g. before and after the flight)
@@ -324,7 +339,8 @@ def compare_panel_captures(before, after, tolerance=None):
         try:
             entry['irradiance_ratio'] = after[band].dls_irradiance() / before[band].dls_irradiance()
             # DLS and camera should change together: this ratio of ratios is 1 if the DLS followed the light
-            estimate_ratio = after[band].panel_audit['panel_irradiance_estimate'] /                              before[band].panel_audit['panel_irradiance_estimate']
+            estimate_ratio = (after[band].panel_audit['panel_irradiance_estimate'] /
+                              before[band].panel_audit['panel_irradiance_estimate'])
             entry['dls_over_panel_estimate_ratio'] = entry['irradiance_ratio'] / estimate_ratio
         except MetadataError:
             pass
@@ -339,7 +355,7 @@ def compare_panel_captures(before, after, tolerance=None):
     return { 'bands': result, 'flags': flags }
 
 
-# 7. Geometry of the acquisition: tilt of the camera and direction in which it points with respect to the sun
+# Geometry of the acquisition: tilt of the camera and direction in which it points with respect to the sun
 # The camera writes its attitude (XMP:Roll, XMP:Pitch, XMP:Yaw, in degrees) and the sun (XMP:SolarAzimuth, from north
 # clockwise, and XMP:SolarElevation, in radians). The heading of the camera is the direction of the top of its image.
 # The angle between the heading and the sun goes from 0 (facing the sun) to 90 (the sun at the side) and 180 (the back to
@@ -425,16 +441,18 @@ def _check_geometry(images, kind):
             flags.append(f"Heading of the camera in the panel capture: {heading:.0f} deg from the sun; for the panel "
                          f"expect within {GEOMETRY_CHECKS['panel_heading_tolerance_deg']:g} deg of 0 (facing the sun) or "
                          f"180 (the back to the sun)")
+            # the value shown is the heading; what is compared with the limit is its departure from 0 or 180
             details.append({'criterion': 'heading', 'scope': 'panel', 'band': None, 'value': float(heading),
-                            'limit': GEOMETRY_CHECKS['panel_heading_tolerance_deg']})
+                            'departure': float(off_line), 'limit': GEOMETRY_CHECKS['panel_heading_tolerance_deg']})
     else:
         departure = abs(heading - 90)                            # from the sun at the side
         values['heading_departure_deg'] = departure
         if departure > GEOMETRY_CHECKS['image_heading_tolerance_deg']:
             flags.append(f"Heading of the camera in the image capture: {heading:.0f} deg from the sun; for mapping "
                          f"expect within {GEOMETRY_CHECKS['image_heading_tolerance_deg']:g} deg of 90 (the sun at the side)")
+            # the value shown is the heading; what is compared with the limit is its departure from 90
             details.append({'criterion': 'heading', 'scope': 'image', 'band': None, 'value': float(heading),
-                            'limit': GEOMETRY_CHECKS['image_heading_tolerance_deg']})
+                            'departure': float(departure), 'limit': GEOMETRY_CHECKS['image_heading_tolerance_deg']})
     for flag in flags:
         warnings.warn(flag, RuntimeWarning)
     return {'values': values, 'flags': flags, 'flag_details': details, 'unavailable': unavailable}
@@ -474,7 +492,7 @@ def _jsonable(value):
 
 # Two panel captures (before and after the flight)
 PANELS_USED = ('first', 'last', 'mean', 'interpolate_time', 'nearest_time', 'nearest_illumination',
-               'interpolate_illumination')
+               'interpolate_illumination', 'adjacent_time')
 PANELS_BY_ILLUMINATION = ('nearest_illumination', 'interpolate_illumination')      # they compare the light read by the DLS
 ILLUMINATION_POWER = 2         # interpolate_illumination weighs each panel by 1 / distance ** ILLUMINATION_POWER
 
@@ -573,14 +591,39 @@ def combine_panels(panels, image=None):
     return sum(entry['weight'] * entry['adjusted_factor'] for entry in used), used
 
 
-def band_record(output_path, image, reflectance, panels, factor_applied):
+def irradiance_si(image):
+    """
+    The DLS horizontal irradiance of an image in W/m2/nm, for the reflectance from the DLS alone, as MicaSense's
+    irradiance_scale_factor(): XMP:HorizontalIrradiance x XMP:IrradianceScaleToSIUnits, or x 0.01 when the image has no
+    scale (a DLS 2 that writes the irradiance in uW/cm2/nm). The ratios of the panel correction do not need the scale
+    Outputs: (irradiance, scale, where the scale came from: 'metadata' or 'assumed')
+    """
+    if image.irradiance_scale_to_si is not None:
+        return image.dls_irradiance(), float(image.irradiance_scale_to_si), 'metadata'
+    return image.dls_irradiance() * 0.01, 0.01, 'assumed'
+
+
+def dls_reflectance_factor(image):
+    """
+    The factor that turns the radiance of an image into reflectance with the DLS alone, without a panel:
+    reflectance = pi x radiance / E (Lambertian surface), with E the DLS irradiance in W/m2/nm (see irradiance_si)
+    Outputs: (factor, {'irradiance', 'scale', 'scale_source'})
+    """
+    irradiance, scale, source = irradiance_si(image)
+    return np.pi / irradiance, {'irradiance': irradiance, 'scale': scale, 'scale_source': source}
+
+
+def band_record(output_path, image, reflectance, panels, factor_applied, dls_only=None, output='reflectance'):
     """
     Describe how one output band was produced
-    Inputs: path of the saved file, the image (rct.Image) of the band, the reflectance array that was saved, and the panels
-            and the factor from combine_panels (the reflectance is the radiance of the image x factor_applied)
+    Inputs: path of the saved file, the image (rct.Image) of the band, the array that was saved, and the panels and the
+            factor from combine_panels (the reflectance is the radiance of the image x factor_applied); for the reflectance
+            from the DLS alone, no panels and the details of dls_reflectance_factor; for radiance, no panels, no factor
+            and output 'radiance'
     Outputs: dictionary that can be saved as json (see write_provenance)
     """
     return _jsonable({ 'band': image.band_name,
+                       'output': output,
                        'output_file': str(output_path),
                        'output_dtype': str(reflectance.dtype),
                        'output_shape': reflectance.shape,
@@ -596,7 +639,8 @@ def band_record(output_path, image, reflectance, panels, factor_applied):
                                      'horizontal_irradiance': entry['panel'].horizontal_irradiance,
                                      'irradiance_scale_to_si': entry['panel'].irradiance_scale_to_si,
                                      'audit': getattr(entry['panel'], 'panel_audit', None) } for entry in panels ],
-                       'dls': { 'used': any(entry['dls_ratio'] is not None for entry in panels),
+                       'dls_only': dls_only,
+                       'dls': { 'used': dls_only is not None or any(entry['dls_ratio'] is not None for entry in panels),
                                 'attitude_as_written': { key: image.metadata.get('XMP:' + key)
                                                                     for key in ('Roll', 'Pitch', 'Yaw') },
                                 'sun_angle_discrepancy_deg': image.dls_sun_angle_discrepancy_deg(),
@@ -642,11 +686,16 @@ def compact_band_records(band_records):
         for record in records:
             record.pop('image_capture_id', None)
     panel_ids = {json.dumps([panel.get('capture_id') for panel in record['panels']]) for record in records}
-    if len(panel_ids) == 1:
+    if len(panel_ids) == 1 and json.loads(next(iter(panel_ids))):
         capture['panel_capture_ids'] = json.loads(panel_ids.pop())
         for record in records:
             for panel in record['panels']:
                 panel.pop('capture_id', None)
+    for record in records:                       # what a reflectance from the DLS alone or a radiance does not have
+        for key, empty in (('output', 'reflectance'), ('dls_only', None), ('panels', []), ('factor_applied', None)):
+            if key in record and record[key] == empty:
+                record.pop(key)
+        record.setdefault('panels', [])
     attitudes = [json.dumps(record['dls'].get('attitude_as_written'), sort_keys=True) for record in records]
     if records and len(set(attitudes)) == 1 and records[0]['dls'].get('attitude_as_written'):
         capture['camera_attitude_as_written'] = {key: _number(value) for key, value
@@ -690,8 +739,17 @@ def write_provenance(path, band_records, parameters=None, checks=None):
     code = Path(__file__).read_bytes().replace(b'\r\n', b'\n')
     dls_used = any(record['dls']['used'] for record in band_records)
     capture, bands = compact_band_records(band_records)
+    if any(record.get('output') == 'radiance' for record in band_records):
+        method = 'radiance'
+    elif any(record.get('dls_only') for record in band_records):
+        method = 'dls_only'
+    else:
+        method = 'panel_and_dls' if dls_used else 'panel_only'
+    for band in bands:
+        if not band['panels']:
+            band.pop('panels')
     record = { 'created_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-               'method': 'panel_and_dls' if dls_used else 'panel_only',
+               'method': method,
                'software': { 'radiometric_correction_tools_sha256': hashlib.sha256(code).hexdigest(),
                              'python': platform.python_version(),
                              'numpy': np.__version__,
@@ -877,6 +935,10 @@ def read_band_definitions(image_paths, exiftool_path=None):
 
 
 #
+# The vignetting corrections already computed, by model, size and coefficients (see Image.vignetting_correction)
+_VIGNETTING_CACHE = {}
+
+
 class Image(object):
 
     """
@@ -902,12 +964,22 @@ class Image(object):
             _metadata_floats(self.metadata, 'XMP:PerspectiveDistortion', image_path, count=5) )[[0, 1, 3, 4, 2]]
         self.camera_matrix = cv2_camera_matrix(self.principal_point, self.focal_length , self.focal_plane_resolution_px_per_mm)
 
-        # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by MicaSense (vignette_map)
-        self.k = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2D', image_path) # pol2DCoeff
-        self.e = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2DName', image_path) # pol2DExponents
-        if len(self.e) != 2 * len(self.k):
-            raise MetadataError(f"{image_path}: 'XMP:VignettingPolynomial2DName' needs {2 * len(self.k)} exponents, "
-                                f"found {len(self.e)}")
+        # Vignetting model, as in MicaSense's Image.vignette(): the 2D polynomial of the RedEdge-P and Altum-PT, or the
+        # radial polynomial of older cameras (RedEdge-M/MX, Altum); the fields of the image say which one
+        if self.metadata.get('XMP:VignettingPolynomial2D') is not None:
+            self.vignetting_model = '2d'
+            self.k = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2D', image_path) # pol2DCoeff
+            self.e = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2DName', image_path) # pol2DExponents
+            if len(self.e) != 2 * len(self.k):
+                raise MetadataError(f"{image_path}: 'XMP:VignettingPolynomial2DName' needs {2 * len(self.k)} exponents, "
+                                    f"found {len(self.e)}")
+        elif self.metadata.get('XMP:VignettingCenter') is not None:
+            self.vignetting_model = 'radial'
+            self.vignetting_center = _metadata_floats(self.metadata, 'XMP:VignettingCenter', image_path, count=2)
+            self.vignetting_polynomial = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial', image_path)
+        else:
+            raise MetadataError(f"{image_path}: no vignetting model: neither 'XMP:VignettingPolynomial2D' (RedEdge-P, "
+                                f"Altum-PT) nor 'XMP:VignettingCenter' and 'XMP:VignettingPolynomial' (RedEdge-M/MX, Altum)")
 
         # Parameters for radiometric calibration - radiometric sensitivity
         self.a1, self.a2, self.a3 = _metadata_floats(self.metadata, 'XMP:RadiometricCalibration', image_path, count=3)
@@ -920,12 +992,14 @@ class Image(object):
         # Exposure time & gain (gain = ISO/100)
         self.exposure_time = float( _metadata_positive(self.metadata, 'EXIF:ExposureTime', image_path) )
         self.gain          = float( _metadata_positive(self.metadata, 'EXIF:ISOSpeed', image_path) ) / 100.0
+        # Some legacy RedEdge firmware wrote 1/6329 s for an exposure of 0.274 ms (MicaSense's Metadata.exposure())
+        self.camera_model = str(self.metadata.get('EXIF:Model') or '')
+        if self.camera_model != 'Altum' and abs(self.exposure_time - 1.0 / 6329.0) < 1e-6:
+            self.exposure_time = 0.000274
 
         # Downwelling light sensor (DLS) - optional, only needed when the DLS correction is requested
         self.horizontal_irradiance = self.metadata.get('XMP:HorizontalIrradiance')
         self.irradiance_scale_to_si = self.metadata.get('XMP:IrradianceScaleToSIUnits')
-        self.dls_ratio = None   # set by digital_numbers_to_reflectance() when the DLS correction is used
-        self.dls_ratio_source = None
 
 
     # Undistort the image
@@ -958,11 +1032,18 @@ class Image(object):
         """
         if image is None:
             image = self.image
-        rev_panel_pts = np.fliplr( region )  # image coords are reversed
-        w, h = image.shape[0:2]
-        mask = measure.grid_points_in_poly((w, h), rev_panel_pts)
-        num_pixels = mask.sum()
-        panel_pixels = image[mask]
+        rev_panel_pts = np.fliplr( np.asarray(region, dtype=float) )  # the region is (x, y); the mask works in (row, column)
+        rows, columns = image.shape[0:2]
+        # only the pixels of the box around the region are tested (the same pixels as on the whole image, much faster)
+        top, left = (max(int(np.floor(value)), 0) for value in rev_panel_pts.min(axis=0))
+        bottom, right = int(np.ceil(rev_panel_pts[:, 0].max())) + 1, int(np.ceil(rev_panel_pts[:, 1].max())) + 1
+        bottom, right = min(bottom, rows), min(right, columns)
+        if bottom <= top or right <= left:
+            panel_pixels = image[:0, :0].ravel()
+        else:
+            mask = measure.grid_points_in_poly((bottom - top, right - left), rev_panel_pts - [top, left])
+            panel_pixels = image[top:bottom, left:right][mask]
+        num_pixels = panel_pixels.size
         stdev = panel_pixels.std()
         mean_value = panel_pixels.mean()
         saturated_count = 0
@@ -974,18 +1055,37 @@ class Image(object):
     # Vignetting correction: the multiplier of each pixel
     def vignetting_correction(self):
         """
-        1 / polynomial of the position of the pixel, with the coefficients (XMP:VignettingPolynomial2D) and the pairs of
-        exponents (XMP:VignettingPolynomial2DName) written by the camera, as in MicaSense's Image.vignette(): x is the
-        position across the width (column / width, 0 at the left) and y down the height (row / height, 0 at the top)
+        1 / polynomial of the position of the pixel, as in MicaSense's Image.vignette():
+        - 2D model: the coefficients (XMP:VignettingPolynomial2D) and pairs of exponents (XMP:VignettingPolynomial2DName)
+          of x, the position across the width (column / width, 0 at the left), and y, down the height (row / height);
+        - radial model: 1 + c1 r + c2 r^2 + ..., with c from XMP:VignettingPolynomial and r the distance in pixels from
+          XMP:VignettingCenter (column, row)
         Outputs: array of the size of the image, 1 where the lens does not darken the image and above 1 towards the edges
         """
         height, width = self.image.shape[:2]
-        rows, columns = np.mgrid[0:height, 0:width]
-        x, y = columns / width, rows / height
-        polynomial = np.zeros((height, width), dtype=float)
-        for number, coefficient in enumerate(self.k):
-            polynomial += coefficient * x ** self.e[2 * number] * y ** self.e[2 * number + 1]
-        return 1.0 / polynomial
+        if self.vignetting_model == 'radial':
+            key = ('radial', height, width, tuple(self.vignetting_center), tuple(self.vignetting_polynomial))
+        else:
+            key = ('2d', height, width, tuple(self.k), tuple(self.e))
+        cached = _VIGNETTING_CACHE.get(key)                 # the same for every image of one band of one camera
+        if cached is not None:
+            return cached
+        if self.vignetting_model == 'radial':
+            rows, columns = np.mgrid[0:height, 0:width]
+            distance = np.hypot(columns - self.vignetting_center[0], rows - self.vignetting_center[1])
+            correction = 1.0 / np.polyval(list(reversed(self.vignetting_polynomial)) + [1.0], distance)
+        else:
+            # each term is c x^ex y^ey, with x of the column and y of the row: the sum over the terms is the product of
+            # a (rows x terms) matrix of y^ey and a (terms x columns) matrix of c x^ex
+            x, y = np.arange(width) / width, np.arange(height) / height
+            ys = np.stack([y ** self.e[2 * number + 1] for number in range(len(self.k))], axis=1)
+            xs = np.stack([coefficient * x ** self.e[2 * number] for number, coefficient in enumerate(self.k)])
+            correction = 1.0 / (ys @ xs)
+        correction.setflags(write=False)
+        if len(_VIGNETTING_CACHE) >= 16:                    # a few bands of a few cameras at most
+            _VIGNETTING_CACHE.pop(next(iter(_VIGNETTING_CACHE)))
+        _VIGNETTING_CACHE[key] = correction
+        return correction
 
 
     # Row gradient correction: the multiplier of each row
@@ -1023,10 +1123,28 @@ class Image(object):
         it cancels when two images of the same camera are compared, so it is not guessed when it is absent
         """
         irradiance = _metadata_positive(self.metadata, 'XMP:HorizontalIrradiance', self.image_path)
+        if not self.horizontal_irradiance_trusted():
+            raise MetadataError(f"{self.image_path}: the 'XMP:HorizontalIrradiance' written by the firmware "
+                                f"{self.metadata.get('EXIF:Software')} of the {self.camera_model} is not reliable "
+                                f"(MicaSense needs at least v{HORIZONTAL_IRRADIANCE_FIRMWARE[self.camera_model]}); "
+                                f"update the firmware of the camera or do not use the DLS")
         scale = 1.0
         if self.irradiance_scale_to_si is not None:
             scale = float( _metadata_positive(self.metadata, 'XMP:IrradianceScaleToSIUnits', self.image_path) )
         return float(irradiance) * scale
+
+
+    # Whether the horizontal irradiance written by the camera can be used
+    def horizontal_irradiance_trusted(self):
+        """
+        As MicaSense's Metadata.horizontal_irradiance_valid(): the RedEdge, RedEdge-M (and MX, which writes RedEdge-M) and
+        Altum write a reliable XMP:HorizontalIrradiance only from the firmware versions of HORIZONTAL_IRRADIANCE_FIRMWARE;
+        the other models (RedEdge-P, Altum-PT) always do
+        """
+        minimum = HORIZONTAL_IRRADIANCE_FIRMWARE.get(self.camera_model)
+        if minimum is None:
+            return True
+        return _version(self.metadata.get('EXIF:Software')) >= _version(minimum)
 
 
     # Angle between the sun direction seen by the DLS and the solar zenith
@@ -1050,28 +1168,13 @@ class Image(object):
         return float(abs(incidence - (90 - np.degrees(elevation))))
 
 
-    # Convert radiance to reflectance, optionally correcting the illumination change with the DLS
-    def digital_numbers_to_reflectance(self, radiance_to_reflectance_factor, panel_image=None,
-                                       dls_ratio=None, dls_ratio_source=None):
+    # Convert radiance to reflectance
+    def digital_numbers_to_reflectance(self, radiance_to_reflectance_factor):
         """
-        Inputs: radiance to reflectance factor from detect_reference_panel() of the same band and, optionally,
-                the panel image (rct.Image) of that band. When given, the DLS is used (see dls_irradiance_ratio)
-                and the result is panel-anchored: reflectance = radiance * factor * (E_panel / E_image)
-                Alternatively, give a ready DLS ratio (e.g. from capture_dls_ratios) and where it came from
-        Outputs: reflectance image (float)
+        Inputs: the factor applied to the image, from combine_panels() (the panel factor and, with the DLS, the DLS ratio)
+        Outputs: reflectance image (float) = radiance x factor
         """
-        reflectance = self.digital_numbers_to_radiance() * radiance_to_reflectance_factor
-        self.dls_ratio = None
-        self.dls_ratio_source = None
-        if dls_ratio is not None:
-            self.dls_ratio = float(dls_ratio)
-            self.dls_ratio_source = dls_ratio_source or 'given'
-        elif panel_image is not None:
-            self.dls_ratio = dls_irradiance_ratio(panel_image, self)
-            self.dls_ratio_source = 'metadata'
-        if self.dls_ratio is not None:
-            reflectance = reflectance * self.dls_ratio
-        return reflectance
+        return self.digital_numbers_to_radiance() * radiance_to_reflectance_factor
 
 
     # Undistorted raw image, kept because the panel region is measured on it
@@ -1123,13 +1226,11 @@ class Image(object):
             barcode_bounds.append([point.x, point.y])
         barcode_bounds = np.asarray(barcode_bounds, np.int32)
 
-        # Measures describing panel size and position
+        # Layout of the panel by its version (digits 2-3 of the QR code), in mm, as in MicaSense's Panel.panel_corners():
+        # s is half the side of the panel, p half the side of the QR code and T the centre of the panel from the centre of
+        # the QR code. Only the inner part of the panel is measured: percent_inner_area of its side (MicaSense uses 0.5)
         if int(barcode_data[2:4]) < 3:
-            # use the actual panel measures here - we use units of [mm]
-            # the panel is 154.4 x 152.4 mm , vs. the 84 x 84 mm for the QR code
-            # it is left 143.20 mm from the QR code 
-            # use the inner 50% square of the panel
-            s = 76.2
+            s = 76.2                     # panel 152.4 mm wide, QR code 84 mm, panel 143.2 mm to the left of the QR code
             p = 42
             T = np.array([-143.2, 0])
         elif (int(barcode_data[2:4]) >= 3) and (int(barcode_data[2:4]) < 6):
@@ -1137,15 +1238,10 @@ class Image(object):
             p = 45
             T = np.array([-145.8, 0])
         elif int(barcode_data[2:4]) >= 6:
-            # use the actual panel measures here - we use units of [mm]
-            # the panel is 100 x 100 mm , vs. the 91 x 91 mm for the QR code
-            # it is down 125.94 mm from the QR code 
-            # use the inner 50% square of the panel
-            p = 41
+            p = 41                       # panel 100 mm wide, QR code 82 mm, panel below the QR code
             s = 50
             T = np.array([0, -130.84])
 
-        #
         reference_panel_pts = np.asarray([[-s, s], [s, s], [s, -s], [-s, -s]], dtype=np.float32) * percent_inner_area + T
         reference_qr_pts    = np.asarray([[-p, p], [p, p], [p, -p], [-p, -p]], dtype=np.float32)
         bounds = []

@@ -62,8 +62,8 @@ HINTS = {
               "accepted or saved before; cyan = region proposed or being edited. The numbers below the image are the "
               "pixels, the saturated pixels and the variation (std / mean) inside the region: lower means a more uniform "
               "panel. The wheel zooms; while editing, clicks draw.",
-    'capture': "Capture: choose which panel capture to look at (the first one and the one after the flight, if there is "
-               "one). All their bands must be accepted before saving. What you accepted is kept for each capture while "
+    'capture': "Capture: choose which panel capture to look at (those before the flight and those after it, if there are "
+               "any). All their bands must be accepted before saving. What you accepted is kept for each capture while "
                "you switch.",
     'accept_all': "Accept all automatic regions: for every band of this capture that is not accepted yet, accept the region "
                   "found from the QR code (yellow outline). Bands without one are left for you to draw with Edit region. "
@@ -1122,8 +1122,7 @@ def main(argv=None):
             print(f"ERROR: {problem}", file=sys.stderr)
         return 1
     root = Path(arguments.root)
-    required = [name for name in (config['INPUTS.reference_panel_capture'].strip(),
-                                  config['INPUTS.reference_panel_capture_after'].strip()) if name]
+    required = list(dict.fromkeys(name for group in wf.panel_capture_groups(config) for name in group))
     if arguments.capture and arguments.capture not in required:
         required.insert(0, arguments.capture)
     first = arguments.capture or required[0]

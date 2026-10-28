@@ -594,6 +594,71 @@ class ExampleImageTests(unittest.TestCase):
             self.assertTrue(np.allclose(image.digital_numbers_to_radiance(), self.micasense_radiance(image),
                                         rtol=1e-12, atol=0), band)
 
+    # the radial vignetting of a RedEdge-MX (MicaSense's sample capture REDEDGE-MX/IMG_0001_1.tif, Blue)
+    RADIAL = {'XMP:VignettingCenter': [623.6301, 470.2927],
+              'XMP:VignettingPolynomial': [1.001285e-06, 5.614210e-07, -5.962064e-09, 1.862037e-11, -2.530487e-14,
+                                           1.209421e-17]}
+
+    def radial_image(self, **changes):
+        path, metadata = self.band_files['Blue']
+        metadata = {key: value for key, value in metadata.items() if 'VignettingPolynomial2D' not in key}
+        return rct.Image(path, dict(metadata, **self.RADIAL, **changes))
+
+    def test_the_radial_vignetting_of_older_cameras_is_the_one_of_micasense(self):
+        image = self.radial_image()
+        self.assertEqual(image.vignetting_model, 'radial')
+        # micasense Image.vignette(), radial branch, with its transposes
+        x, y = np.meshgrid(np.arange(image.image.shape[1]), np.arange(image.image.shape[0]))
+        x, y = x.T, y.T
+        polynomial = list(image.vignetting_polynomial)
+        polynomial.reverse()
+        polynomial.append(1.)
+        r = np.hypot((x - image.vignetting_center[0]), (y - image.vignetting_center[1]))
+        expected = (1. / np.polyval(np.array(polynomial), r)).T
+        self.assertTrue(np.allclose(image.vignetting_correction(), expected, rtol=1e-12, atol=0))
+        centre = image.vignetting_correction()[470, 624]                       # half a pixel from the centre
+        self.assertAlmostEqual(centre, 1.0, delta=1e-5)
+
+    def test_the_vignetting_correction_is_computed_once_for_a_band(self):
+        first, second = rct.Image(*self.band_files['Blue']), rct.Image(*self.band_files['Blue'])
+        self.assertIs(first.vignetting_correction(), second.vignetting_correction())
+        self.assertFalse(first.vignetting_correction().flags.writeable)         # shared: nobody can change it
+        self.assertIsNot(first.vignetting_correction(), rct.Image(*self.band_files['Green']).vignetting_correction())
+
+    def test_the_statistics_of_a_region_are_those_of_the_whole_image_mask(self):
+        from skimage import measure
+        image = rct.Image(*self.band_files['Blue'])
+        rows, columns = image.image.shape
+        for region in ([[730, 211], [834, 215], [829, 319], [727, 316]],            # a panel region
+                       [[-50, -40], [120.5, -10], [100, 90.7], [-20, 60]],            # partly outside the image
+                       [[1400, 1000], [1600, 1000], [1600, 1200], [1400, 1200]]):    # at the corner
+            mask = measure.grid_points_in_poly((rows, columns), np.fliplr(np.asarray(region, dtype=float)))
+            pixels = image.image[mask]
+            mean, std, count, saturated = image.region_stats(region, sat_threshold=60000)
+            self.assertEqual((count, saturated), (mask.sum(), (pixels > 60000).sum()), region)
+            self.assertAlmostEqual(mean, pixels.mean())
+            self.assertAlmostEqual(std, pixels.std())
+
+    def test_an_image_without_a_vignetting_model_is_a_clear_error(self):
+        path, metadata = self.band_files['Blue']
+        metadata = {key: value for key, value in metadata.items() if 'VignettingPolynomial2D' not in key}
+        with self.assertRaisesRegex(rct.MetadataError, 'no vignetting model'):
+            rct.Image(path, metadata)
+
+    def test_the_exposure_of_legacy_rededge_firmware_is_corrected_as_micasense_does(self):
+        self.assertEqual(self.radial_image(**{'EXIF:ExposureTime': 1 / 6329, 'EXIF:Model': 'RedEdge-M'}).exposure_time,
+                         0.000274)
+        self.assertAlmostEqual(self.radial_image(**{'EXIF:ExposureTime': 1 / 6329, 'EXIF:Model': 'Altum'}).exposure_time,
+                               1 / 6329)
+
+    def test_the_dls_of_old_firmware_is_not_used(self):
+        old = self.radial_image(**{'EXIF:Model': 'RedEdge-M', 'EXIF:Software': 'v5.0.2'})
+        with self.assertRaisesRegex(rct.MetadataError, 'not reliable .*at least v5.1.7'):
+            old.dls_irradiance()
+        self.assertTrue(self.radial_image(**{'EXIF:Model': 'RedEdge-M', 'EXIF:Software': 'v7.5.0-beta6'})
+                        .horizontal_irradiance_trusted())
+        self.assertTrue(rct.Image(*self.band_files['Blue']).horizontal_irradiance_trusted())     # RedEdge-P
+
     def test_the_vignetting_correction_is_larger_along_the_long_side_of_the_image(self):
         # the image is wider than tall, so the middle of the left edge is further from the centre than the middle of the top
         image = rct.Image(*self.band_files['Blue'])
@@ -648,24 +713,21 @@ class ExampleImageTests(unittest.TestCase):
 
     def test_dls_reproduces_panel_only_result_at_the_panel_capture(self):
         panel, _, factor = self.panel_and_target('Blue')
-        panel_only = panel.digital_numbers_to_reflectance(factor)
-        with_dls = panel.digital_numbers_to_reflectance(factor, panel_image=panel)
-        self.assertEqual(panel.dls_ratio, 1.0)
-        self.assertTrue((panel_only == with_dls).all())
+        applied, used = rct.combine_panels([(panel, 1.0)], panel)
+        self.assertEqual((used[0]['dls_ratio'], applied), (1.0, factor))
 
     def test_panel_only_mode_is_the_original_conversion(self):
         _, target, factor = self.panel_and_target('Blue')
         self.assertTrue((target.digital_numbers_to_reflectance(factor) ==
                          target.digital_numbers_to_radiance() * factor).all())
-        self.assertIsNone(target.dls_ratio)
 
     def test_doubling_the_image_irradiance_halves_the_reflectance(self):
         panel, target, factor = self.panel_and_target('Blue')
         _, doubled, _ = self.panel_and_target('Blue', **{'XMP:HorizontalIrradiance': 2 * target.horizontal_irradiance})
-        stable = target.digital_numbers_to_reflectance(factor, panel_image=panel)
+        stable = target.digital_numbers_to_reflectance(rct.combine_panels([(panel, 1.0)], target)[0])
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)   # ratio 0.44 is outside the plausible range
-            brighter = doubled.digital_numbers_to_reflectance(factor, panel_image=panel)
+            brighter = doubled.digital_numbers_to_reflectance(rct.combine_panels([(panel, 1.0)], doubled)[0])
         self.assertTrue(abs(brighter - stable / 2).max() < 1e-12)
 
     def test_common_irradiance_scale_cancels_in_the_ratio(self):
@@ -722,10 +784,28 @@ class ExampleImageTests(unittest.TestCase):
         panel, target = self.capture_dicts()
         expected = 99.211212701455025 / 112.20932502581493
         self.assertAlmostEqual(rct.dls_irradiance_ratio(panel['Panchro'], target['Panchro']), expected)
-        target['Panchro'].digital_numbers_to_reflectance(
-            panel['Panchro'].panel_audit['radiance_to_reflectance_factor'], panel_image=panel['Panchro'])
-        self.assertAlmostEqual(target['Panchro'].dls_ratio, expected)
-        self.assertEqual(target['Panchro'].dls_ratio_source, 'metadata')
+        _, used = rct.combine_panels([(panel['Panchro'], 1.0)], target['Panchro'])
+        self.assertAlmostEqual(used[0]['dls_ratio'], expected)
+
+    def test_the_reflectance_from_the_dls_alone_uses_the_irradiance_in_si_units(self):
+        _, target = self.capture_dicts()
+        blue = target['Blue']                                 # no XMP:IrradianceScaleToSIUnits: uW/cm2/nm, as MicaSense
+        factor, details = rct.dls_reflectance_factor(blue)
+        self.assertEqual((details['scale'], details['scale_source']), (0.01, 'assumed'))
+        self.assertAlmostEqual(factor, np.pi / (0.01 * 156.04327208007237))
+        scaled = self.changed(blue, **{'XMP:IrradianceScaleToSIUnits': 0.02})
+        self.assertEqual(rct.irradiance_si(scaled)[1:], (0.02, 'metadata'))
+        self.assertAlmostEqual(rct.irradiance_si(scaled)[0], 0.02 * 156.04327208007237)
+
+    def test_without_a_panel_only_the_dls_of_the_image_is_checked(self):
+        _, target = self.capture_dicts()
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter('always')
+            checks = rct.check_dls_capture({}, target)
+        self.assertEqual(checks['band_ratios'], {})
+        self.assertNotIn('panel', checks['sun_angle_discrepancy_deg'])
+        self.assertIn('image', checks['sun_angle_discrepancy_deg'])
+        self.assertEqual(checks['unavailable'], [])
 
     def test_capture_ratios_use_the_metadata_of_every_band(self):
         panel, target = self.capture_dicts()
@@ -830,8 +910,8 @@ class ExampleImageTests(unittest.TestCase):
         self.assertTrue(record['dls']['used'])
         self.assertAlmostEqual(record['panels'][0]['dls_ratio'], 138.05218450296033 / 156.04327208007237)
         self.assertAlmostEqual(record['factor_applied'], factor * 138.05218450296033 / 156.04327208007237)
-        # the same as the DLS ratio given to digital_numbers_to_reflectance (the example of the documentation)
-        self.assertTrue(np.allclose(reflectance, target.digital_numbers_to_reflectance(factor, panel_image=panel)))
+        self.assertTrue(np.allclose(reflectance, target.digital_numbers_to_radiance() * factor *
+                                    rct.dls_irradiance_ratio(panel, target)))
         with tempfile.TemporaryDirectory() as folder:
             path = rct.write_provenance(Path(folder) / 'provenance.json', [record],
                                         parameters={'percent_inner_area': 0.7, 'levels': REFLECTANCE_LEVELS})

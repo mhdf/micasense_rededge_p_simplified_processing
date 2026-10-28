@@ -996,7 +996,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.frame.scroll_pages['CORRECTION'].body.winfo_children()[0].cget('text'),
                          'DLS (Downwelling Light Sensor)')
         keys = ['CORRECTION.use_dls'] + [field['key'] for field in wf.FIELDS if field['key'].startswith('CHECKS.')]
-        self.assertEqual(len(keys), 12)
+        self.assertEqual(len(keys), 13)
         for key in keys:
             self.assertIn(key, self.frame.variables)
         for key in keys[1:]:
@@ -1029,7 +1029,7 @@ class WindowTests(unittest.TestCase):
     def test_the_inputs_page_has_headings_for_its_groups(self):
         headings = [child.cget('text') for child in self.frame.scroll_pages['INPUTS'].body.winfo_children()
                     if child.winfo_class() == 'TLabel']
-        self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Images to correct',
+        self.assertEqual(headings[1:], ['Folders and tools', 'Output', 'Reference panel', 'Images to correct',
                                         'Python environment'])
 
     def test_the_messages_follow_the_width_of_the_page_and_the_help_column_keeps_its_width(self):
@@ -1146,9 +1146,9 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(entry.winfo_class(), 'TCombobox')
         self.assertEqual(str(entry.cget('state')), 'readonly')                          # a list, not a box to type in
         self.assertGreaterEqual(int(entry.cget('width')), max(map(len, labels.values())))
-        self.assertEqual(entry.get(), 'First panel only')
+        self.assertEqual(entry.get(), 'Before the flight only')
         self.frame.set_value('PANEL.panels_used', 'nearest_time')
-        self.assertEqual(entry.get(), 'Nearest panel in time')
+        self.assertEqual(entry.get(), 'Before or after, the nearer in time')
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'nearest_time')   # what is saved is the name
         for name in ('nearest_illumination', 'interpolate_illumination'):
             self.assertIn('uses the DLS', labels[name])
@@ -1166,7 +1166,7 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(use.get())                                                      # and the DLS correction is on
         self.assertTrue(self.frame.model.config()[0]['CORRECTION.use_dls'])
         text = self.frame.status.cget('text')
-        self.assertIn("'Nearest panel in light (uses the DLS)' uses the DLS data", text)
+        self.assertIn("'Before or after, the nearer in light (uses the DLS)' uses the DLS data", text)
         self.assertIn('was turned on', text)
         self.frame.set_value('CORRECTION.use_dls', False)                               # turning it off takes it back
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
@@ -1174,8 +1174,7 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(use.get())
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'interpolate_illumination')
         problems = ' '.join(self.frame.problems()[1])
-        self.assertIn('no second panel capture', problems)                              # still needs the second panel
-        self.assertNotIn('CORRECTION.use_dls', problems)                                # but not the DLS correction
+        self.assertNotIn('CORRECTION.use_dls', problems)                                # the DLS correction is on
 
     def test_a_dropdown_keeps_its_arrow_after_a_choice_is_made(self):
         self.assertIn(str(self.frame.entries['PANEL.panels_used'].cget('style')), ('', 'TCombobox'))   # the default style
@@ -1197,7 +1196,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
         self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'first')
         text = self.frame.status.cget('text')
-        self.assertIn("was 'Both panels, weighted by light (uses the DLS)' and is now 'First panel only'", text)
+        self.assertIn("was 'Before and after, weighted by light (uses the DLS)' and is now 'Before the flight only'", text)
         self.assertIn('needs the DLS correction', text)
         self.frame.set_value('CORRECTION.use_dls', True)                         # turning it on changes nothing else
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
@@ -1214,15 +1213,92 @@ class WindowTests(unittest.TestCase):
         _, problems = self.frame.problems()
         self.assertTrue(any('CORRECTION.use_dls is off' in problem for problem in problems))
 
-    def test_the_use_of_two_panels_is_a_choice_in_the_panel_page(self):
-        self.assertTrue(self.inside(self.frame.entries['PANEL.panels_used'], 'PANEL'))
+    def test_the_use_of_the_panels_is_chosen_next_to_the_panel_captures(self):
+        for key in ('INPUTS.reference_panel_capture', 'PANEL.panels_used', 'PANEL.panel_orientation'):
+            self.assertTrue(self.inside(self.frame.entries[key], 'INPUTS'), key)
+        self.assertNotIn('INPUTS.reference_panel_capture_after', self.frame.entries)    # one field for all the captures
         self.assertEqual(self.frame.entries['PANEL.panels_used'].winfo_class(), 'TCombobox')
         labels = self.panel_labels()
         self.assertEqual(list(self.frame.entries['PANEL.panels_used'].cget('values')),
                          [labels[name] for name in wf.rct.PANELS_USED])                  # all of them, the DLS on or off
         self.frame.set_value('PANEL.panels_used', 'mean')
         _, problems = self.frame.problems()
-        self.assertTrue(any('no second panel capture' in problem for problem in problems))
+        self.assertEqual(problems, [])                       # the moments are found from the times when it runs
+
+    def test_the_panel_captures_after_the_flight_of_an_earlier_configuration_join_the_panel_captures(self):
+        path = Path(self.folder.name) / 'old.json'
+        path.write_text(json.dumps({'INPUTS.reference_panel_capture': 'IMG_0005',
+                                    'INPUTS.reference_panel_capture_after': 'IMG_0422'}), encoding='utf-8')
+        self.assertTrue(self.frame.load_profile(path))
+        config = self.frame.model.config()[0]
+        self.assertEqual((config['INPUTS.reference_panel_capture'], config['INPUTS.reference_panel_capture_after']),
+                         ('IMG_0005, IMG_0422', ''))
+        self.assertTrue(any('are now in Reference panel captures' in line for line in self.frame.log_lines()))
+
+    def test_the_orientations_offered_are_those_of_the_panel_captures(self):
+        entry = self.frame.entries['PANEL.panel_orientation']
+        groups = wf.orientation_groups({'IMG_0005': 87.0, 'IMG_0422': 30.0})
+        self.frame._show_orientations(groups, None)
+        values = list(entry.cget('values'))
+        self.assertEqual(values[0], 'All the panel captures (heading 30: 1; heading 87: 1)')
+        self.assertEqual(values[1:], ['Only heading 30 deg (facing the sun), 1 capture',
+                                      'Only heading 87 deg (with the sun at the side), 1 capture'])
+        self.frame.orientation_shown.set(values[1])
+        self.assertEqual(self.frame.model.config()[0]['PANEL.panel_orientation'], '30')
+        self.assertIn('2 orientations', self.frame.orientation_info.cget('text'))
+        self.frame._show_orientations(wf.orientation_groups({'IMG_0005': 87.0}), None)   # 30 is no longer there: kept, said
+        self.assertIn('Heading 30 deg (not among these panel captures)', list(entry.cget('values')))
+        self.frame.set_value('PANEL.panel_orientation', 'all')
+        self.frame._show_orientations(wf.orientation_groups({'IMG_0005': 87.0}), None)   # one orientation: nothing to choose
+        self.assertIn('disabled', entry.state())
+        self.assertIn('one orientation', self.frame.orientation_info.cget('text'))
+
+    def test_the_panel_captures_are_checked_in_a_table_and_can_be_left_out(self):
+        rows = [{'capture': 'IMG_0005', 'time': '2023:02:02 13:26:38', 'moment': 'before', 'heading': 87.0,
+                 'orientation': 'with the sun at the side', 'used': True, 'departure': -0.05, 'band': 'Red',
+                 'flag': 'departs more than 2 % from the others'},
+                {'capture': 'IMG_0422', 'time': '2023:02:02 13:48:36', 'moment': 'after', 'heading': 83.0,
+                 'orientation': 'with the sun at the side', 'used': True, 'departure': None, 'band': None, 'flag': ''}]
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005, IMG_0422')
+        self.frame._show_panel_check(rows, [])
+        window = self.frame.panel_check_window
+        tree = [child for child in window.winfo_children()[0].winfo_children() if child.winfo_class() == 'Treeview'][0]
+        self.assertEqual(tree.get_children(), ('IMG_0005', 'IMG_0422'))
+        self.assertEqual(tree.item('IMG_0005')['values'][4], '-5.0 % (Red)')
+        self.assertEqual(tree.item('IMG_0005')['tags'], ['flagged'])
+        self.frame.leave_out_panel_captures(['IMG_0005'])
+        config = self.frame.model.config()[0]
+        self.assertEqual(config['INPUTS.reference_panel_capture'], 'IMG_0422')
+        self.assertIn('IMG_0005', config['INPUTS.excluded_captures'])                  # so it is not corrected either
+        window.destroy()
+        with mock.patch.object(rw.wf, 'check_panel_captures', return_value=(rows, [])) as check:
+            self.frame.check_panel_captures()
+            for _ in range(50):
+                self.root.update()
+                if check.called and getattr(self.frame, 'panel_check_window', window) is not window:
+                    break
+                time.sleep(0.05)
+        self.assertTrue(check.called)
+
+    def test_each_output_enables_only_the_fields_it_uses(self):
+        def enabled(key):
+            return all('disabled' not in widget.state() for widget in self.frame.field_widgets[key])
+        use = self.frame.variables['CORRECTION.use_dls']
+        use.set(False)
+        self.frame.set_value('INPUTS.output_product', 'dls_reflectance')
+        self.assertTrue(use.get())                                         # the DLS alone always uses the DLS
+        self.assertFalse(enabled('CORRECTION.use_dls'))
+        self.assertFalse(enabled('PANEL.panels_used'))
+        self.assertTrue(enabled('INPUTS.reference_panel_capture'))        # only compared with the DLS, but measured
+        self.frame.set_value('INPUTS.output_product', 'radiance')
+        self.assertFalse(use.get())
+        for key in ('INPUTS.reference_panel_capture', 'PANEL.percent_inner_area', 'CHECKS.band_ratio_tolerance'):
+            self.assertFalse(enabled(key), key)
+        self.assertTrue(enabled('CHECKS.max_camera_tilt_deg'))           # the geometry of the images is still checked
+        self.frame.set_value('INPUTS.output_product', 'panel_reflectance')
+        self.assertFalse(use.get())                                        # the choice made before is given back
+        for key in ('INPUTS.reference_panel_capture', 'PANEL.panels_used', 'CORRECTION.use_dls'):
+            self.assertTrue(enabled(key), key)
         self.frame.set_value('INPUTS.reference_panel_capture_after', 'IMG_0005')
         self.assertEqual(self.frame.problems()[1], [])
 
@@ -1246,23 +1322,26 @@ class CaptureChoiceTests(unittest.TestCase):
     def test_panel_captures_are_typed_or_chosen_by_looking_at_the_captures(self):
         entry = self.frame.entries['INPUTS.reference_panel_capture']
         self.assertEqual(entry.winfo_class(), 'TEntry')
-        self.assertEqual(self.frame.capture_names(), ['IMG_0005', 'IMG_0010', 'IMG_0422'])
-        self.assertEqual(self.frame.capture_names(True), ['', 'IMG_0005', 'IMG_0010', 'IMG_0422'])
-        with mock.patch.object(rw, 'pick_captures', return_value='IMG_0010') as picker:
+        self.assertEqual(self.frame.capture_names(), ['IMG_0003', 'IMG_0005', 'IMG_0009', 'IMG_0010', 'IMG_0422', 'IMG_0423'])
+        self.assertEqual(self.frame.capture_names(True), [''] + ['IMG_0003', 'IMG_0005', 'IMG_0009', 'IMG_0010', 'IMG_0422', 'IMG_0423'])
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
             self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
         args, kwargs = picker.call_args
-        self.assertEqual(args[1], ['IMG_0005', 'IMG_0010', 'IMG_0422'])
+        self.assertEqual(args[1], ['IMG_0003', 'IMG_0005', 'IMG_0009', 'IMG_0010', 'IMG_0422', 'IMG_0423'])
         self.assertEqual(kwargs['selected'], ['IMG_0005'])
-        self.assertIsNone(kwargs['none_label'])                                  # the first panel capture is needed
-        self.assertFalse(kwargs.get('multiple', False))
+        self.assertTrue(kwargs['multiple'])                                      # one capture or several, averaged
         self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture'), 'IMG_0010')
         self.assertEqual(len(kwargs['paths_of']('IMG_0005')), 6)                  # what the window needs to show the pictures
         self.assertEqual(kwargs['bands'], ['Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR'])
         self.assertIn(kwargs['resolve_band']('Red'), range(6))                    # read from the metadata of a capture
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0005', 'IMG_0010']):
+            self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
+        self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture'), 'IMG_0005, IMG_0010')
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0010')
         self.frame.set_value('INPUTS.reference_panel_capture_after', 'IMG_0010')
-        with mock.patch.object(rw, 'pick_captures', return_value='') as picker:
+        with mock.patch.object(rw, 'pick_captures', return_value=[]) as picker:
             self.frame.choose_panel_capture('INPUTS.reference_panel_capture_after')
-        self.assertEqual(picker.call_args.kwargs['none_label'], 'No second panel capture')
+        self.assertIn('before and after the flight', picker.call_args.kwargs['title'])
         self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture_after'), '')
         with mock.patch.object(rw, 'pick_captures', return_value=None):
             self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
@@ -1272,9 +1351,9 @@ class CaptureChoiceTests(unittest.TestCase):
 
     def test_captures_to_correct_are_chosen_from_a_list(self):
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
-            self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
+            self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0003, IMG_0005, IMG_0009, IMG_0423')
             self.frame.choose_captures()
-        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel capture is not offered
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel captures are not offered
         self.assertEqual(self.frame.model.get('INPUTS.image_captures'), 'IMG_0010')      # shown in the field, even if it is all
         self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0001')
         with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']):
@@ -1294,7 +1373,7 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertIn('Not found in the images folder: IMG_7', self.frame.captures_summary.cget('text'))
         self.assertTrue(self.frame.captures_summary.winfo_manager())
         self.frame.set_value('INPUTS.image_captures', '')
-        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0003, IMG_0005, IMG_0009, IMG_0423')
         self.frame._update_captures_summary()
         text = self.frame.captures_details()[1]
         self.assertIn('All the other captures of the folder will be corrected (2):', text)
@@ -1302,13 +1381,31 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertIn('- IMG_0422', text)
         self.assertFalse(self.frame.captures_summary.winfo_manager())
 
+    def test_captures_to_leave_out_are_chosen_from_a_list_and_not_corrected(self):
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0003, IMG_0005, IMG_0009, IMG_0423')
+        self.frame.set_value('INPUTS.image_captures', '')
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0422']) as picker:
+            self.frame.choose_captures('INPUTS.excluded_captures')
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel captures are not offered
+        self.assertEqual(picker.call_args.kwargs['title'], 'Select the captures to leave out')
+        self.assertEqual(self.frame.model.get('INPUTS.excluded_captures'), 'IMG_0422')
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
+            self.frame.choose_captures()
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010'])                         # nor the one left out
+        self.frame.set_value('INPUTS.image_captures', '')
+        self.frame._update_captures_summary()
+        self.assertIn('All the other captures of the folder will be corrected (1):', self.frame.captures_details()[1])
+        self.frame.set_value('INPUTS.image_captures', 'IMG_0422')
+        self.frame._update_captures_summary()
+        self.assertIn('Both selected and left out: IMG_0422', self.frame.captures_summary.cget('text'))
+
     def test_the_pattern_details_and_the_suggestion(self):
         self.frame._update_pattern_preview()
         title, text = self.frame.pattern_details()
         self.assertEqual(title, 'In the images folder')
         self.assertIn('{capture}_{index}.tif', text)
         self.assertIn('- IMG_0005_1.tif -> capture IMG_0005, file 1', text)
-        self.assertIn('3 captures (3 with 6 files)', text)
+        self.assertIn('6 captures (6 with 6 files)', text)
         self.assertEqual(self.frame.pattern_preview.cget('text'), '')
         self.frame.set_value('INPUTS.file_pattern', r'(?P<capture>X.+)\.tif$')
         self.frame._update_pattern_preview()

@@ -13,7 +13,7 @@
 | Step | What it corrects | Metadata |
 |---|---|---|
 | 1. Dark level | The value that the sensor gives without light, subtracted from every pixel | `EXIF:BlackLevel` (mean of the values) |
-| 2. Vignetting | The lens lets less light reach the edges of the sensor than its centre; each pixel is multiplied by 1 / a polynomial of its position (1 at the centre, up to about 2 in the corners) | `XMP:VignettingPolynomial2D`, `XMP:VignettingPolynomial2DName` |
+| 2. Vignetting | The lens lets less light reach the edges of the sensor than its centre; each pixel is multiplied by 1 / a polynomial of its position (1 at the centre, up to about 2 in the corners) | `XMP:VignettingPolynomial2D`, `XMP:VignettingPolynomial2DName` (RedEdge-P, Altum-PT) or `XMP:VignettingCenter`, `XMP:VignettingPolynomial` (RedEdge-M/MX, Altum) |
 | 3. Row gradient | The sensor is read row by row, so the rows further down are multiplied by a small correction | `XMP:RadiometricCalibration` (a2, a3), `EXIF:ExposureTime` |
 | 4. Scale to radiance | Divided by gain x exposure time and by 2 to the bits per pixel, multiplied by the calibration coefficient a1 | `EXIF:ISOSpeed` (gain = ISO / 100), `EXIF:ExposureTime`, `EXIF:BitsPerSample`, `XMP:RadiometricCalibration` (a1) |
 
@@ -23,7 +23,7 @@ radiance = vignetting(x, y) x row_gradient(row) x (DN - dark level) / (gain x ex
 
 &emsp;&emsp;In the vignetting polynomial, `x` is the position across the width of the image (0 at the left, 1 at the right) and `y` down its height (0 at the top, 1 at the bottom). The radiance is in W/m²/sr/nm. Negative values, which come from noise around the dark level, become 0.
 
-&emsp;&emsp;MicaSense's code also has a radial vignetting model (`XMP:VignettingCenter`, `XMP:VignettingPolynomial`), written by older cameras such as the RedEdge-M/MX. This program reads only the 2D polynomial of the RedEdge-P, so an image without it stops with an error that names the missing field.
+&emsp;&emsp;Older cameras (RedEdge-M/MX, Altum) write a radial model instead: the polynomial is of `r`, the distance in pixels from the centre of the vignetting, `1 + c1 r + c2 r² + ...`. The program uses the model that the image has. The radial model was checked on the RedEdge-MX sample captures published by MicaSense (the same radiance as MicaSense's code), not on flights of that camera. As in MicaSense's code, an exposure of 1/6329 s written by some old RedEdge firmware is read as 0.274 ms, and the DLS irradiance of the RedEdge and RedEdge-M/MX before firmware 5.1.7 (Altum before 1.2.3) is not used.
 
 ## From radiance to reflectance
 
@@ -36,6 +36,16 @@ reflectance  = radiance x panel factor x E_panel / E_image  (with the DLS)
 ```
 
 &emsp;&emsp;`E_panel` and `E_image` are the irradiances estimated by the DLS at the panel capture and at the image (see [Optional DLS correction](dls-correction.md)). With two panel captures, each panel gives its own factor (and, with the DLS, its own ratio), and the results are averaged with the weights of the [panel selection approach](reference-panel.md#how-the-panels-are-combined). The factor applied to each band of each capture is saved in its provenance record (`factor_applied`).
+
+## What is written
+
+&emsp;&emsp;"What is written" (`INPUTS.output_product`, Inputs page) chooses the images of the results folder:
+
+- **Reflectance, calibrated with the reference panel** (`panel_reflectance`, the default): as above, with the DLS correction if it is turned on. The most accurate.
+- **Reflectance from the DLS only** (`dls_reflectance`): `reflectance = pi x radiance / E_DLS`, without a panel, for flights without a photo of the panel. It relies on the absolute calibration of the DLS, which can differ from the camera: in the example images, at the panel capture, it is 5 % lower than the panel in Blue and 32 to 57 % higher in the other bands. When panel captures are given, they do not calibrate the images, but the end of the log and the result file (`panel.dls_only_check`) say how far the DLS-only reflectance of each panel capture is from its known reflectance. Images that do not write `XMP:IrradianceScaleToSIUnits` are read in µW/cm²/nm (scale 0.01), as MicaSense does for the DLS 2; the provenance record says which scale was used.
+- **Radiance** (`radiance`): the radiance of step 4, from the metadata of each image alone. Neither the panel nor the DLS is used, and the DLS correction setting is ignored. It is the output to use when the reflectance is calibrated afterwards: with the empirical line method (targets of known reflectance in the field, read on the radiance orthomosaic), with reference targets that appear in the flight images themselves, or in other software that does its own calibration.
+
+&emsp;&emsp;The number format (`INPUTS.output_data_type`) is 32-bit float by default: about seven significant digits, far more than the precision of the camera, in half the size of 64-bit floats. The provenance record of each capture says which output it holds (`method`: `panel_only`, `panel_and_dls`, `dls_only` or `radiance`).
 
 ## Geometry of the images
 

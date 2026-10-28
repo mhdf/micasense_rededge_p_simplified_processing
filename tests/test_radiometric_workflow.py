@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -32,6 +33,20 @@ def config_for(results_folder, **changes):
 
 
 class ConfigurationTests(unittest.TestCase):
+
+    def test_a_results_folder_too_long_for_windows_is_a_clear_problem(self):
+        long_folder = Path(tempfile.gettempdir()) / ('x' * 230)
+        with mock.patch.object(wf, 'windows_long_paths_enabled', return_value=False):
+            problems = wf.path_length_problems(long_folder)
+            self.assertEqual(len(problems), 1)
+            self.assertIn('too long for Windows', problems[0])
+            self.assertEqual(wf.path_length_problems(Path(tempfile.gettempdir()) / 'results'), [])
+        with mock.patch.object(wf, 'windows_long_paths_enabled', return_value=True):
+            self.assertEqual(wf.path_length_problems(long_folder), [])
+        # the path as it is written counts, not where a mapped drive leads (os.path.abspath does not resolve)
+        with mock.patch.object(wf, 'windows_long_paths_enabled', return_value=False), \
+                mock.patch.object(wf.os.path, 'abspath', return_value='R:\\results\\reflectance'):
+            self.assertEqual(wf.path_length_problems('R:\\results\\reflectance'), [])
 
     def test_the_configuration_is_found_in_what_a_run_wrote(self):
         values = {'PANEL.percent_inner_area': 0.5}
@@ -121,7 +136,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('ExifTool not found', text)
 
     def test_captures_are_listed_from_the_file_names(self):
-        self.assertEqual(rct.list_capture_names(RAW), ['IMG_0005', 'IMG_0010', 'IMG_0422'])
+        self.assertEqual(rct.list_capture_names(RAW), ['IMG_0003', 'IMG_0005', 'IMG_0009', 'IMG_0010', 'IMG_0422', 'IMG_0423'])
         self.assertEqual(wf.capture_names(' A , B,,C '), ['A', 'B', 'C'])
 
     def test_panel_regions_are_saved_and_loaded_keeping_other_captures(self):
@@ -320,17 +335,17 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             wf.detect_bands(wf.default_config(), ROOT, 'IMG_9999')
 
-    def test_a_second_panel_is_needed_to_use_two_panels(self):
-        for mode in ('last', 'mean', 'interpolate_time', 'nearest_time', 'nearest_illumination',
-                     'interpolate_illumination'):
-            dls = {'CORRECTION.use_dls': mode in rct.PANELS_BY_ILLUMINATION}      # the choices by the light need the DLS
-            config = wf.merge_config({'PANEL.panels_used': mode, **dls})
-            self.assertIn('there is no second panel capture', '\n'.join(wf.validate_config(config, ROOT)))
-            config = wf.merge_config({'PANEL.panels_used': mode, 'INPUTS.reference_panel_capture_after': 'IMG_0005', **dls})
-            self.assertEqual(wf.validate_config(config, ROOT), [])
-        self.assertEqual(wf.validate_config(wf.merge_config({'PANEL.panels_used': 'first'}), ROOT), [])
+    def test_the_panel_approach_and_the_orientation_are_validated(self):
+        for mode in ('last', 'mean', 'interpolate_time', 'nearest_time', 'adjacent_time'):
+            # the moments are found from the times at the run: one moment is used alone, with a flag
+            self.assertEqual(wf.validate_config(wf.merge_config({'PANEL.panels_used': mode}), ROOT), [])
         self.assertIn('PANEL.panels_used must be one of', '\n'.join(wf.validate_config(
             wf.merge_config({'PANEL.panels_used': 'later'}), ROOT)))
+        for good in ('all', 'ALL', '30', '172.5'):
+            self.assertEqual(wf.validate_config(wf.merge_config({'PANEL.panel_orientation': good}), ROOT), [], good)
+        for bad in ('facing', '200', ''):
+            self.assertIn('PANEL.panel_orientation must be', '\n'.join(wf.validate_config(
+                wf.merge_config({'PANEL.panel_orientation': bad}), ROOT)), bad)
 
     def test_the_choices_of_the_panel_by_the_light_need_the_dls_correction(self):
         for mode in rct.PANELS_BY_ILLUMINATION:
@@ -382,15 +397,15 @@ class RunTests(unittest.TestCase):
                                                 list(wf.BAND_NAMES))['Blue'])
         expected = target.digital_numbers_to_reflectance(factor)
         saved = tifffile.imread(folder / 'IMG_0010_1.tif')
-        self.assertEqual(saved.dtype, np.float64)
-        self.assertTrue(np.array_equal(saved, expected))
+        self.assertEqual(saved.dtype, np.float32)                                # the default number format
+        self.assertTrue(np.array_equal(saved, expected.astype(np.float32)))
 
     def test_result_and_provenance_files_are_saved(self):
         folder = self.folder / 'panel_only'
         saved = json.loads((folder / wf.RESULT_FILE_NAME).read_text(encoding='utf-8'))
         self.assertEqual(saved['status'], 'completed')
         self.assertEqual(Path(saved['result_file']), folder / wf.RESULT_FILE_NAME)
-        self.assertEqual(set(saved['panel']['before']['bands']), set(wf.BAND_NAMES))
+        self.assertEqual(set(saved['panel']['before']['captures']['IMG_0005']['bands']), set(wf.BAND_NAMES))
         provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
         self.assertEqual(provenance['method'], 'panel_only')
         self.assertEqual(provenance['parameters']['config']['PANEL.percent_inner_area'], 0.7)
@@ -432,7 +447,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(entry['provenance'], 'IMG_0010_provenance.json')
         self.assertEqual(list(entry['dls']), ['median_ratio'])
         self.assertAlmostEqual(entry['geometry']['dls_tilt_deg'], 14.99, places=1)
-        for audit in saved['panel']['before']['bands'].values():
+        for audit in saved['panel']['before']['captures']['IMG_0005']['bands'].values():
             for key in ('image_path', 'band_name', 'sat_threshold', 'percent_inner_area', 'geometry'):
                 self.assertNotIn(key, audit)
         for key in ('format', 'min_coverage'):
@@ -467,7 +482,7 @@ class RunTests(unittest.TestCase):
         self.assertAlmostEqual(ratios['Panchro'], 99.211212701455025 / 112.20932502581493)
         ratio = tifffile.imread(folder / 'IMG_0010_6.tif').mean() / \
                 tifffile.imread(self.folder / 'panel_only' / 'IMG_0010_6.tif').mean()
-        self.assertAlmostEqual(ratio, ratios['Panchro'])
+        self.assertAlmostEqual(ratio, ratios['Panchro'], delta=1e-6)                     # 32-bit images
 
     def test_dls_run_reports_the_tilt_flag_of_the_example(self):
         flags = self.with_dls['flags']
@@ -492,7 +507,7 @@ class RunTests(unittest.TestCase):
 
     def test_the_geometry_of_the_panel_and_of_the_images_is_checked_once_for_each(self):
         result = self.panel_only
-        panel = result['panel']['before']['geometry']
+        panel = result['panel']['before']['captures']['IMG_0005']['geometry']
         self.assertAlmostEqual(panel['camera_tilt_deg'], 0.075, places=2)
         self.assertAlmostEqual(panel['heading_to_sun_deg'], 87.0, places=1)
         flags = [flag for flag in result['flags'] if 'panel capture' in flag and 'Heading' in flag]
@@ -580,7 +595,7 @@ class RunTests(unittest.TestCase):
     def test_the_summary_of_the_run(self):
         summary = self.panel_only['summary']
         self.assertEqual((summary['captures'], summary['corrected'], summary['files'], summary['flags']), (1, 1, 6, 2))
-        self.assertEqual(summary['panels']['before']['capture'], 'IMG_0005')
+        self.assertEqual(summary['panels']['IMG_0005']['capture'], 'IMG_0005')
         images = summary['images']
         self.assertEqual(set(images), {'camera_tilt_deg', 'heading_to_sun_deg', 'sun_elevation_deg', 'dls_tilt_deg',
                                        'dls_ratio'})
@@ -613,12 +628,12 @@ class RunTests(unittest.TestCase):
         self.assertTrue(all(entry['factor_ratio'] == 1.0 for entry in comparison['bands'].values()))
 
     def test_a_region_drawn_by_hand_replaces_the_automatic_one_for_that_band_only(self):
-        automatic = self.panel_only['panel']['before']['bands']
+        automatic = self.panel_only['panel']['before']['captures']['IMG_0005']['bands']
         regions = self.folder / 'regions.json'
         wf.save_panel_regions(regions, 'IMG_0005', {'Blue': automatic['Blue']['panel_bounds']})
         result = wf.run(config_for(self.folder / 'manual_blue', **{'PANEL.manual_regions_file': str(regions)}), ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
-        bands = result['panel']['before']['bands']
+        bands = result['panel']['before']['captures']['IMG_0005']['bands']
         self.assertEqual(bands['Blue']['region_source'], 'manual')
         self.assertEqual({band for band, audit in bands.items() if audit['region_source'] == 'automatic'},
                          set(wf.BAND_NAMES) - {'Blue'})
@@ -632,16 +647,17 @@ class RunTests(unittest.TestCase):
                                                              'INPUTS.image_captures': 'IMG_0005',
                                                              'PANEL.manual_regions_file': str(regions)}), ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
-        self.assertTrue(all(audit['region_source'] == 'manual' for audit in result['panel']['before']['bands'].values()))
+        audits = result['panel']['before']['captures']['IMG_0010']['bands']               # the "panel" is IMG_0010 here
+        self.assertTrue(all(audit['region_source'] == 'manual' for audit in audits.values()))
 
     def test_the_origin_of_the_regions_reaches_the_audit_of_the_panel(self):
-        automatic = self.panel_only['panel']['before']['bands']
+        automatic = self.panel_only['panel']['before']['captures']['IMG_0005']['bands']
         regions = self.folder / 'regions_origin.json'
         wf.save_panel_regions(regions, 'IMG_0005', {band: audit['panel_bounds'] for band, audit in automatic.items()},
                               {'Blue': 'accepted_automatic', 'Green': 'edited'})
         result = wf.run(config_for(self.folder / 'origin', **{'PANEL.manual_regions_file': str(regions)}), ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
-        bands = result['panel']['before']['bands']
+        bands = result['panel']['before']['captures']['IMG_0005']['bands']
         self.assertEqual((bands['Blue']['region_source'], bands['Blue']['region_origin']), ('manual', 'accepted_automatic'))
         self.assertEqual(bands['Green']['region_origin'], 'edited')
         self.assertIsNone(bands['Red']['region_origin'])                              # a file that does not say it
@@ -667,8 +683,8 @@ class RunTests(unittest.TestCase):
         reflectance = result['panel']['reflectance']
         self.assertEqual(reflectance['source'], 'spectral_file')
         self.assertTrue(all(abs(level - 0.5) < 1e-12 for level in reflectance['levels'].values()))
-        values_run = self.panel_only['panel']['before']['bands']
-        spectral_run = result['panel']['before']['bands']
+        values_run = self.panel_only['panel']['before']['captures']['IMG_0005']['bands']
+        spectral_run = result['panel']['before']['captures']['IMG_0005']['bands']
         for band in wf.BAND_NAMES:
             self.assertAlmostEqual(spectral_run[band]['radiance_to_reflectance_factor'] /
                                    values_run[band]['radiance_to_reflectance_factor'],
@@ -700,7 +716,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['status'], 'completed', result['errors'])
         self.assertEqual(sorted(Path(path).name for path in result['outputs']),
                          ['IMG_0010_1.tif', 'IMG_0010_2.tif', 'IMG_0010_3.tif'])
-        self.assertEqual(set(result['panel']['before']['bands']), set(three))
+        self.assertEqual(set(result['panel']['before']['captures']['IMG_0005']['bands']), set(three))
         provenance = json.loads((self.folder / 'three_bands' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
         self.assertEqual([band['band'] for band in provenance['bands']], list(three))
         # a band gives the same result whether the others are processed or not
@@ -771,8 +787,8 @@ class RunTests(unittest.TestCase):
         provenance = json.loads((self.folder / 'last_panel' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
         self.assertEqual([panel['weight'] for panel in provenance['bands'][0]['panels']], [1.0])
         single = self.run_with_two_panels('last_without_second', 'last', **{'INPUTS.reference_panel_capture_after': ''})
-        self.assertEqual(single['status'], 'failed')                              # there is no last panel to use
-        self.assertIn('there is no second panel capture', single['errors'][0])
+        self.assertEqual(single['status'], 'completed', single['errors'])          # one moment only: used alone
+        self.assertIn("There are panel captures of one moment only: 'After the flight only' uses them alone", single['flags'])
 
     def test_with_the_dls_the_last_panel_gives_the_reflectance_of_its_own_light(self):
         result = self.run_with_a_second_light('last_dls', 'last', 0.5)            # the second panel read half the irradiance
@@ -946,7 +962,7 @@ class RunTests(unittest.TestCase):
         result = self.run_with_a_second_light('light_summary', 'nearest_illumination', 1.13)
         self.assertEqual(result['summary']['panel_weights'], {'mode': 'nearest_illumination', 'first_only': 0,
                                                               'second_only': 1, 'both': 0})
-        self.assertIn('Panels (nearest_illumination): the first panel alone in 0 capture(s), the second alone in 1, both in 0.',
+        self.assertIn('Panels (nearest_illumination): the panel before the flight alone in 0 capture(s), after it alone in 1, both in 0.',
                       wf.summary_lines(result))
         soft = self.run_with_a_second_light('light_summary_soft', 'interpolate_illumination', 0.9)
         self.assertEqual(soft['summary']['panel_weights']['both'], 1)
@@ -984,11 +1000,194 @@ class RunTests(unittest.TestCase):
         for path in RAW.glob('*.tif'):
             if path.name != 'IMG_0010_3.tif':
                 shutil.copy(path, images / path.name)
-        result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'incomplete')}, ROOT)
+        result = wf.run({'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / 'incomplete'),
+                         'INPUTS.reference_panel_capture': 'IMG_0003, IMG_0005, IMG_0009, IMG_0423'}, ROOT)
         self.assertEqual(result['status'], 'completed_with_errors')
         self.assertIn("missing: ['Red']", result['captures']['IMG_0010']['errors'][0])
         self.assertEqual(sorted(Path(path).name for path in result['outputs']),            # the other capture is corrected
                          [f'IMG_0422_{number}.tif' for number in range(1, 7)])
+
+    def test_the_closest_panel_capture_before_and_after_reproduces_metashape(self):
+        # one capture in each moment: the same as the interpolation in time
+        for mode in ('adjacent_time', 'interpolate_time'):
+            result = self.run_with_two_panels(f'two_{mode}', mode, **{'INPUTS.reference_panel_capture_after': 'IMG_0422',
+                                                                     'CORRECTION.use_dls': True})
+            self.assertEqual(result['status'], 'completed', result['errors'])
+        for number in range(1, 7):
+            self.assertTrue(np.allclose(tifffile.imread(self.folder / 'two_adjacent_time' / f'IMG_0010_{number}.tif'),
+                                        tifffile.imread(self.folder / 'two_interpolate_time' / f'IMG_0010_{number}.tif'),
+                                        rtol=1e-6, atol=0), number)
+
+        def capture(time):
+            return {'Blue': SimpleNamespace(metadata={'EXIF:DateTimeOriginal': f'2023:02:02 {time}'})}
+        panels = {'before': {'P1': capture('13:00:00'), 'P2': capture('13:00:10')},
+                  'after': {'P3': capture('13:20:10'), 'P4': capture('13:20:20')}}
+        shares = wf.adjacent_panel_shares(panels, capture('13:10:10'), 'I')
+        self.assertEqual(set(shares), {'P2', 'P3'})                              # the others do not count, as in Metashape
+        self.assertAlmostEqual(shares['P3'], 0.5)
+        self.assertEqual(wf.adjacent_panel_shares(panels, capture('12:59:00'), 'I'), {'P1': 1.0})
+        self.assertEqual(wf.adjacent_panel_shares(panels, capture('13:30:00'), 'I'), {'P4': 1.0})
+        self.assertEqual(wf.adjacent_panel_shares({'before': panels['before']}, capture('13:10:10'), 'I'), {'P2': 1.0})
+        config = wf.merge_config(config_for(self.folder / 'x', **{'PANEL.panels_used': 'adjacent_time'}))
+        self.assertEqual(wf.validate_config(config, ROOT), [])                   # a second moment is not needed
+
+    def test_the_orientation_of_the_panel_captures(self):
+        self.assertEqual([wf.orientation_kind(heading) for heading in (20, 87, 170, None)],
+                         ['facing_sun', 'side', 'back_to_sun', 'unknown'])
+        groups = wf.orientation_groups({'A': 62.8, 'B': 62.6, 'C': 30.0, 'D': 30.1, 'E': 171.0, 'F': None})
+        self.assertEqual([(group['heading'], group['kind'], group['captures']) for group in groups],
+                         [(30, 'facing_sun', ['C', 'D']), (63, 'side', ['B', 'A']), (171, 'back_to_sun', ['E'])])
+        self.assertEqual(wf.orientation_label(groups[0]), 'heading 30 deg (facing the sun), 2 captures')
+        self.assertTrue(wf.orientation_selected('all', None))
+        self.assertTrue(wf.orientation_selected('30', 45.0))                    # within 20 degrees
+        self.assertFalse(wf.orientation_selected('30', 62.8))
+        self.assertFalse(wf.orientation_selected('30', None))
+
+        def capture(factor):
+            return {'Blue': SimpleNamespace(panel_audit={'radiance_to_reflectance_factor': factor})}
+        group = {'F1': capture(2.0), 'F2': capture(2.0), 'B1': capture(2.1)}
+        difference = wf.orientation_difference(group, {'F1': 20.0, 'F2': 21.0, 'B1': 170.0}, False)
+        self.assertEqual(difference['reference_heading'], 20)                    # the orientation with the most captures
+        self.assertAlmostEqual(difference['differences'][170]['Blue'], 0.05)
+        self.assertEqual(wf.orientation_difference(group, {'F1': 20.0, 'F2': 21.0, 'B1': 25.0}, False), {})
+        # the example panel capture has the sun at its side (87 degrees): a heading of 30 keeps none
+        side = wf.run(config_for(self.folder / 'side'), ROOT)
+        self.assertEqual(side['panel']['before']['captures']['IMG_0005']['orientation'], 'side')
+        self.assertEqual([group['heading'] for group in side['panel']['orientations']], [87])
+        facing = wf.run(config_for(self.folder / 'facing', **{'PANEL.panel_orientation': '30'}), ROOT)
+        self.assertEqual(facing['status'], 'failed')
+        self.assertIn('None of the panel captures IMG_0005 has the heading chosen', facing['errors'][0])
+        self.assertIn('heading 87 deg (with the sun at the side), 1 capture', facing['errors'][0])
+
+    def test_the_moments_of_the_panel_captures_are_found_from_their_times(self):
+        self.assertEqual([wf.panel_moment(t, (100, 200)) for t in (50, 120, 190, 250)],
+                         ['before', 'before', 'after', 'after'])
+        self.assertEqual(wf.panel_moment(250, None), 'before')
+        # all the panel captures in one field: IMG_0422 was taken after IMG_0010, so it is the panel after the flight
+        result = wf.run(config_for(self.folder / 'one_field', **{'INPUTS.reference_panel_capture': 'IMG_0005, IMG_0422',
+                                                                  'PANEL.panels_used': 'interpolate_time'}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertEqual((list(result['panel']['before']['captures']), list(result['panel']['after']['captures'])),
+                         (['IMG_0005'], ['IMG_0422']))
+        two_fields = self.run_with_two_panels('two_fields', 'interpolate_time',
+                                              **{'INPUTS.reference_panel_capture_after': 'IMG_0422'})
+        self.assertAlmostEqual(result['captures']['IMG_0010']['panels']['weight_of_the_second_panel'],
+                               two_fields['captures']['IMG_0010']['panels']['weight_of_the_second_panel'])
+        # only one moment: an approach that needs two uses it alone, with a flag
+        alone = wf.run(config_for(self.folder / 'alone', **{'PANEL.panels_used': 'mean'}), ROOT)
+        self.assertEqual(alone['status'], 'completed', alone['errors'])
+        self.assertIn("There are panel captures of one moment only: 'Average of before and after' uses them alone",
+                      alone['flags'])
+
+    def test_the_panel_captures_of_the_example_flight_that_depart_are_flagged(self):
+        # three panel captures before the flight (20 s apart) and two after it, as they were taken
+        config = config_for(self.folder / 'example_panels', **{
+            'INPUTS.reference_panel_capture': 'IMG_0003, IMG_0005, IMG_0009, IMG_0422, IMG_0423'})
+        for use_dls, flagged in ((False, ['IMG_0009']), (True, ['IMG_0003', 'IMG_0009'])):
+            rows, _ = wf.check_panel_captures(dict(config, **{'CORRECTION.use_dls': use_dls}), ROOT)
+            self.assertEqual([(row['capture'], row['moment']) for row in rows],
+                             [('IMG_0003', 'before'), ('IMG_0005', 'before'), ('IMG_0009', 'before'),
+                              ('IMG_0422', 'after'), ('IMG_0423', 'after')])
+            self.assertEqual([row['capture'] for row in rows if row['flag']], flagged, use_dls)
+
+    def test_the_panel_captures_can_be_checked_without_a_run(self):
+        rows, flags = wf.check_panel_captures(config_for(self.folder / 'check', **{
+            'INPUTS.reference_panel_capture': 'IMG_0005, IMG_0422'}), ROOT)
+        self.assertEqual([(row['capture'], row['moment']) for row in rows], [('IMG_0005', 'before'), ('IMG_0422', 'after')])
+        self.assertEqual(rows[0]['orientation'], 'with the sun at the side')
+        self.assertTrue(all(row['used'] for row in rows))
+        self.assertFalse((self.folder / 'check').exists())                       # nothing is written
+
+    def test_a_panel_capture_that_departs_from_its_moment_is_named(self):
+        # three copies of the panel capture; the DLS of IMG_0007 read 10 % more light than in the other two
+        images = self.folder / 'three_panels_images'
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            shutil.copy(path, images / path.name)
+            if path.name.startswith('IMG_0005'):
+                for copy in ('IMG_0006', 'IMG_0007'):
+                    shutil.copy(path, images / path.name.replace('IMG_0005', copy))
+        original = wf._read_capture
+
+        def changed(images_folder, capture, bands, exiftool_path, *arguments):
+            objects = original(images_folder, capture, bands, exiftool_path, *arguments)
+            if capture == 'IMG_0007':
+                for image in objects.values():
+                    image.metadata['XMP:HorizontalIrradiance'] = float(image.metadata['XMP:HorizontalIrradiance']) * 1.1
+            return objects
+
+        for use_dls in (False, True):
+            values = {'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / f'three_{use_dls}'),
+                      'INPUTS.reference_panel_capture': 'IMG_0005, IMG_0006, IMG_0007',
+                      'INPUTS.image_captures': 'IMG_0010', 'CORRECTION.use_dls': use_dls}
+            with mock.patch.object(wf, '_read_capture', changed):
+                result = wf.run(values, ROOT)
+            self.assertEqual(result['status'], 'completed', result['errors'])
+            departures = result['panel']['before']['departures']
+            named = [flag for flag in result['flags'] if flag.startswith('Panel capture ')]
+            if use_dls:                                    # only what is averaged with the DLS sees the difference
+                self.assertAlmostEqual(departures['IMG_0007']['Blue'], 0.1)
+                self.assertEqual(len(named), 1)
+                self.assertIn('Panel capture IMG_0007: its panel factor x DLS irradiance departs +10.0 %', named[0])
+            else:
+                self.assertEqual(named, [])
+                self.assertAlmostEqual(departures['IMG_0007']['Blue'], 0.0)
+            self.assertFalse(any(flag.startswith('Panel captures ') for flag in result['flags']))   # three: named
+
+    def copies_of_the_panel(self, name, copies, factor):
+        """ An images folder with copies of IMG_0005 (same time); the DLS of the last copy read factor x the light """
+        images = self.folder / name
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            shutil.copy(path, images / path.name)
+            if path.name.startswith('IMG_0005'):
+                for copy in copies:
+                    shutil.copy(path, images / path.name.replace('IMG_0005', copy))
+        original = wf._read_capture
+
+        def changed(images_folder, capture, bands, exiftool_path, *arguments):
+            objects = original(images_folder, capture, bands, exiftool_path, *arguments)
+            if capture == copies[-1]:
+                for image in objects.values():
+                    image.metadata['XMP:HorizontalIrradiance'] = float(image.metadata['XMP:HorizontalIrradiance']) * factor
+            return objects
+        return images, changed
+
+    def test_several_panel_captures_of_one_moment_are_averaged_and_their_spread_is_checked(self):
+        # two captures of the panel before the flight; the DLS of IMG_0006 read 10 % more light: only what is averaged with
+        # the DLS sees the difference, and with two captures the pair is flagged (the one that is wrong cannot be told)
+        images, changed = self.copies_of_the_panel('two_panels_images', ['IMG_0006'], 1.1)
+        for use_dls in (False, True):
+            folder = self.folder / f'group_{use_dls}'
+            values = {'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(folder),
+                      'INPUTS.reference_panel_capture': 'IMG_0005, IMG_0006', 'INPUTS.image_captures': 'IMG_0010',
+                      'CORRECTION.use_dls': use_dls}
+            with mock.patch.object(wf, '_read_capture', changed):
+                result = wf.run(values, ROOT)
+            self.assertEqual(result['status'], 'completed', result['errors'])
+            self.assertEqual(list(result['panel']['before']['captures']), ['IMG_0005', 'IMG_0006'])
+            self.assertEqual(set(result['panel']['before']['spread']), set(wf.BAND_NAMES))
+            pair = [flag for flag in result['flags'] if flag.startswith('Panel captures IMG_0005, IMG_0006: the ')]
+            self.assertEqual(bool(pair), use_dls, result['flags'])
+            provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+            blue = provenance['bands'][0]
+            self.assertEqual([panel['weight'] for panel in blue['panels']], [0.5, 0.5])
+            expected = np.mean([panel['adjusted_factor' if use_dls else 'factor'] for panel in blue['panels']])
+            self.assertAlmostEqual(blue['factor_applied'], expected)
+            self.assertEqual(provenance['checks']['compared_with_panel'], 'IMG_0005')     # the closest in time to IMG_0010
+        summary = wf.summary_lines(result)
+        self.assertTrue(any(line.startswith('Panel IMG_0006:') for line in summary))
+
+    def test_captures_to_leave_out_are_not_corrected(self):
+        result = wf.run(config_for(self.folder / 'left_out', **{'INPUTS.image_captures': '',
+                                                                 'INPUTS.excluded_captures': 'IMG_0003, IMG_0009, IMG_0422, IMG_0423'}),
+                        ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertEqual(list(result['captures']), ['IMG_0010'])
+        config = wf.merge_config(config_for(self.folder / 'x', **{'INPUTS.excluded_captures': 'IMG_0010, IMG_9999'}))
+        problems = wf.validate_config(config, ROOT)
+        self.assertIn('Captures both selected and left out: IMG_0010', problems)
+        self.assertTrue(any("Capture 'IMG_9999' not found" in problem for problem in problems))
 
     def test_missing_irradiance_in_one_band_fails_the_dls_correction_of_the_capture(self):
         original = wf._read_capture

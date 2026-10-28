@@ -22,8 +22,10 @@ import sys
 import traceback
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 # Third-Party Imports
+import numpy as np
 import tifffile
 
 # Local Imports
@@ -87,7 +89,8 @@ GROUP_NOTES = {
         "the image capture.\n"
         "- Jump: change of the irradiance of a band between consecutive captures: a spike if it comes back, a "
         "step if it stays.\n"
-        "- Panel drift: the two panel captures against each other (only with a second panel capture).",
+        "- Panel drift: the panel captures before and after the flight against each other (only when there are "
+        "both).",
     "Acquisition geometry (limits)":
         "These checks look at how the camera was pointed in each capture. They only raise flags: they never "
         "change the result.\n"
@@ -139,25 +142,110 @@ FIELDS = [
                   "The Python package pyexiftool must be installed as well (pip install pyexiftool).\n"
                   "The window looks for both when it opens and each time this field changes, and says below what it found: "
                   "the program, how it was found, its version and whether the package is installed.")},
+    {'key': 'INPUTS.output_product', 'group': 'Output', 'kind': 'choice',
+     'choices': ['panel_reflectance', 'dls_reflectance', 'radiance'], 'default': 'panel_reflectance',
+     'labels': {'panel_reflectance': 'Reflectance, calibrated with the reference panel',
+                'dls_reflectance': 'Reflectance from the DLS only (no panel; less accurate)',
+                'radiance': 'Radiance (no panel, no DLS)'},
+     'label': 'What is written',
+     'help': ("What the images of the results folder hold.\n"
+                  "# Choices (the name that is saved is in brackets)\n"
+                  "- Reflectance, calibrated with the reference panel (panel_reflectance): the panel sets the scale, and "
+                  "the DLS optionally corrects the changes of the light (DLS page). The most accurate.\n"
+                  "- Reflectance from the DLS only (dls_reflectance): pi x radiance / DLS irradiance, without a panel, "
+                  "for flights without a photo of the panel. It relies on the absolute calibration of the DLS, which can "
+                  "differ from the camera by tens of percent in some bands. When panel captures are given, they are not "
+                  "used for the correction: the log says how far the DLS-only reflectance of the panel is from its known "
+                  "reflectance. Images whose irradiance has no scale are read in uW/cm2/nm, as MicaSense does.\n"
+                  "- Radiance (radiance): W/m2/sr/nm, from the metadata of each image alone, for example to calibrate it "
+                  "later with targets on the ground. The panel and the DLS are not used.")},
+    {'key': 'INPUTS.output_data_type', 'group': 'Output', 'kind': 'choice', 'choices': ['float32', 'float64'],
+     'default': 'float32', 'labels': {'float32': '32-bit float (half the size)', 'float64': '64-bit float'},
+     'label': 'Number format of the images',
+     'help': ("How the values are stored in the images that are written.\n"
+                  "- 32-bit float: about 7 significant digits, far more than the precision of the camera; the files are "
+                  "half the size.\n"
+                  "- 64-bit float: about 16 digits; the format of the versions before this option.")},
     {'key': 'INPUTS.reference_panel_capture', 'group': 'Reference panel', 'kind': 'text', 'default': 'IMG_0005',
-     'label': 'Reference panel capture', 'help': ("The capture that shows the reference panel: choose it from the captures of the images folder, or "
-                  "type its name (for example IMG_0005).\n"
+     'label': 'Reference panel captures', 'help': ("All the photos of the reference panel of the flight, before and after it: choose them from the "
+                  "captures of the images folder, or type their names separated by commas (for example IMG_0005, "
+                  "IMG_0006, IMG_0422).\n"
+                  "The program sorts them by their time: those taken before the first capture to correct are the "
+                  "panel before the flight, and those taken after the last one are the panel after it. Several "
+                  "photos of one moment are averaged, which lessens the effect of one bad photo; Check panel captures, "
+                  "below, shows how much each one departs from the others.\n"
                   "The panel is photographed with its QR code in view. The program finds the QR code and, from it, the "
                   "region of the panel in each band; the regions can be checked, accepted or drawn by hand with Check / "
-                  "draw panel regions, below.\n"
-                  "This capture also gives the irradiance of the panel (E_panel) for the DLS correction.")},
+                  "draw panel regions (Reference panel page).\n"
+                  "These captures also give the irradiance of the panel (E_panel) for the DLS correction.")},
     {'key': 'INPUTS.reference_panel_capture_after', 'group': 'Reference panel', 'kind': 'text', 'default': '',
-     'label': 'Second panel capture (optional)',
-     'help': ("A second capture of the panel, taken at the end of the flight (optional).\n"
-                  "It is always compared with the first panel capture: a change of the panel factor of a band, or of "
-                  "the DLS irradiance relative to the panel, larger than the panel drift tolerance raises a flag.\n"
-                  "Whether it also calibrates the images is chosen in 'Panel selection approach' (Reference panel "
-                  "page).")},
+     'dialog': True, 'label': 'Panel captures after the flight (earlier configurations)',
+     'help': ("Kept for the configurations of earlier versions, which had a separate field for the panel after the "
+                  "flight: its captures are the panel after the flight whatever their time. The UI moves them to "
+                  "Reference panel captures, where the moments are found from the times.")},
+    {'key': 'PANEL.panels_used', 'kind': 'choice', 'choices': list(rct.PANELS_USED), 'default': 'first',
+     'labels': {'first': 'Before the flight only', 'last': 'After the flight only',
+                'mean': 'Average of before and after', 'interpolate_time': 'Before and after, weighted by time',
+                'nearest_time': 'Before or after, the nearer in time',
+                'nearest_illumination': 'Before or after, the nearer in light (uses the DLS)',
+                'interpolate_illumination': 'Before and after, weighted by light (uses the DLS)',
+                'adjacent_time': 'Closest single capture before and after each image, by time (as Metashape)'},
+     'group': 'Reference panel', 'label': 'Panel selection approach',
+     'help': ("How the panel captures calibrate the images. The panel captures are those before the flight and those "
+                  "after it (found from their times); the captures of one moment are averaged, except in the last "
+                  "choice.\n"
+                  "# Choices (the name that is saved is in brackets)\n"
+                  "- Before the flight only (first): only the panel captures before the flight calibrate the images; "
+                  "those after it are only compared with them.\n"
+                  "- After the flight only (last): only the panel captures after the flight calibrate the images.\n"
+                  "- Average of before and after (mean): the two moments weigh the same.\n"
+                  "- Before and after, weighted by time (interpolate_time): each image is weighted by its time between "
+                  "the two moments (times from EXIF:DateTimeOriginal).\n"
+                  "- Before or after, the nearer in time (nearest_time): each image uses the moment closest in time to "
+                  "it.\n"
+                  "- Before or after, the nearer in light (nearest_illumination): each image uses the moment whose light "
+                  "was the most like its own, compared with the DLS irradiance of all the bands (their level and how it "
+                  "is spread over the bands).\n"
+                  "- Before and after, weighted by light (interpolate_illumination): the same comparison, but both "
+                  "moments are used, each weighted by 1 / (difference of the light) squared: a moment with the light of "
+                  "the image counts alone, and the weight changes smoothly with the light, so there is no step between "
+                  "neighboring images that would use different moments.\n"
+                  "The two choices by the light use the DLS data of the images and of the panel captures: choosing one "
+                  "turns on 'Correct illumination changes with the DLS' (DLS page), and turning that off takes the choice "
+                  "back to 'Before the flight only'.\n"
+                  "- Closest single capture before and after each image, by time (adjacent_time): of all the panel "
+                  "captures, only the last one taken before the image and the first one after it are used, weighted by "
+                  "time, without averaging; an image before the first or after the last uses the closest. This is what "
+                  "Metashape 2.3.1 does.\n"
+                  "With only one moment (all the panel captures before the flight, for example), every choice uses it.\n"
+                  "This choice changes the result: it decides which panel data are used.\n"
+                  "With the DLS correction on, each panel capture is first adjusted to the light of the image with its own "
+                  "DLS reading (panel factor x E_panel / E_image), and then they are combined.")},
+    {'key': 'PANEL.panel_orientation', 'kind': 'text', 'default': 'all', 'group': 'Reference panel',
+     'label': 'Panel captures used, by orientation',
+     'help': ("The panel can be photographed with the camera facing the sun, with its back to it or with the sun at its "
+                  "side, and the orientations can give different factors (the panel does not reflect the same in every "
+                  "direction, and a shadow falls differently).\n"
+                  "The orientation of each panel capture is read from its metadata: the heading of the camera "
+                  "(XMP:Yaw) against the direction of the sun (XMP:SolarAzimuth), 0 degrees facing the sun and 180 with "
+                  "the back to it. The captures whose headings are within 20 degrees of each other are one orientation, "
+                  "and the list offers the orientations found among the panel captures.\n"
+                  "- All the panel captures (all): every capture listed is used. When one moment has captures of "
+                  "several orientations and they differ more than the spread limit (DLS page), a flag says so.\n"
+                  "- One orientation (its heading is saved, for example 30): only the captures within 20 degrees of it "
+                  "are used, so that one protocol is followed.\n"
+                  "The heading is only as good as XMP:Yaw: check it in Check panel captures.")},
     {'key': 'INPUTS.image_captures', 'group': 'Images to correct', 'kind': 'text', 'default': '',
      'label': 'Select captures',
      'help': ("The captures to correct: type their names separated by commas, or choose them from the images folder "
                   "with Select...\n"
-                  "Empty: all the captures of the folder except the panel captures.")},
+                  "Empty: all the captures of the folder except the panel captures and the captures to leave out.")},
+    {'key': 'INPUTS.excluded_captures', 'group': 'Images to correct', 'kind': 'text', 'default': '',
+     'label': 'Captures to leave out',
+     'help': ("Captures of the images folder that must not be corrected, separated by commas, or chosen with Select...: "
+                  "for example other photos of the panel that are not used, or photos taken on the ground before the "
+                  "take-off.\n"
+                  "The panel captures are always left out, so they do not need to be listed here.")},
     {'key': 'INPUTS.file_pattern', 'group': 'Images to correct', 'kind': 'text', 'default': rct.CAPTURE_FILE_PATTERN,
      'label': 'File name pattern',
      'help': ("How the program tells which files belong to the same capture. The camera writes one file per band "
@@ -249,36 +337,6 @@ FIELDS = [
     {'key': 'PANEL.spectral_min_coverage', 'kind': 'float', 'default': 0.5, 'dialog': True,
      'group': 'Reflectance of the panel', 'label': 'Smallest covered part of a band window',
      'help': 'Fraction (0 to 1] of the window of a band that must have valid samples in the file.'},
-    {'key': 'PANEL.panels_used', 'kind': 'choice', 'choices': list(rct.PANELS_USED), 'default': 'first',
-     'labels': {'first': 'First panel only', 'last': 'Last panel only', 'mean': 'Average of the two panels',
-                'interpolate_time': 'Both panels, weighted by time', 'nearest_time': 'Nearest panel in time',
-                'nearest_illumination': 'Nearest panel in light (uses the DLS)',
-                'interpolate_illumination': 'Both panels, weighted by light (uses the DLS)'},
-     'group': 'Panel measurement', 'label': 'Panel selection approach',
-     'help': ("How the panel captures calibrate the images when there are two (before and after the flight). Only used "
-                  "when there is a second panel capture.\n"
-                  "# Choices (the name that is saved is in brackets)\n"
-                  "- First panel only (first): only the first panel calibrates the images; the second is only compared "
-                  "with it.\n"
-                  "- Last panel only (last): only the second panel, the one after the flight, calibrates the images; the "
-                  "first is only compared with it.\n"
-                  "- Average of the two panels (mean).\n"
-                  "- Both panels, weighted by time (interpolate_time): each image is weighted by its time between the two "
-                  "panel captures (times from EXIF:DateTimeOriginal).\n"
-                  "- Nearest panel in time (nearest_time): each image uses the panel captured closest in time to it.\n"
-                  "- Nearest panel in light (nearest_illumination): each image uses the panel whose light was the most "
-                  "like its own, compared with the DLS irradiance of all the bands (their level and how it is spread over "
-                  "the bands).\n"
-                  "- Both panels, weighted by light (interpolate_illumination): the same comparison, but both panels are "
-                  "used, each weighted by 1 / (difference of the light) squared: a panel with the light of the image counts "
-                  "alone, and the weight changes smoothly with the light, so there is no step between neighboring images "
-                  "that would use different panels.\n"
-                  "The two choices by the light use the DLS data of the images and of both panel captures: choosing one "
-                  "turns on 'Correct illumination changes with the DLS' (DLS page), and turning that off takes the choice "
-                  "back to the first panel.\n"
-                  "This choice changes the result: it decides which panel data are used.\n"
-                  "With the DLS correction on, each panel is first adjusted to the light of the image with its own DLS "
-                  "reading (panel factor x E_panel / E_image), and then the panels are combined.")},
     {'key': 'PANEL.percent_inner_area', 'kind': 'float', 'default': 0.7, 'group': 'Panel measurement',
      'label': 'Inner area of the panel', 'help': ("The size of the square that is measured on the panel, as a fraction of the "
                   "side of the panel: above 0 and up to 1. With 0.7 it is a square in the middle of the panel with 70 % "
@@ -364,8 +422,20 @@ FIELDS = [
                   "photos, divided by the change of the irradiance that the camera sees on the panel. It is 1 if the "
                   "DLS followed the light that the panel received, and it is not when the DLS was tilted or shaded in "
                   "one of the photos.\n"
-                  "Only used with a second panel capture. A flag does not change the result; whether the second panel "
-                  "also calibrates the images is chosen in 'Panel selection approach'.")},
+                  "Only used with panel captures before and after the flight. A flag does not change the result; whether "
+                  "those after the flight also calibrate the images is chosen in 'Panel selection approach'.\n"
+                  "With several captures before or after the flight, their means are compared.")},
+    {'key': 'CHECKS.panel_capture_spread_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
+     'default': 0.02, 'label': 'Spread of the panel captures of one moment',
+     'help': ("When several captures of the panel are taken one after the other (before or after the flight), they are "
+                  "averaged. Largest spread accepted (0.02 = 2 %, standard deviation / mean) of what is averaged, band by "
+                  "band:\n"
+                  "- without the DLS correction, the panel factor: it changes if the light changed between the photos, "
+                  "or if the panel was shaded or held differently in one of them;\n"
+                  "- with the DLS correction, the panel factor x the DLS irradiance, which does not depend on the light: "
+                  "it changes when the DLS was shaded or tilted in one of the photos.\n"
+                  "A flag does not change the result: leave out the captures that disagree, or use the panel captures "
+                  "of the other moment.")},
     {'key': 'CHECKS.panel_illumination_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
      'default': rct.DLS_CHECKS['panel_illumination_tolerance'], 'label': 'Light of the panel: largest difference',
      'help': ("Only used when the panels are chosen by their light (nearest_illumination or interpolate_illumination). "
@@ -399,6 +469,7 @@ FIELDS = [
 ]
 
 FIELD_KEYS = [field['key'] for field in FIELDS]
+FIELD_BY_KEY = {field['key']: field for field in FIELDS}
 
 
 class ConfigError(ValueError):
@@ -503,7 +574,7 @@ def detect_bands(config, root, capture=None):
     Outputs: the dictionary of rct.read_band_definitions
     """
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
-    capture = capture or config['INPUTS.reference_panel_capture'].strip()
+    capture = capture or (panel_capture_groups(config)[0] or [''])[0]
     paths = rct.find_capture_paths(images_folder, capture, config['INPUTS.file_pattern'])
     return rct.read_band_definitions(paths, exiftool_executable(config, root))
 
@@ -511,6 +582,15 @@ def detect_bands(config, root, capture=None):
 def capture_names(text):
     """ Names separated by commas -> list """
     return [name.strip() for name in str(text).split(',') if name.strip()]
+
+
+def panel_capture_groups(config):
+    """
+    The panel captures before and after the flight: two lists of names (INPUTS.reference_panel_capture and
+    INPUTS.reference_panel_capture_after, each one capture or several separated by commas; the second may be empty)
+    """
+    return (list(dict.fromkeys(capture_names(config['INPUTS.reference_panel_capture']))),
+            list(dict.fromkeys(capture_names(config['INPUTS.reference_panel_capture_after']))))
 
 
 def spectral_format(config):
@@ -624,6 +704,37 @@ def save_panel_regions(path, capture, regions, origins=None):
     return path
 
 
+# Windows refuses paths of 260 characters or more unless long paths are turned on; the longest file of the results folder
+# is about this long (a capture name, '_provenance.json', and the temporary radiometric_result.json.tmp)
+WINDOWS_PATH_LIMIT = 259
+RESULT_NAME_ALLOWANCE = 40
+
+
+def windows_long_paths_enabled():
+    """ Whether Windows accepts paths longer than 260 characters (LongPathsEnabled in the registry); True elsewhere """
+    if os.name != 'nt':
+        return True
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SYSTEM\CurrentControlSet\Control\FileSystem') as key:
+            return winreg.QueryValueEx(key, 'LongPathsEnabled')[0] == 1
+    except OSError:
+        return False
+
+
+def path_length_problems(results_folder):
+    """
+    A problem when the files of the results folder would have paths too long for Windows. The path is measured as it is
+    written (made absolute, not resolved): Windows applies the limit to it, also on a drive mapped to a long folder
+    """
+    folder = os.path.abspath(str(results_folder))
+    if len(folder) + 1 + RESULT_NAME_ALLOWANCE <= WINDOWS_PATH_LIMIT or windows_long_paths_enabled():
+        return []
+    return [f"The results folder path is too long for Windows: {len(folder)} characters, "
+            f"and with the names of the files it would pass the limit of {WINDOWS_PATH_LIMIT + 1}. Choose a shorter "
+            f"folder (or turn on long paths in Windows)"]
+
+
 def validate_config(config, root='.', regions_file_may_be_missing=False):
     """
     Return the list of problems of a configuration (empty if it is valid). Paths are resolved from root
@@ -660,10 +771,20 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
 
     if not 0 < config['PANEL.percent_inner_area'] <= 1:
         problems.append("PANEL.percent_inner_area must be in (0, 1]")
-    if config['PANEL.panels_used'] != 'first' and not config['INPUTS.reference_panel_capture_after'].strip():
-        problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}' but there is no second panel capture "
-                        "(INPUTS.reference_panel_capture_after)")
-    if config['PANEL.panels_used'] in rct.PANELS_BY_ILLUMINATION and not config['CORRECTION.use_dls']:
+    before_names, after_names = panel_capture_groups(config)
+    output = config['INPUTS.output_product']
+    # the panel calibrates the images, or (reflectance from the DLS alone) is only compared with the DLS when it is given
+    calibrates = output == 'panel_reflectance'
+    needs_panel = calibrates or (output == 'dls_reflectance' and bool(before_names))
+    orientation = str(config['PANEL.panel_orientation']).strip().lower()
+    try:
+        heading_ok = orientation == 'all' or 0 <= float(orientation) <= 180
+    except ValueError:
+        heading_ok = False
+    if not heading_ok:
+        problems.append(f"PANEL.panel_orientation must be 'all' or a heading from 0 to 180 degrees, got "
+                        f"{config['PANEL.panel_orientation']!r}")
+    if calibrates and config['PANEL.panels_used'] in rct.PANELS_BY_ILLUMINATION and not config['CORRECTION.use_dls']:
         problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}', which chooses the panel by the light read "
                         "by the DLS, but CORRECTION.use_dls is off: turn the DLS correction on or choose another way to "
                         "use the panels")
@@ -684,7 +805,7 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
     elif set(ignored) & set(config['PANEL.reflectance_by_band']):
         problems.append(f"INPUTS.ignored_bands has bands that are also processed: "
                         f"{sorted(set(ignored) & set(config['PANEL.reflectance_by_band']))}")
-    elif config['PANEL.reflectance_source'] == 'spectral_file':
+    elif needs_panel and config['PANEL.reflectance_source'] == 'spectral_file':
         spectral_file = config['PANEL.spectral_file'].strip()
         if not spectral_file:
             problems.append("PANEL.spectral_file is empty (PANEL.reflectance_source is spectral_file)")
@@ -698,7 +819,8 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
     if config['PANEL.saturation_threshold'] <= 0:
         problems.append("PANEL.saturation_threshold must be positive")
     for key in ('CHECKS.band_ratio_tolerance', 'CHECKS.max_sun_angle_discrepancy_deg', 'CHECKS.jump_threshold',
-                'CHECKS.panel_drift_tolerance', 'CHECKS.panel_illumination_tolerance', 'CHECKS.ratio_range_min',
+                'CHECKS.panel_drift_tolerance', 'CHECKS.panel_illumination_tolerance',
+                'CHECKS.panel_capture_spread_tolerance', 'CHECKS.ratio_range_min',
                 'CHECKS.ratio_range_max'):
         if config[key] <= 0:
             problems.append(f"{key} must be positive")
@@ -715,6 +837,8 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
         problems.append(f"Images folder not found: {images}")
     if not config['INPUTS.results_folder'].strip():
         problems.append("INPUTS.results_folder is empty")
+    else:
+        problems.extend(path_length_problems(resolve_path(root, config['INPUTS.results_folder'])))
     exiftool_path, exiftool_source = find_exiftool(config, root)
     if exiftool_path is None:
         if config['INPUTS.exiftool_path'].strip():
@@ -724,7 +848,7 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
                             f"INPUTS.exiftool_path")
     if not pyexiftool_installed():
         problems.append("The Python package pyexiftool is not installed (pip install pyexiftool)")
-    if config['PANEL.manual_regions_file']:
+    if needs_panel and config['PANEL.manual_regions_file']:
         regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
         if not regions_file.is_file():
             if not regions_file_may_be_missing:
@@ -740,18 +864,36 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
                                             f"{panel_bands(config)}")
             except (ValueError, OSError) as error:
                 problems.append(str(error))
-    panel = config['INPUTS.reference_panel_capture'].strip()
-    if not panel:
+    if calibrates and not before_names:
         problems.append("INPUTS.reference_panel_capture is empty")
+    excluded = capture_names(config['INPUTS.excluded_captures'])
+    typed = capture_names(config['INPUTS.image_captures'])
+    for text, names in (("both selected and left out", [name for name in typed if name in excluded]),
+                        ("both panel captures and captures to correct",
+                         [name for name in typed if name in before_names + after_names])):
+        if names:
+            problems.append(f"Captures {text}: {', '.join(names)}")
     if images.is_dir() and pattern_problem is None:
         found = rct.list_capture_names(images, config['INPUTS.file_pattern'])
-        named = [panel, config['INPUTS.reference_panel_capture_after'].strip()] + capture_names(config['INPUTS.image_captures'])
-        for name in named:
-            if name and name not in found:
+        for name in before_names + after_names + typed + excluded:
+            if name not in found:
                 problems.append(f"Capture '{name}' not found in {images}")
-        if not capture_names(config['INPUTS.image_captures']) and not [n for n in found if n not in named[:2]]:
+        if not typed and not captures_to_correct(config, found):
             problems.append(f"No captures to correct in {images}")
     return problems
+
+
+def captures_to_correct(config, found):
+    """
+    The captures that a run corrects: those of INPUTS.image_captures or, when it is empty, all those found in the images
+    folder except the panel captures and the captures to leave out (INPUTS.excluded_captures)
+    """
+    typed = capture_names(config['INPUTS.image_captures'])
+    if typed:
+        return typed
+    before_names, after_names = panel_capture_groups(config)
+    left_out = set(capture_names(config['INPUTS.excluded_captures']) + before_names + after_names)
+    return [name for name in found if name not in left_out]
 
 
 def _progress(callback, stage, message, current=0, total=0):
@@ -831,27 +973,400 @@ def _light(images, name):
         raise rct.MetadataError(f"{name}: {error}") from error
 
 
-def _second_panel_weight(mode, second_present, image, first_panel, second_panel, names):
+# The panel captures of one moment (before or after the flight) are a group: {capture name: {band: rct.Image}}, each
+# capture after the detection of the panel. A group of several captures is used as their mean
+def _group_light(group):
+    """ {band: DLS irradiance} of a group of panel captures, the mean of its captures """
+    lights = [_light(images, name) for name, images in group.items()]
+    return {band: float(np.mean([light[band] for light in lights])) for band in lights[0]}
+
+
+def _capture_time(images, name):
+    return rct.capture_time(next(iter(images.values())).metadata, name)
+
+
+def _group_time(group):
+    """ The time of a group of panel captures, the mean of the times of its captures """
+    return float(np.mean([_capture_time(images, name) for name, images in group.items()]))
+
+
+def _second_panel_weight(mode, image, first_group, second_group, name):
     """
-    Weight of the second panel for one image (see rct.panel_weight)
-    Inputs: the mode, whether there is a second panel, and the capture, the first panel and the second panel as
-            {band: rct.Image}; names are those of the three captures
+    Weight of the second group of panel captures for one image (see rct.panel_weight)
+    Inputs: the mode, the capture as {band: rct.Image} and its name, and the two groups of panel captures (the second one
+            None when there is none)
     Outputs: (weight, distances), where distances is {'first': ..., 'second': ...}, how different the light of the image is
-             from that of each panel (see rct.illumination_distance), for the modes by illumination, and None for the others
+             from that of each group (see rct.illumination_distance), for the modes by illumination, and None for the others
     """
-    if not second_present or mode == 'first':
+    if second_group is None or mode == 'first':
         return 0.0, None
     if mode in rct.PANELS_BY_ILLUMINATION:
-        light = _light(image, names[0])
-        distances = (rct.illumination_distance(light, _light(first_panel, names[1])),
-                     rct.illumination_distance(light, _light(second_panel, names[2])))
+        light = _light(image, name)
+        distances = (rct.illumination_distance(light, _group_light(first_group)),
+                     rct.illumination_distance(light, _group_light(second_group)))
         return rct.panel_weight(mode, distances=distances), {'first': distances[0], 'second': distances[1]}
     if mode not in ('interpolate_time', 'nearest_time'):
         return rct.panel_weight(mode), None
-    band = next(iter(image))
-    return rct.panel_weight(mode, rct.capture_time(image[band].metadata, names[0]),
-                            rct.capture_time(first_panel[band].metadata, names[1]),
-                            rct.capture_time(second_panel[band].metadata, names[2])), None
+    return rct.panel_weight(mode, _capture_time(image, name), _group_time(first_group), _group_time(second_group)), None
+
+
+def _group_mean(group):
+    """
+    The mean of a group of panel captures, band by band, in the form that rct.compare_panel_captures reads: the panel
+    factor, the irradiance estimated from the panel and the DLS irradiance (MetadataError if a capture has none)
+    """
+    def mean_light(band):
+        return float(np.mean([images[band].dls_irradiance() for images in group.values()]))
+    bands = next(iter(group.values()))
+    return {band: SimpleNamespace(
+        panel_audit={key: float(np.mean([images[band].panel_audit[key] for images in group.values()]))
+                     for key in ('radiance_to_reflectance_factor', 'panel_irradiance_estimate')},
+        dls_irradiance=lambda band=band: mean_light(band)) for band in bands}
+
+
+def group_spread(group, use_dls):
+    """
+    How much the captures of a group disagree, band by band: std / mean of what is averaged, the panel factor or, with the
+    DLS, the panel factor x DLS irradiance (a constant of the camera that does not depend on the light). {} for one capture
+    """
+    if len(group) < 2:
+        return {}
+    return {band: float(np.std(list(values.values())) / np.mean(list(values.values())))
+            for band, values in _averaged_values(group, use_dls).items()}
+
+
+def _averaged_values(group, use_dls):
+    """ {band: {capture: what is averaged}}: the panel factor or, with the DLS, the panel factor x the DLS irradiance """
+    return {band: {name: images[band].panel_audit['radiance_to_reflectance_factor'] *
+                   (images[band].dls_irradiance() if use_dls else 1.0) for name, images in group.items()}
+            for band in next(iter(group.values()))}
+
+
+# Panel captures whose headings against the sun are within this many degrees of each other are one orientation
+ORIENTATION_TOLERANCE_DEG = 20.0
+
+
+def orientation_kind(heading):
+    """ What a heading against the sun means: facing the sun (under 60 degrees), with the back to it (over 120) or at the side """
+    if heading is None:
+        return 'unknown'
+    return 'facing_sun' if heading < 60 else 'back_to_sun' if heading > 120 else 'side'
+
+
+ORIENTATION_TEXT = {'facing_sun': 'facing the sun', 'back_to_sun': 'with the back to the sun',
+                    'side': 'with the sun at the side', 'unknown': 'heading unknown'}
+
+
+def orientation_groups(headings):
+    """
+    The orientations found among panel captures: headings against the sun (see rct.heading_to_sun_deg) closer than
+    ORIENTATION_TOLERANCE_DEG to the previous one are one group
+    Inputs: {capture: heading in degrees, or None}
+    Outputs: [{'heading' (the mean, rounded), 'kind' (see orientation_kind), 'captures'}], by heading; the captures without
+             a heading are left out
+    """
+    groups = []
+    for heading, capture in sorted((heading, capture) for capture, heading in headings.items() if heading is not None):
+        if groups and heading - groups[-1]['last'] <= ORIENTATION_TOLERANCE_DEG:
+            groups[-1]['values'].append(heading)
+            groups[-1]['captures'].append(capture)
+        else:
+            groups.append({'values': [heading], 'captures': [capture]})
+        groups[-1]['last'] = heading
+    return [{'heading': int(round(float(np.mean(group['values'])))), 'kind': orientation_kind(float(np.mean(group['values']))),
+             'captures': group['captures']} for group in groups]
+
+
+def orientation_label(group):
+    """ The text of an orientation group, for example 'heading 63 deg (with the sun at the side), 5 captures' """
+    count = len(group['captures'])
+    return (f"heading {group['heading']} deg ({ORIENTATION_TEXT[group['kind']]}), {count} capture"
+            f"{'s' if count != 1 else ''}")
+
+
+def orientation_selected(chosen, heading):
+    """ Whether a panel capture of this heading is used when PANEL.panel_orientation is chosen ('all', or a heading) """
+    if str(chosen).strip().lower() == 'all':
+        return True
+    return heading is not None and abs(heading - float(chosen)) <= ORIENTATION_TOLERANCE_DEG
+
+
+def orientation_difference(group, headings, use_dls):
+    """
+    When a moment has panel captures of several orientations: how much each orientation differs from the one with the most
+    captures, band by band, on what is averaged (see group_spread)
+    Outputs: {heading of the orientation: {band: mean of it / mean of the largest - 1}}; {} with one orientation
+    """
+    groups = orientation_groups({name: headings.get(name) for name in group})
+    if len(groups) < 2:
+        return {}
+    values = _averaged_values(group, use_dls)
+    largest = max(groups, key=lambda item: len(item['captures']))
+    difference = {}
+    for other in groups:
+        if other is largest:
+            continue
+        difference[other['heading']] = {
+            band: float(np.mean([by_capture[name] for name in other['captures']]) /
+                        np.mean([by_capture[name] for name in largest['captures']]) - 1)
+            for band, by_capture in values.items()}
+    return {'reference_heading': largest['heading'], 'differences': difference}
+
+
+def _flight_times(config, root, flight_names):
+    """ The times of the first and of the last capture to correct (None when there is none or it has no time) """
+    if not flight_names:
+        return None
+    images_folder = resolve_path(root, config['INPUTS.images_folder'])
+    times = []
+    for name in (flight_names[0], flight_names[-1]):
+        paths = rct.find_capture_paths(images_folder, name, config['INPUTS.file_pattern'])
+        metadata = rct._read_metadata(paths[:1], exiftool_executable(config, root))[0]
+        try:
+            times.append(rct.capture_time(metadata, name))
+        except rct.MetadataError:
+            return None
+    return min(times), max(times)
+
+
+def panel_moment(time, flight):
+    """
+    The moment of a panel capture: 'before' the first capture to correct or 'after' the last one; one taken during the
+    flight goes to the closer end. Without the times of the flight, 'before'
+    """
+    if flight is None or time is None:
+        return 'before'
+    first, last = flight
+    if time < first:
+        return 'before'
+    if time > last:
+        return 'after'
+    return 'before' if time - first <= last - time else 'after'
+
+
+def calibrate_panel_captures(config, root, levels, flight_names, calibrates, use_dls, result, progress=None):
+    """
+    Read and measure the panel captures (INPUTS.reference_panel_capture), find their moments and orientations, check them
+    and choose those that are used
+    - Moments: the captures listed in INPUTS.reference_panel_capture_after (configurations of earlier versions) are after
+      the flight; when that key is empty, each capture is before or after the flight by its time against the captures to
+      correct (see panel_moment).
+    - Orientations: grouped by their heading against the sun (see orientation_groups); PANEL.panel_orientation keeps all or
+      the captures of one heading.
+    - Checks (when the panel calibrates the images): the spread of each moment, the capture that departs from its moment and
+      the difference of the orientations of a moment, as flags.
+    Inputs: the configuration, the folder of the relative paths, the reflectance of the panel by band, the captures to
+            correct, whether the panel calibrates the images (else a panel that fails is only a flag), whether the DLS
+            correction is used, the result dictionary (result['panel'] and result['flags'] are filled) and the progress
+            callback
+    Outputs: {'before': {capture: {band: rct.Image}}, 'after': {...}}, the moments that have captures; when only the 'after'
+             moment has them, they are the first moment ('before')
+    """
+    images_folder = resolve_path(root, config['INPUTS.images_folder'])
+    exiftool_path = exiftool_executable(config, root)
+    ignored = capture_names(config['INPUTS.ignored_bands'])
+    bands = list(levels)
+    regions, origins = {}, {}
+    if config['PANEL.manual_regions_file']:
+        regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
+        if regions_file.is_file():
+            regions, origins = load_panel_regions(regions_file), load_panel_origins(regions_file)
+    before_names, after_names = panel_capture_groups(config)
+    explicit_after = bool(after_names)
+    flight = None if explicit_after else _flight_times(config, root, flight_names)
+    measured, info = {}, {}
+    for name in before_names + [name for name in after_names if name not in before_names]:
+        _progress(progress, 'PANEL_CALIBRATION', f"Detecting the reference panel in {name}")
+        objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
+        failed = False
+        for band, image in objects.items():
+            try:
+                image.detect_reference_panel(levels, config['PANEL.percent_inner_area'], config['PANEL.saturation_threshold'],
+                                             manual_bounds=regions.get(name, {}).get(band),
+                                             region_origin=origins.get(name, {}).get(band))
+            except Exception as error:
+                if calibrates:
+                    raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
+                result['flags'].append(f"{name}: the panel of band '{band}' was not measured, so it is not compared "
+                                       f"with the DLS ({error})")
+                failed = True
+                break
+        if failed:
+            continue
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter('always')
+            geometry = rct.check_panel_geometry(objects)
+        result['flags'].extend(f"{name}: {flag}" for flag in geometry['flags'])
+        try:
+            time = _capture_time(objects, name)
+        except rct.MetadataError:
+            time = None
+        moments = ([moment for moment, listed in (('before', before_names), ('after', after_names)) if name in listed]
+                   if explicit_after else [panel_moment(time, flight)])
+        heading = geometry['values'].get('heading_to_sun_deg')
+        measured[name] = objects
+        info[name] = {'moments': moments, 'time': str(next(iter(objects.values())).metadata.get('EXIF:DateTimeOriginal')),
+                      'heading': heading, 'orientation': orientation_kind(heading),
+                      'used': orientation_selected(config['PANEL.panel_orientation'], heading),
+                      'bands': {band: rct._jsonable(rct.compact_panel_audit(image.panel_audit))
+                                for band, image in objects.items()},
+                      'geometry': rct._jsonable(geometry['values'])}
+    if not measured:
+        return {}
+    groups = orientation_groups({name: item['heading'] for name, item in info.items()})
+    result['panel']['orientations'] = [dict(group, label=orientation_label(group)) for group in groups]
+    used = [name for name in measured if info[name]['used']]
+    if not used:
+        raise RuntimeError(f"None of the panel captures {', '.join(measured)} has the heading chosen in "
+                           f"PANEL.panel_orientation ({config['PANEL.panel_orientation']} deg, +-"
+                           f"{ORIENTATION_TOLERANCE_DEG:g}); the headings found are: "
+                           f"{'; '.join(orientation_label(group) for group in groups) or 'none'}")
+    panels = {}
+    for moment in ('before', 'after'):
+        names_of_moment = [name for name in measured if moment in info[name]['moments']]
+        if not names_of_moment:
+            continue
+        result['panel'][moment] = {'captures': {name: {key: value for key, value in info[name].items() if key != 'moments'}
+                                                for name in names_of_moment}}
+        group = {name: measured[name] for name in names_of_moment if info[name]['used']}
+        if group:
+            panels[moment] = group
+    if 'before' not in panels:                       # only captures after the flight: they are the first moment
+        panels = {'before': panels['after']}
+        result['panel']['before'] = result['panel'].pop('after')
+        result['flags'].append(f"The panel captures used ({', '.join(panels['before'])}) are all after the flight: "
+                               f"they calibrate the images alone")
+    if calibrates:
+        _check_moments(config, panels, info, use_dls, result)
+    return panels
+
+
+def _check_moments(config, panels, info, use_dls, result):
+    """ The flags of the moments: orientations that differ, a capture that departs, a pair that disagrees """
+    spread_limit = config['CHECKS.panel_capture_spread_tolerance']
+    averaged = 'panel factor x DLS irradiance' if use_dls else 'panel factor'
+    for moment, group in panels.items():
+        group_names = list(group)
+        record = result['panel'].setdefault(moment, {'captures': {}})
+        try:
+            difference = orientation_difference(group, {name: info[name]['heading'] for name in group}, use_dls)
+        except rct.MetadataError:
+            difference = {}
+        if difference:
+            record['orientation_difference'] = difference
+            reference = difference['reference_heading']
+            for heading, by_band in difference['differences'].items():
+                band, value = max(by_band.items(), key=lambda item: abs(item[1]))
+                if abs(value) > spread_limit:
+                    result['flags'].append(f"Panel captures of the {moment} moment: those with heading {heading} deg differ "
+                                           f"{100 * value:+.1f} % (band '{band}') from those with heading {reference} deg "
+                                           f"(limit {100 * spread_limit:g} %). Choose one orientation (Panel captures "
+                                           f"used, by orientation) or check the photos")
+        try:
+            spread, departures = group_spread(group, use_dls), group_departures(group, use_dls)
+        except rct.MetadataError as error:
+            spread, departures = {}, {}
+            result['flags'].append(f"Panel captures {', '.join(group_names)}: their spread was not checked ({error})")
+        if spread:
+            record['spread'] = spread
+        if departures:                               # three or more captures: the ones that depart are named
+            record['departures'] = departures
+            for name, bands_departure in departures.items():
+                band, value = max(bands_departure.items(), key=lambda item: abs(item[1]))
+                if abs(value) > spread_limit:
+                    result['flags'].append(f"Panel capture {name}: its {averaged} departs {100 * value:+.1f} % (band "
+                                           f"'{band}') from the median of the panel captures of its moment "
+                                           f"({', '.join(group_names)}); limit {100 * spread_limit:g} %. Leave it out "
+                                           f"if it is wrong")
+        elif spread:                                 # two captures: which one is wrong cannot be told
+            for band, value in spread.items():
+                if value > spread_limit:
+                    result['flags'].append(f"Panel captures {', '.join(group_names)}: the {averaged} of band '{band}' varies "
+                                           f"{100 * value:.1f} % between them (limit {100 * spread_limit:g} %)")
+
+
+def check_panel_captures(config, root='.', progress=None):
+    """
+    Measure and check the panel captures without correcting anything, for the table of the UI (progress: as in run)
+    Outputs: (rows, the flags): one row per panel capture {'capture', 'time', 'moment', 'heading', 'orientation', 'used',
+             'departure' (the largest of its moment, or None), 'band', 'flag' (text, '' when nothing is wrong)}
+    """
+    config = merge_config(config)
+    levels, _ = panel_reflectance_levels(config, root)
+    images_folder = resolve_path(root, config['INPUTS.images_folder'])
+    flight_names = captures_to_correct(config, rct.list_capture_names(images_folder, config['INPUTS.file_pattern']))
+    result = {'panel': {}, 'flags': []}
+    use_dls = config['CORRECTION.use_dls'] and config['INPUTS.output_product'] == 'panel_reflectance'
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter('always')
+        calibrate_panel_captures(config, root, levels, flight_names, True, use_dls, result, progress)
+    limit = config['CHECKS.panel_capture_spread_tolerance']
+    rows = []
+    for moment in ('before', 'after'):
+        record = result['panel'].get(moment, {})
+        for name, item in record.get('captures', {}).items():
+            departure, band, flag = None, None, ''
+            item = dict(item, moment=moment)
+            if name in record.get('departures', {}):
+                band, departure = max(record['departures'][name].items(), key=lambda pair: abs(pair[1]))
+                if abs(departure) > limit:
+                    flag = f"departs more than {100 * limit:g} % from the others"
+            elif record.get('spread') and len(record['captures']) == 2:
+                band, spread = max(record['spread'].items(), key=lambda pair: pair[1])
+                if spread > limit:
+                    flag = f"the two captures of this moment disagree {100 * spread:.1f} %"
+            if not item['used']:
+                flag = 'not used: another orientation was chosen'
+            rows.append({'capture': name, 'time': item['time'], 'moment': moment, 'heading': item['heading'],
+                         'orientation': ORIENTATION_TEXT[item['orientation']], 'used': item['used'],
+                         'departure': departure, 'band': band, 'flag': flag})
+    return rows, result['flags']
+
+
+def adjacent_panel_shares(panels, image, name):
+    """
+    The panel capture taken last before the image and the one taken first after it, among all the panel captures of both
+    moments, weighted by time (as Metashape 2.3.1 does); an image before the first or after the last uses the closest
+    Outputs: {capture: weight}
+    """
+    times = sorted((_capture_time(images, capture), capture) for group in panels.values()
+                   for capture, images in group.items())
+    time = _capture_time(image, name)
+    before = [item for item in times if item[0] <= time]
+    after = [item for item in times if item[0] >= time]
+    if not before or not after:
+        return {(after or before)[0 if after else -1][1]: 1.0}
+    (first_time, first), (second_time, second) = before[-1], after[0]
+    if first == second or second_time == first_time:
+        return {first: 1.0}
+    weight = (time - first_time) / (second_time - first_time)
+    return {first: 1.0 - weight, second: weight}
+
+
+def group_departures(group, use_dls):
+    """
+    How far each capture of a group of three or more is from the others, band by band: what is averaged (see group_spread)
+    divided by its median over the group, minus 1 (-0.05 = 5 % below). With two captures the one that is wrong cannot be
+    told, so {} (the spread of the group is checked instead)
+    Outputs: {capture: {band: departure}}
+    """
+    if len(group) < 3:
+        return {}
+    departures = {name: {} for name in group}
+    for band, values in _averaged_values(group, use_dls).items():
+        median = float(np.median(list(values.values())))
+        for name, value in values.items():
+            departures[name][band] = float(value / median - 1)
+    return departures
+
+
+def _nearest_capture(group, image, name):
+    """ The capture of a group taken closest in time to the image (the first one when the times are not known) """
+    try:
+        time = _capture_time(image, name)
+        return min(group, key=lambda capture: abs(_capture_time(group[capture], capture) - time))
+    except rct.MetadataError:
+        return next(iter(group))
 
 
 def _read_capture(images_folder, name, bands, exiftool_path, pattern=None, ignored=()):
@@ -868,81 +1383,164 @@ def compact_reflectance_info(info):
     return compact
 
 
+
+class _Done(Exception):
+    """ The capture was written and checked by a path that does not use the panel """
+
+
+def _irradiance_series(series, bands, objects, name):
+    """ Add the DLS irradiance of a capture to the series of each band (the bands without it are skipped) """
+    for band in bands:
+        try:
+            series[band].append((name, objects[band].dls_irradiance()))
+        except rct.MetadataError:
+            pass
+
+
+def _write_without_panel(output, data_type, objects, results_folder, entry, written):
+    """
+    Write a capture as reflectance from the DLS alone or as radiance (no panel)
+    Outputs: (the records of the bands, the checks of the capture, its geometry)
+    """
+    # the factors of all the bands first, so that nothing is written for a capture that cannot be corrected
+    factors = ({band: rct.dls_reflectance_factor(image) for band, image in objects.items()}
+               if output == 'dls_reflectance' else {})
+    records = []
+    for band, image in objects.items():
+        if output == 'radiance':
+            data, factor, details = image.digital_numbers_to_radiance(), None, None
+        else:
+            factor, details = factors[band]
+            data = image.digital_numbers_to_reflectance(factor)
+        data = data.astype(data_type, copy=False)
+        output_path = results_folder / Path(image.image_path).name
+        tifffile.imwrite(output_path, data)
+        records.append(rct.band_record(output_path, image, data, [], factor, dls_only=details,
+                                       output='radiance' if output == 'radiance' else 'reflectance'))
+        written.append(str(output_path))
+        entry['outputs'].append(output_path.name)
+    geometry = rct.check_image_geometry(objects)
+    if output == 'dls_reflectance':                 # the DLS of the image is checked (its tilt), without a panel
+        checks = rct.check_dls_capture({}, objects)
+    else:
+        checks = {'flags': [], 'flag_details': [], 'unavailable': []}
+    checks['geometry'] = {'image': geometry['values']}
+    checks['flags'] = list(checks['flags']) + geometry['flags']
+    checks['flag_details'] = list(checks['flag_details']) + geometry['flag_details']
+    checks['unavailable'] = list(checks['unavailable']) + geometry['unavailable']
+    return records, checks, geometry
+
+
+def dls_only_panel_check(panels):
+    """
+    How far the reflectance from the DLS alone is from the known reflectance of the panel, in each panel capture and band:
+    pi x mean radiance of the panel / DLS irradiance, divided by the reflectance of the panel, minus 1 (0.10 = 10 % too high)
+    Outputs: {capture: {band: difference, or None when the capture has no usable irradiance}}
+    """
+    check = {}
+    for group in panels.values():
+        for name, images in group.items():
+            check[name] = {}
+            for band, image in images.items():
+                audit = image.panel_audit
+                try:
+                    reflectance = np.pi * audit['radiance_mean'] / rct.irradiance_si(image)[0]
+                    check[name][band] = float(reflectance / audit['reflectance_level'] - 1)
+                except rct.MetadataError:
+                    check[name][band] = None
+    return check
+
+
 def _run_stages(config, root, results_folder, result, progress):
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
     exiftool_path = exiftool_executable(config, root)
     ignored = capture_names(config['INPUTS.ignored_bands'])
-    levels, reflectance_info = panel_reflectance_levels(config, root)
-    reflectance_info = compact_reflectance_info(reflectance_info)
-    result['panel']['reflectance'] = rct._jsonable({'levels': levels, **reflectance_info})
+    before_names, after_names = panel_capture_groups(config)
+    output, data_type = config['INPUTS.output_product'], np.dtype(config['INPUTS.output_data_type'])
+    calibrates = output == 'panel_reflectance'                 # else the panel, if given, is only compared with the DLS
+    needs_panel = calibrates or (output == 'dls_reflectance' and bool(before_names))
+    if needs_panel:
+        levels, reflectance_info = panel_reflectance_levels(config, root)
+        reflectance_info = compact_reflectance_info(reflectance_info)
+        result['panel']['reflectance'] = rct._jsonable({'levels': levels, **reflectance_info})
+    else:
+        levels, reflectance_info = dict(config['PANEL.reflectance_by_band']), {}
+    result['output'] = {'product': output, 'data_type': str(data_type)}
     bands = list(levels)
-    use_dls = config['CORRECTION.use_dls']
+    use_dls = config['CORRECTION.use_dls'] and calibrates
 
     # LOAD_CAPTURES
-    panel_name = config['INPUTS.reference_panel_capture'].strip()
-    panel_after_name = config['INPUTS.reference_panel_capture_after'].strip()
-    names = capture_names(config['INPUTS.image_captures'])
-    if not names:
-        names = [name for name in rct.list_capture_names(images_folder, config['INPUTS.file_pattern'])
-                 if name not in (panel_name, panel_after_name)]
-    _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct; panel capture {panel_name}", 0, len(names))
+    names = captures_to_correct(config, rct.list_capture_names(images_folder, config['INPUTS.file_pattern']))
+    written_as = {'panel_reflectance': f"reflectance with the panel capture(s) {', '.join(before_names)}",
+                  'dls_reflectance': 'reflectance from the DLS only', 'radiance': 'radiance'}[output]
+    _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct, written as {written_as} ({data_type})",
+              0, len(names))
 
     # PANEL_CALIBRATION
-    regions, origins = {}, {}
-    if config['PANEL.manual_regions_file']:
-        regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
-        regions, origins = load_panel_regions(regions_file), load_panel_origins(regions_file)
     panels = {}
-    for label, name in (('before', panel_name), ('after', panel_after_name)):
-        if not name:
-            continue
-        _progress(progress, 'PANEL_CALIBRATION', f"Detecting the reference panel in {name}")
-        objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
-        for band, image in objects.items():
-            try:
-                image.detect_reference_panel(levels, config['PANEL.percent_inner_area'],
-                                             config['PANEL.saturation_threshold'],
-                                             manual_bounds=regions.get(name, {}).get(band),
-                                             region_origin=origins.get(name, {}).get(band))
-            except Exception as error:
-                raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
-        panels[label] = objects
-        result['panel'][label] = {'capture': name, 'bands': {band: rct._jsonable(rct.compact_panel_audit(image.panel_audit))
-                                                              for band, image in objects.items()}}
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter('always')
-            geometry = rct.check_panel_geometry(objects)
-        result['panel'][label]['geometry'] = rct._jsonable(geometry['values'])
-        result['flags'].extend(f"{name}: {flag}" for flag in geometry['flags'])
-    if 'after' in panels:
+    if needs_panel:
+        panels = calibrate_panel_captures(config, root, levels, names, calibrates, use_dls, result, progress)
+    if calibrates and 'after' not in panels and config['PANEL.panels_used'] not in ('first', 'adjacent_time'):
+        label = FIELD_BY_KEY['PANEL.panels_used']['labels'][config['PANEL.panels_used']]
+        result['flags'].append(f"There are panel captures of one moment only: '{label}' uses them alone")
+    if output == 'dls_reflectance' and panels:
+        result['panel']['dls_only_check'] = dls_only_panel_check(panels)
+    if calibrates and 'after' in panels:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            comparison = rct.compare_panel_captures(panels['before'], panels['after'])
+            comparison = rct.compare_panel_captures(_group_mean(panels['before']), _group_mean(panels['after']))
         result['panel']['comparison'] = rct._jsonable(comparison)
         result['flags'].extend(comparison['flags'])
 
     # REFLECTANCE and DLS_CHECKS of each capture
     series = {band: [] for band in bands}
     events, checked = [], 0                      # the flags of the captures, to be counted by criterion (group_flag_events)
-    parameters = {'config': config, 'panel_reflectance_levels': levels, 'panel_reflectance_source': reflectance_info}
+    parameters = {'config': config}
+    if needs_panel:
+        parameters.update({'panel_reflectance_levels': levels, 'panel_reflectance_source': reflectance_info})
     for number, name in enumerate(names, start=1):
         _progress(progress, 'REFLECTANCE', f"Correcting {name}", number - 1, len(names))
         entry = {'outputs': [], 'errors': []}
         result['captures'][name] = entry
         written, flags, details = [], [], []
-        checked_panel = panel_name
+        checked_panel = before_names[0] if before_names else None
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter('always')
                 objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
+                if not calibrates:
+                    records, checks, geometry = _write_without_panel(output, data_type, objects, results_folder, entry,
+                                                                     written)
+                    flags, details = list(checks['flags']), list(checks['flag_details'])
+                    checked += 1
+                    entry['geometry'] = rct._jsonable(geometry['values'])
+                    provenance = rct.write_provenance(results_folder / (name + '_provenance.json'), records,
+                                                      parameters=parameters, checks=checks)
+                    entry['provenance'] = Path(provenance).name
+                    _irradiance_series(series, bands, objects, name)
+                    result['outputs'].extend(written)
+                    raise _Done
                 second = panels.get('after')
-                weight, distances = _second_panel_weight(config['PANEL.panels_used'], second is not None, objects,
-                                                         panels['before'], second, (name, panel_name, panel_after_name))
-                entry['panels'] = {'used': config['PANEL.panels_used'] if second is not None else 'first',
-                                   'weight_of_the_second_panel': weight}
-                if distances:
-                    entry['panels']['light_difference'] = distances
-                weighted = [(panels['before'], 1 - weight)] + ([(second, weight)] if second is not None else [])
+                if config['PANEL.panels_used'] == 'adjacent_time':
+                    shares = adjacent_panel_shares(panels, objects, name)
+                    weight = sum(share for capture, share in shares.items() if capture in (second or {}))
+                    distances = None
+                    entry['panels'] = {'used': 'adjacent_time', 'weight_of_the_second_panel': weight,
+                                       'captures': shares}
+                    weighted = [(group[capture], share) for group in panels.values() for capture, share in shares.items()
+                                if capture in group]
+                else:
+                    shares = None
+                    weight, distances = _second_panel_weight(config['PANEL.panels_used'], objects, panels['before'],
+                                                             second, name)
+                    entry['panels'] = {'used': config['PANEL.panels_used'] if second is not None else 'first',
+                                       'weight_of_the_second_panel': weight}
+                    if distances:
+                        entry['panels']['light_difference'] = distances
+                    # the weight of a group is shared by its captures
+                    weighted = [(capture, (1 - weight) / len(panels['before'])) for capture in panels['before'].values()]
+                    if second is not None:
+                        weighted += [(capture, weight / len(second)) for capture in second.values()]
                 # the factors of all the bands first, so that nothing is written for a capture that cannot be corrected
                 factors = {band: rct.combine_panels([(capture[band], share) for capture, share in weighted],
                                                     objects[band] if use_dls else None) for band in bands}
@@ -950,19 +1548,25 @@ def _run_stages(config, root, results_folder, result, progress):
                 for band in bands:
                     image = objects[band]
                     factor, used = factors[band]
-                    reflectance = image.digital_numbers_to_reflectance(factor)
+                    reflectance = image.digital_numbers_to_reflectance(factor).astype(data_type, copy=False)
                     output_path = results_folder / Path(image.image_path).name
                     tifffile.imwrite(output_path, reflectance)
                     records.append(rct.band_record(output_path, image, reflectance, used, factor))
                     written.append(str(output_path))
                     entry['outputs'].append(output_path.name)           # the files are in the results folder
-                # the DLS checks compare the image with the panel that weighs most in its calibration (the first if equal)
+                # the DLS checks compare the image with the panel capture closest in time of the group that weighs most
+                # in its calibration (the first group if both weigh the same)
                 label = 'after' if weight > 0.5 else 'before'
-                checked_panel = result['panel'][label]['capture']
-                checks = rct.check_dls_capture(panels[label], objects)
+                if shares:                                   # the closest captures: the one that weighs most
+                    checked_panel = max(shares, key=shares.get)
+                    label = 'after' if checked_panel in (second or {}) else 'before'
+                else:
+                    checked_panel = _nearest_capture(panels[label], objects, name)
+                checks = rct.check_dls_capture(panels[label][checked_panel], objects)
                 checks['compared_with_panel'] = checked_panel
                 geometry = rct.check_image_geometry(objects)
-                checks['geometry'] = {'panel': result['panel'][label]['geometry'], 'image': geometry['values']}
+                checks['geometry'] = {'panel': result['panel'][label]['captures'][checked_panel]['geometry'],
+                                      'image': geometry['values']}
                 checks['flags'] = list(checks['flags']) + geometry['flags']
                 checks['unavailable'] = list(checks['unavailable']) + geometry['unavailable']
                 flags, details = list(checks['flags']), checks['flag_details'] + geometry['flag_details']
@@ -980,12 +1584,10 @@ def _run_stages(config, root, results_folder, result, progress):
                 provenance = rct.write_provenance(results_folder / (name + '_provenance.json'), records,
                                                   parameters=parameters, checks=checks)
                 entry['provenance'] = Path(provenance).name
-            for band in bands:
-                try:
-                    series[band].append((name, objects[band].dls_irradiance()))
-                except rct.MetadataError:
-                    pass
+            _irradiance_series(series, bands, objects, name)
             result['outputs'].extend(written)
+        except _Done:
+            pass
         except Exception as error:
             entry['errors'].append(f"{type(error).__name__}: {error}")
             result['errors'].append(f"{name}: {error}")
@@ -1138,8 +1740,10 @@ def build_summary(result, config):
         if stats:
             stats['outside'] = None if outside is None else sum(outside(value) for value in values if value is not None)
             images[name] = stats
-    panels = {label: dict(result['panel'][label]['geometry'], capture=result['panel'][label]['capture'])
-              for label in ('before', 'after') if result['panel'].get(label, {}).get('geometry')}
+    panels = {name: dict(capture['geometry'], capture=name, orientation=capture.get('orientation'),
+                         used=capture.get('used', True))
+              for label in ('before', 'after') for name, capture in result['panel'].get(label, {}).get('captures', {}).items()
+              if capture.get('geometry')}
     weights = [entry['panels']['weight_of_the_second_panel'] for entry in done if entry.get('panels')]
     mode = config['PANEL.panels_used']
     panel_weights = None
@@ -1167,13 +1771,20 @@ def summary_lines(result):
     lines = [f"Summary: {summary['corrected']} of {summary['captures']} capture(s) corrected, {summary['files']} file(s) "
              f"written, {summary['flags']} flag(s)."]
     for panel in summary['panels'].values():
+        orientation = {'facing_sun': 'facing the sun', 'back_to_sun': 'the back to the sun',
+                       'side': 'the sun at the side'}.get(panel.get('orientation'), 'orientation unknown')
         lines.append(f"Panel {panel['capture']}: camera tilt {number(panel.get('camera_tilt_deg'), 1)} deg; heading "
-                     f"{number(panel.get('heading_to_sun_deg'))} deg from the sun (0 = facing it, 180 = the back to it); "
-                     f"DLS tilt {number(panel.get('dls_tilt_deg'), 1)} deg; sun elevation "
-                     f"{number(panel.get('sun_elevation_deg'))} deg.")
+                     f"{number(panel.get('heading_to_sun_deg'))} deg from the sun ({orientation}; 0 = facing it, 180 = the "
+                     f"back to it); DLS tilt {number(panel.get('dls_tilt_deg'), 1)} deg; sun elevation "
+                     f"{number(panel.get('sun_elevation_deg'))} deg" +
+                     ('.' if panel.get('used', True) else '; not used (Panel captures used, by orientation).'))
+    for capture, bands in (result.get('panel', {}).get('dls_only_check') or {}).items():
+        values = ', '.join(f"{band} {100 * value:+.0f} %" for band, value in bands.items() if value is not None)
+        lines.append(f"Reflectance from the DLS only of the panel in {capture}, against its known reflectance: "
+                     f"{values or 'no irradiance'}.")
     used = summary.get('panel_weights')
     if used:
-        lines.append(f"Panels ({used['mode']}): the first panel alone in {used['first_only']} capture(s), the second alone in "
+        lines.append(f"Panels ({used['mode']}): the panel before the flight alone in {used['first_only']} capture(s), after it alone in "
                      f"{used['second_only']}, both in {used['both']}.")
     images, limits = summary['images'], summary['limits']
     descriptions = (

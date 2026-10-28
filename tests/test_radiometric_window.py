@@ -1302,6 +1302,24 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertIn('- IMG_0422', text)
         self.assertFalse(self.frame.captures_summary.winfo_manager())
 
+    def test_captures_to_leave_out_are_chosen_from_a_list_and_not_corrected(self):
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0005')
+        self.frame.set_value('INPUTS.image_captures', '')
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0422']) as picker:
+            self.frame.choose_captures('INPUTS.excluded_captures')
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010', 'IMG_0422'])             # the panel capture is not offered
+        self.assertEqual(picker.call_args.kwargs['title'], 'Select the captures to leave out')
+        self.assertEqual(self.frame.model.get('INPUTS.excluded_captures'), 'IMG_0422')
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
+            self.frame.choose_captures()
+        self.assertEqual(picker.call_args[0][1], ['IMG_0010'])                         # nor the one left out
+        self.frame.set_value('INPUTS.image_captures', '')
+        self.frame._update_captures_summary()
+        self.assertIn('All the other captures of the folder will be corrected (1):', self.frame.captures_details()[1])
+        self.frame.set_value('INPUTS.image_captures', 'IMG_0422')
+        self.frame._update_captures_summary()
+        self.assertIn('Both selected and left out: IMG_0422', self.frame.captures_summary.cget('text'))
+
     def test_the_pattern_details_and_the_suggestion(self):
         self.frame._update_pattern_preview()
         title, text = self.frame.pattern_details()

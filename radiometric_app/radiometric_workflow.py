@@ -157,7 +157,13 @@ FIELDS = [
      'label': 'Select captures',
      'help': ("The captures to correct: type their names separated by commas, or choose them from the images folder "
                   "with Select...\n"
-                  "Empty: all the captures of the folder except the panel captures.")},
+                  "Empty: all the captures of the folder except the panel captures and the captures to leave out.")},
+    {'key': 'INPUTS.excluded_captures', 'group': 'Images to correct', 'kind': 'text', 'default': '',
+     'label': 'Captures to leave out',
+     'help': ("Captures of the images folder that must not be corrected, separated by commas, or chosen with Select...: "
+                  "for example other photos of the panel that are not used, or photos taken on the ground before the "
+                  "take-off.\n"
+                  "The panel captures are always left out, so they do not need to be listed here.")},
     {'key': 'INPUTS.file_pattern', 'group': 'Images to correct', 'kind': 'text', 'default': rct.CAPTURE_FILE_PATTERN,
      'label': 'File name pattern',
      'help': ("How the program tells which files belong to the same capture. The camera writes one file per band "
@@ -773,15 +779,32 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
     panel = config['INPUTS.reference_panel_capture'].strip()
     if not panel:
         problems.append("INPUTS.reference_panel_capture is empty")
+    excluded = capture_names(config['INPUTS.excluded_captures'])
+    both = [name for name in capture_names(config['INPUTS.image_captures']) if name in excluded]
+    if both:
+        problems.append(f"Captures both selected and left out: {', '.join(both)}")
     if images.is_dir() and pattern_problem is None:
         found = rct.list_capture_names(images, config['INPUTS.file_pattern'])
         named = [panel, config['INPUTS.reference_panel_capture_after'].strip()] + capture_names(config['INPUTS.image_captures'])
-        for name in named:
+        for name in named + excluded:
             if name and name not in found:
                 problems.append(f"Capture '{name}' not found in {images}")
-        if not capture_names(config['INPUTS.image_captures']) and not [n for n in found if n not in named[:2]]:
+        if not capture_names(config['INPUTS.image_captures']) and not captures_to_correct(config, found):
             problems.append(f"No captures to correct in {images}")
     return problems
+
+
+def captures_to_correct(config, found):
+    """
+    The captures that a run corrects: those of INPUTS.image_captures or, when it is empty, all those found in the images
+    folder except the panel captures and the captures to leave out (INPUTS.excluded_captures)
+    """
+    typed = capture_names(config['INPUTS.image_captures'])
+    if typed:
+        return typed
+    left_out = set(capture_names(config['INPUTS.excluded_captures'])) | {
+        config['INPUTS.reference_panel_capture'].strip(), config['INPUTS.reference_panel_capture_after'].strip()}
+    return [name for name in found if name not in left_out]
 
 
 def _progress(callback, stage, message, current=0, total=0):
@@ -911,10 +934,7 @@ def _run_stages(config, root, results_folder, result, progress):
     # LOAD_CAPTURES
     panel_name = config['INPUTS.reference_panel_capture'].strip()
     panel_after_name = config['INPUTS.reference_panel_capture_after'].strip()
-    names = capture_names(config['INPUTS.image_captures'])
-    if not names:
-        names = [name for name in rct.list_capture_names(images_folder, config['INPUTS.file_pattern'])
-                 if name not in (panel_name, panel_after_name)]
+    names = captures_to_correct(config, rct.list_capture_names(images_folder, config['INPUTS.file_pattern']))
     _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct; panel capture {panel_name}", 0, len(names))
 
     # PANEL_CALIBRATION

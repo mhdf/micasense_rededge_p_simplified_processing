@@ -538,8 +538,9 @@ class RadiometricFrame:
                 if key in CAPTURE_KEYS:
                     ttk.Button(line, text='Select...', command=lambda key=key: self.choose_panel_capture(key)).pack(
                         side='left', padx=(6, 0))
-                if key == 'INPUTS.image_captures':
-                    ttk.Button(line, text='Select...', command=self.choose_captures).pack(side='left', padx=(6, 0))
+                if key in ('INPUTS.image_captures', 'INPUTS.excluded_captures'):
+                    ttk.Button(line, text='Select...', command=lambda key=key: self.choose_captures(key)).pack(
+                        side='left', padx=(6, 0))
                 if key == 'INPUTS.file_pattern':
                     ttk.Button(line, text='Suggest from files', command=self.suggest_pattern).pack(side='left', padx=(6, 0))
                 variable.trace_add('write', lambda *_, key=key, variable=variable: self._changed(key, variable.get()))
@@ -808,19 +809,29 @@ class RadiometricFrame:
         if chosen is not None:
             self.set_value(key, chosen)
 
-    def choose_captures(self):
-        """ Choose the captures to correct by looking at those of the folder (the panel captures are left out) """
-        panels = (self.model.get('INPUTS.reference_panel_capture').strip(),
-                  self.model.get('INPUTS.reference_panel_capture_after').strip())
-        names = [name for name in self.capture_names() if name not in panels]
+    def choose_captures(self, key='INPUTS.image_captures'):
+        """
+        Choose the captures to correct, or the captures to leave out, by looking at those of the folder (the panel captures
+        are not offered; nor are the captures left out when choosing those to correct)
+        """
+        hidden = set(self.panel_capture_names())
+        if key == 'INPUTS.image_captures':
+            hidden |= set(wf.capture_names(self.model.get('INPUTS.excluded_captures')))
+        names = [name for name in self.capture_names() if name not in hidden]
         if not names:
             self.log('There are no other captures in the images folder (check the folder and the file name pattern).', 'error')
             return
-        chosen = pick_captures(self.parent.winfo_toplevel(), names, selected=wf.capture_names(self.model.get('INPUTS.image_captures')),
-                               multiple=True, title='Select the captures to correct',
-                               message='Click the captures to correct', **self._picker_arguments())
+        title, message = (('Select the captures to correct', 'Click the captures to correct')
+                          if key == 'INPUTS.image_captures' else
+                          ('Select the captures to leave out', 'Click the captures that must not be corrected'))
+        chosen = pick_captures(self.parent.winfo_toplevel(), names, selected=wf.capture_names(self.model.get(key)),
+                               multiple=True, title=title, message=message, **self._picker_arguments())
         if chosen is not None:
-            self.set_value('INPUTS.image_captures', ', '.join(chosen))
+            self.set_value(key, ', '.join(chosen))
+
+    def panel_capture_names(self):
+        """ The names of the panel captures typed in the Inputs page """
+        return [name for key in CAPTURE_KEYS for name in wf.capture_names(self.model.get(key))]
 
     def suggest_pattern(self):
         folder = wf.resolve_path(self.root_folder, self.model.get('INPUTS.images_folder'))
@@ -856,20 +867,26 @@ class RadiometricFrame:
         if not hasattr(self, 'captures_summary'):
             return
         typed = wf.capture_names(self.model.get('INPUTS.image_captures'))
+        left_out = wf.capture_names(self.model.get('INPUTS.excluded_captures'))
         available = self.capture_names()
-        panels = {self.model.get('INPUTS.reference_panel_capture').strip(),
-                  self.model.get('INPUTS.reference_panel_capture_after').strip()}
         problem = ''
         if typed:
-            missing = [name for name in typed if name not in available]
+            missing = [name for name in typed + left_out if name not in available]
+            both = [name for name in typed if name in left_out]
             self._captures_info = (f"{len(typed)} capture(s) will be corrected:", typed)
             if missing:
                 problem = f"Not found in the images folder: {', '.join(missing)}."
+            if both:
+                problem += f" Both selected and left out: {', '.join(both)}."
         else:
-            others = [name for name in available if name not in panels]
+            others = [name for name in available if name not in set(self.panel_capture_names()) | set(left_out)]
+            missing = [name for name in left_out if name not in available]
             self._captures_info = (f"All the other captures of the folder will be corrected ({len(others)}):", others)
+            if missing:
+                problem = f"Captures to leave out not found in the images folder: {', '.join(missing)}."
             if not others:
                 problem = 'There are no captures to correct in the images folder.'
+        problem = problem.strip()
         self._problem(self.captures_summary, problem)
         self.help_panel.refresh()
 
@@ -1008,8 +1025,8 @@ class RadiometricFrame:
             self._dls_correction_changed()
         if key == 'PANEL.panels_used' and self._panels_used_allowed(self.model.get(key)):
             self.panels_used_ok = self.model.get(key)
-        if key in ('INPUTS.images_folder', 'INPUTS.file_pattern', 'INPUTS.image_captures', 'INPUTS.reference_panel_capture',
-                   'INPUTS.reference_panel_capture_after'):
+        if key in ('INPUTS.images_folder', 'INPUTS.file_pattern', 'INPUTS.image_captures', 'INPUTS.excluded_captures',
+                   'INPUTS.reference_panel_capture', 'INPUTS.reference_panel_capture_after'):
             if getattr(self, 'preview_after', None) is not None:
                 self.parent.after_cancel(self.preview_after)
             self.preview_after = self.parent.after(400, self._update_pattern_preview)

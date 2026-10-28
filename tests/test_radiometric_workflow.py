@@ -1000,6 +1000,16 @@ class RunTests(unittest.TestCase):
         self.assertEqual(sorted(Path(path).name for path in result['outputs']),            # the other capture is corrected
                          [f'IMG_0422_{number}.tif' for number in range(1, 7)])
 
+    def test_captures_to_leave_out_are_not_corrected(self):
+        result = wf.run(config_for(self.folder / 'left_out', **{'INPUTS.image_captures': '',
+                                                                 'INPUTS.excluded_captures': 'IMG_0422'}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertEqual(list(result['captures']), ['IMG_0010'])
+        config = wf.merge_config(config_for(self.folder / 'x', **{'INPUTS.excluded_captures': 'IMG_0010, IMG_9999'}))
+        problems = wf.validate_config(config, ROOT)
+        self.assertIn('Captures both selected and left out: IMG_0010', problems)
+        self.assertTrue(any("Capture 'IMG_9999' not found" in problem for problem in problems))
+
     def test_missing_irradiance_in_one_band_fails_the_dls_correction_of_the_capture(self):
         original = wf._read_capture
 

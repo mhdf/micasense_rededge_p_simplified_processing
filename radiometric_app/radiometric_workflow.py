@@ -1000,12 +1000,32 @@ def group_spread(group, use_dls):
     """
     if len(group) < 2:
         return {}
-    spread = {}
-    for band in next(iter(group.values())):
-        values = [images[band].panel_audit['radiance_to_reflectance_factor'] *
-                  (images[band].dls_irradiance() if use_dls else 1.0) for images in group.values()]
-        spread[band] = float(np.std(values) / np.mean(values))
-    return spread
+    return {band: float(np.std(list(values.values())) / np.mean(list(values.values())))
+            for band, values in _averaged_values(group, use_dls).items()}
+
+
+def _averaged_values(group, use_dls):
+    """ {band: {capture: what is averaged}}: the panel factor or, with the DLS, the panel factor x the DLS irradiance """
+    return {band: {name: images[band].panel_audit['radiance_to_reflectance_factor'] *
+                   (images[band].dls_irradiance() if use_dls else 1.0) for name, images in group.items()}
+            for band in next(iter(group.values()))}
+
+
+def group_departures(group, use_dls):
+    """
+    How far each capture of a group of three or more is from the others, band by band: what is averaged (see group_spread)
+    divided by its median over the group, minus 1 (-0.05 = 5 % below). With two captures the one that is wrong cannot be
+    told, so {} (the spread of the group is checked instead)
+    Outputs: {capture: {band: departure}}
+    """
+    if len(group) < 3:
+        return {}
+    departures = {name: {} for name in group}
+    for band, values in _averaged_values(group, use_dls).items():
+        median = float(np.median(list(values.values())))
+        for name, value in values.items():
+            departures[name][band] = float(value / median - 1)
+    return departures
 
 
 def _nearest_capture(group, image, name):
@@ -1164,13 +1184,23 @@ def _run_stages(config, root, results_folder, result, progress):
         if not calibrates:
             continue
         try:
-            spread = group_spread(group, use_dls)
+            spread, departures = group_spread(group, use_dls), group_departures(group, use_dls)
         except rct.MetadataError as error:
-            spread = {}
+            spread, departures = {}, {}
             result['flags'].append(f"Panel captures {', '.join(group_names)}: their spread was not checked ({error})")
+        averaged = 'panel factor x DLS irradiance' if use_dls else 'panel factor'
         if spread:
             result['panel'][label]['spread'] = spread
-            averaged = 'panel factor x DLS irradiance' if use_dls else 'panel factor'
+        if departures:                               # three or more captures: the ones that depart are named
+            result['panel'][label]['departures'] = departures
+            for name, bands_departure in departures.items():
+                band, value = max(bands_departure.items(), key=lambda item: abs(item[1]))
+                if abs(value) > spread_limit:
+                    result['flags'].append(f"Panel capture {name}: its {averaged} departs {100 * value:+.1f} % (band "
+                                           f"'{band}') from the median of the panel captures of its moment "
+                                           f"({', '.join(group_names)}); limit {100 * spread_limit:g} %. Leave it out "
+                                           f"if it is wrong")
+        elif spread:                                 # two captures: which one is wrong cannot be told
             for band, value in spread.items():
                 if value > spread_limit:
                     result['flags'].append(f"Panel captures {', '.join(group_names)}: the {averaged} of band '{band}' varies "

@@ -1001,6 +1001,42 @@ class RunTests(unittest.TestCase):
         self.assertEqual(sorted(Path(path).name for path in result['outputs']),            # the other capture is corrected
                          [f'IMG_0422_{number}.tif' for number in range(1, 7)])
 
+    def test_a_panel_capture_that_departs_from_its_moment_is_named(self):
+        # three copies of the panel capture; the DLS of IMG_0007 read 10 % more light than in the other two
+        images = self.folder / 'three_panels_images'
+        images.mkdir()
+        for path in RAW.glob('*.tif'):
+            shutil.copy(path, images / path.name)
+            if path.name.startswith('IMG_0005'):
+                for copy in ('IMG_0006', 'IMG_0007'):
+                    shutil.copy(path, images / path.name.replace('IMG_0005', copy))
+        original = wf._read_capture
+
+        def changed(images_folder, capture, bands, exiftool_path, *arguments):
+            objects = original(images_folder, capture, bands, exiftool_path, *arguments)
+            if capture == 'IMG_0007':
+                for image in objects.values():
+                    image.metadata['XMP:HorizontalIrradiance'] = float(image.metadata['XMP:HorizontalIrradiance']) * 1.1
+            return objects
+
+        for use_dls in (False, True):
+            values = {'INPUTS.images_folder': str(images), 'INPUTS.results_folder': str(self.folder / f'three_{use_dls}'),
+                      'INPUTS.reference_panel_capture': 'IMG_0005, IMG_0006, IMG_0007',
+                      'INPUTS.image_captures': 'IMG_0010', 'CORRECTION.use_dls': use_dls}
+            with mock.patch.object(wf, '_read_capture', changed):
+                result = wf.run(values, ROOT)
+            self.assertEqual(result['status'], 'completed', result['errors'])
+            departures = result['panel']['before']['departures']
+            named = [flag for flag in result['flags'] if flag.startswith('Panel capture ')]
+            if use_dls:                                    # only what is averaged with the DLS sees the difference
+                self.assertAlmostEqual(departures['IMG_0007']['Blue'], 0.1)
+                self.assertEqual(len(named), 1)
+                self.assertIn('Panel capture IMG_0007: its panel factor x DLS irradiance departs +10.0 %', named[0])
+            else:
+                self.assertEqual(named, [])
+                self.assertAlmostEqual(departures['IMG_0007']['Blue'], 0.0)
+            self.assertFalse(any(flag.startswith('Panel captures ') for flag in result['flags']))   # three: named
+
     def test_several_panel_captures_of_one_moment_are_averaged_and_their_spread_is_checked(self):
         # IMG_0005 and IMG_0422 as one group: in the example the light changed, so they disagree (a flag)
         for use_dls in (False, True):

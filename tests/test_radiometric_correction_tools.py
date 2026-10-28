@@ -594,6 +594,51 @@ class ExampleImageTests(unittest.TestCase):
             self.assertTrue(np.allclose(image.digital_numbers_to_radiance(), self.micasense_radiance(image),
                                         rtol=1e-12, atol=0), band)
 
+    # the radial vignetting of a RedEdge-MX (MicaSense's sample capture REDEDGE-MX/IMG_0001_1.tif, Blue)
+    RADIAL = {'XMP:VignettingCenter': [623.6301, 470.2927],
+              'XMP:VignettingPolynomial': [1.001285e-06, 5.614210e-07, -5.962064e-09, 1.862037e-11, -2.530487e-14,
+                                           1.209421e-17]}
+
+    def radial_image(self, **changes):
+        path, metadata = self.band_files['Blue']
+        metadata = {key: value for key, value in metadata.items() if 'VignettingPolynomial2D' not in key}
+        return rct.Image(path, dict(metadata, **self.RADIAL, **changes))
+
+    def test_the_radial_vignetting_of_older_cameras_is_the_one_of_micasense(self):
+        image = self.radial_image()
+        self.assertEqual(image.vignetting_model, 'radial')
+        # micasense Image.vignette(), radial branch, with its transposes
+        x, y = np.meshgrid(np.arange(image.image.shape[1]), np.arange(image.image.shape[0]))
+        x, y = x.T, y.T
+        polynomial = list(image.vignetting_polynomial)
+        polynomial.reverse()
+        polynomial.append(1.)
+        r = np.hypot((x - image.vignetting_center[0]), (y - image.vignetting_center[1]))
+        expected = (1. / np.polyval(np.array(polynomial), r)).T
+        self.assertTrue(np.allclose(image.vignetting_correction(), expected, rtol=1e-12, atol=0))
+        centre = image.vignetting_correction()[470, 624]                       # half a pixel from the centre
+        self.assertAlmostEqual(centre, 1.0, delta=1e-5)
+
+    def test_an_image_without_a_vignetting_model_is_a_clear_error(self):
+        path, metadata = self.band_files['Blue']
+        metadata = {key: value for key, value in metadata.items() if 'VignettingPolynomial2D' not in key}
+        with self.assertRaisesRegex(rct.MetadataError, 'no vignetting model'):
+            rct.Image(path, metadata)
+
+    def test_the_exposure_of_legacy_rededge_firmware_is_corrected_as_micasense_does(self):
+        self.assertEqual(self.radial_image(**{'EXIF:ExposureTime': 1 / 6329, 'EXIF:Model': 'RedEdge-M'}).exposure_time,
+                         0.000274)
+        self.assertAlmostEqual(self.radial_image(**{'EXIF:ExposureTime': 1 / 6329, 'EXIF:Model': 'Altum'}).exposure_time,
+                               1 / 6329)
+
+    def test_the_dls_of_old_firmware_is_not_used(self):
+        old = self.radial_image(**{'EXIF:Model': 'RedEdge-M', 'EXIF:Software': 'v5.0.2'})
+        with self.assertRaisesRegex(rct.MetadataError, 'not reliable .*at least v5.1.7'):
+            old.dls_irradiance()
+        self.assertTrue(self.radial_image(**{'EXIF:Model': 'RedEdge-M', 'EXIF:Software': 'v7.5.0-beta6'})
+                        .horizontal_irradiance_trusted())
+        self.assertTrue(rct.Image(*self.band_files['Blue']).horizontal_irradiance_trusted())     # RedEdge-P
+
     def test_the_vignetting_correction_is_larger_along_the_long_side_of_the_image(self):
         # the image is wider than tall, so the middle of the left edge is further from the centre than the middle of the top
         image = rct.Image(*self.band_files['Blue'])

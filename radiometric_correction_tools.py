@@ -181,6 +181,16 @@ def capture_dls_ratios(panel_images, images):
     return { band: (dls_irradiance_ratio(panel_images[band], image), 'metadata') for band, image in images.items() }
 
 
+# Firmware from which these cameras write a reliable XMP:HorizontalIrradiance (MicaSense's horizontal_irradiance_valid())
+HORIZONTAL_IRRADIANCE_FIRMWARE = {'RedEdge': '5.1.7', 'RedEdge-M': '5.1.7', 'Altum': '1.2.3'}
+
+
+def _version(text):
+    """ A firmware version such as 'v7.5.0-beta6' as a tuple of numbers, (7, 5, 0); () if there is none """
+    numbers = re.findall(r'\d+', str(text or '').split('-')[0])
+    return tuple(int(number) for number in numbers)
+
+
 # Checks of the DLS data - thresholds (adjust them if needed). They are guesses, not validated limits
 DLS_CHECKS = { 'ratio_range': (0.5, 2.0),            # plausible E_panel / E_image
                 'band_ratio_tolerance': 0.03,         # largest relative departure of a band from the median ratio
@@ -905,12 +915,22 @@ class Image(object):
             _metadata_floats(self.metadata, 'XMP:PerspectiveDistortion', image_path, count=5) )[[0, 1, 3, 4, 2]]
         self.camera_matrix = cv2_camera_matrix(self.principal_point, self.focal_length , self.focal_plane_resolution_px_per_mm)
 
-        # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by MicaSense (vignette_map)
-        self.k = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2D', image_path) # pol2DCoeff
-        self.e = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2DName', image_path) # pol2DExponents
-        if len(self.e) != 2 * len(self.k):
-            raise MetadataError(f"{image_path}: 'XMP:VignettingPolynomial2DName' needs {2 * len(self.k)} exponents, "
-                                f"found {len(self.e)}")
+        # Vignetting model, as in MicaSense's Image.vignette(): the 2D polynomial of the RedEdge-P and Altum-PT, or the
+        # radial polynomial of older cameras (RedEdge-M/MX, Altum); the fields of the image say which one
+        if self.metadata.get('XMP:VignettingPolynomial2D') is not None:
+            self.vignetting_model = '2d'
+            self.k = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2D', image_path) # pol2DCoeff
+            self.e = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2DName', image_path) # pol2DExponents
+            if len(self.e) != 2 * len(self.k):
+                raise MetadataError(f"{image_path}: 'XMP:VignettingPolynomial2DName' needs {2 * len(self.k)} exponents, "
+                                    f"found {len(self.e)}")
+        elif self.metadata.get('XMP:VignettingCenter') is not None:
+            self.vignetting_model = 'radial'
+            self.vignetting_center = _metadata_floats(self.metadata, 'XMP:VignettingCenter', image_path, count=2)
+            self.vignetting_polynomial = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial', image_path)
+        else:
+            raise MetadataError(f"{image_path}: no vignetting model: neither 'XMP:VignettingPolynomial2D' (RedEdge-P, "
+                                f"Altum-PT) nor 'XMP:VignettingCenter' and 'XMP:VignettingPolynomial' (RedEdge-M/MX, Altum)")
 
         # Parameters for radiometric calibration - radiometric sensitivity
         self.a1, self.a2, self.a3 = _metadata_floats(self.metadata, 'XMP:RadiometricCalibration', image_path, count=3)
@@ -923,6 +943,10 @@ class Image(object):
         # Exposure time & gain (gain = ISO/100)
         self.exposure_time = float( _metadata_positive(self.metadata, 'EXIF:ExposureTime', image_path) )
         self.gain          = float( _metadata_positive(self.metadata, 'EXIF:ISOSpeed', image_path) ) / 100.0
+        # Some legacy RedEdge firmware wrote 1/6329 s for an exposure of 0.274 ms (MicaSense's Metadata.exposure())
+        self.camera_model = str(self.metadata.get('EXIF:Model') or '')
+        if self.camera_model != 'Altum' and abs(self.exposure_time - 1.0 / 6329.0) < 1e-6:
+            self.exposure_time = 0.000274
 
         # Downwelling light sensor (DLS) - optional, only needed when the DLS correction is requested
         self.horizontal_irradiance = self.metadata.get('XMP:HorizontalIrradiance')
@@ -975,13 +999,18 @@ class Image(object):
     # Vignetting correction: the multiplier of each pixel
     def vignetting_correction(self):
         """
-        1 / polynomial of the position of the pixel, with the coefficients (XMP:VignettingPolynomial2D) and the pairs of
-        exponents (XMP:VignettingPolynomial2DName) written by the camera, as in MicaSense's Image.vignette(): x is the
-        position across the width (column / width, 0 at the left) and y down the height (row / height, 0 at the top)
+        1 / polynomial of the position of the pixel, as in MicaSense's Image.vignette():
+        - 2D model: the coefficients (XMP:VignettingPolynomial2D) and pairs of exponents (XMP:VignettingPolynomial2DName)
+          of x, the position across the width (column / width, 0 at the left), and y, down the height (row / height);
+        - radial model: 1 + c1 r + c2 r^2 + ..., with c from XMP:VignettingPolynomial and r the distance in pixels from
+          XMP:VignettingCenter (column, row)
         Outputs: array of the size of the image, 1 where the lens does not darken the image and above 1 towards the edges
         """
         height, width = self.image.shape[:2]
         rows, columns = np.mgrid[0:height, 0:width]
+        if self.vignetting_model == 'radial':
+            distance = np.hypot(columns - self.vignetting_center[0], rows - self.vignetting_center[1])
+            return 1.0 / np.polyval(list(reversed(self.vignetting_polynomial)) + [1.0], distance)
         x, y = columns / width, rows / height
         polynomial = np.zeros((height, width), dtype=float)
         for number, coefficient in enumerate(self.k):
@@ -1024,10 +1053,28 @@ class Image(object):
         it cancels when two images of the same camera are compared, so it is not guessed when it is absent
         """
         irradiance = _metadata_positive(self.metadata, 'XMP:HorizontalIrradiance', self.image_path)
+        if not self.horizontal_irradiance_trusted():
+            raise MetadataError(f"{self.image_path}: the 'XMP:HorizontalIrradiance' written by the firmware "
+                                f"{self.metadata.get('EXIF:Software')} of the {self.camera_model} is not reliable "
+                                f"(MicaSense needs at least v{HORIZONTAL_IRRADIANCE_FIRMWARE[self.camera_model]}); "
+                                f"update the firmware of the camera or do not use the DLS")
         scale = 1.0
         if self.irradiance_scale_to_si is not None:
             scale = float( _metadata_positive(self.metadata, 'XMP:IrradianceScaleToSIUnits', self.image_path) )
         return float(irradiance) * scale
+
+
+    # Whether the horizontal irradiance written by the camera can be used
+    def horizontal_irradiance_trusted(self):
+        """
+        As MicaSense's Metadata.horizontal_irradiance_valid(): the RedEdge, RedEdge-M (and MX, which writes RedEdge-M) and
+        Altum write a reliable XMP:HorizontalIrradiance only from the firmware versions of HORIZONTAL_IRRADIANCE_FIRMWARE;
+        the other models (RedEdge-P, Altum-PT) always do
+        """
+        minimum = HORIZONTAL_IRRADIANCE_FIRMWARE.get(self.camera_model)
+        if minimum is None:
+            return True
+        return _version(self.metadata.get('EXIF:Software')) >= _version(minimum)
 
 
     # Angle between the sun direction seen by the DLS and the solar zenith

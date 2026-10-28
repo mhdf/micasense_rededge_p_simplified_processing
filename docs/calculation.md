@@ -13,7 +13,7 @@
 | Step | What it corrects | Metadata |
 |---|---|---|
 | 1. Dark level | The value that the sensor gives without light, subtracted from every pixel | `EXIF:BlackLevel` (mean of the values) |
-| 2. Vignetting | The lens lets less light reach the edges of the sensor than its centre; each pixel is multiplied by 1 / a polynomial of its position (1 at the centre, up to about 2 in the corners) | `XMP:VignettingPolynomial2D`, `XMP:VignettingPolynomial2DName` |
+| 2. Vignetting | The lens lets less light reach the edges of the sensor than its centre; each pixel is multiplied by 1 / a polynomial of its position (1 at the centre, up to about 2 in the corners) | `XMP:VignettingPolynomial2D`, `XMP:VignettingPolynomial2DName` (RedEdge-P, Altum-PT) or `XMP:VignettingCenter`, `XMP:VignettingPolynomial` (RedEdge-M/MX, Altum) |
 | 3. Row gradient | The sensor is read row by row, so the rows further down are multiplied by a small correction | `XMP:RadiometricCalibration` (a2, a3), `EXIF:ExposureTime` |
 | 4. Scale to radiance | Divided by gain x exposure time and by 2 to the bits per pixel, multiplied by the calibration coefficient a1 | `EXIF:ISOSpeed` (gain = ISO / 100), `EXIF:ExposureTime`, `EXIF:BitsPerSample`, `XMP:RadiometricCalibration` (a1) |
 
@@ -23,7 +23,7 @@ radiance = vignetting(x, y) x row_gradient(row) x (DN - dark level) / (gain x ex
 
 &emsp;&emsp;In the vignetting polynomial, `x` is the position across the width of the image (0 at the left, 1 at the right) and `y` down its height (0 at the top, 1 at the bottom). The radiance is in W/m²/sr/nm. Negative values, which come from noise around the dark level, become 0.
 
-&emsp;&emsp;MicaSense's code also has a radial vignetting model (`XMP:VignettingCenter`, `XMP:VignettingPolynomial`), written by older cameras such as the RedEdge-M/MX. This program reads only the 2D polynomial of the RedEdge-P, so an image without it stops with an error that names the missing field.
+&emsp;&emsp;Older cameras (RedEdge-M/MX, Altum) write a radial model instead: the polynomial is of `r`, the distance in pixels from the centre of the vignetting, `1 + c1 r + c2 r² + ...`. The program uses the model that the image has. The radial model was checked on the RedEdge-MX sample captures published by MicaSense (the same radiance as MicaSense's code), not on flights of that camera. As in MicaSense's code, an exposure of 1/6329 s written by some old RedEdge firmware is read as 0.274 ms, and the DLS irradiance of the RedEdge and RedEdge-M/MX before firmware 5.1.7 (Altum before 1.2.3) is not used.
 
 ## From radiance to reflectance
 

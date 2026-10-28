@@ -1,7 +1,7 @@
 """
 Reflectance of the calibrated reference panel by band, from its spectral response (a .csv file)
 
-Micasense supplies, with each panel, the reflectance by wavelength. The reflectance of a band is the mean of that curve
+MicaSense supplies, with each panel, the reflectance by wavelength. The reflectance of a band is the mean of that curve
 over the spectral window of the band (center wavelength +/- half of the bandwidth): the weighting is uniform, which is
 an approximation of the real spectral response of the filters. For the example panel it reproduces the values
 printed on the panel (0.477 to 0.479) within 0.3 %.

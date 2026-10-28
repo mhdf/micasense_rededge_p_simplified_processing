@@ -13,7 +13,9 @@
    - conda: `conda env create -f environment.yml` (the environment is called `radiometric`; the file was checked by solving it with conda-forge, but the environment has not yet been created from it on another computer);
    - or a virtual environment: `python -m venv .venv`, then `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
 
-   Then choose the `python.exe` of that environment (see [Choosing the Python](#choosing-the-python)). pyzbar reads the QR code of the panel: on Windows it brings the zbar library it needs (and asks for the Microsoft Visual C++ Redistributable of 2013), on macOS install it with `brew install zbar` and on Linux with `sudo apt install libzbar0`.
+   Then choose the `python.exe` of that environment (see [Choosing the Python](#choosing-the-python)). Two packages need a note:
+   - **pyzbar**, which reads the QR code of the panel, needs the zbar library. On **Windows** the package brings it, but the library needs the *Microsoft Visual C++ 2013 Redistributable (x64)*, which a new Windows often lacks. Without it the check says "pyzbar: broken" with "Could not find module '...libzbar-64.dll' (or one of its dependencies)". Install the runtime with `winget install Microsoft.VCRedist.2013.x64` (or download `vcredist_x64.exe` from Microsoft) and check again. On macOS install zbar with `brew install zbar`, and on Linux with `sudo apt install libzbar0`.
+   - **OpenCV in a conda environment:** `environment.yml` installs pyzbar with pip inside the environment, because conda-forge has no Windows build of zbar (do not use `conda install pyzbar`, which gives an older version). Do not run `pip install -r requirements.txt` in an environment made from `environment.yml`: pip does not see conda's OpenCV under the name `opencv-python` and would install a second one on top of it. To check OpenCV use `python -c "import cv2; print(cv2.__version__)"`. The version is kept below 5, the range that was tested.
 3. **ExifTool**, the program (not a Python package): see [ExifTool](#exiftool). Without it the UI opens but nothing can be read from the images.
 
 ## ExifTool

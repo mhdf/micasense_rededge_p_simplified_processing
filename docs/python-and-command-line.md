@@ -30,7 +30,7 @@ import radiometric_correction_tools as rct
 exiftool_path = os.environ.get('exiftoolpath')
 ```
 
-&emsp;&emsp;Next, provide the information required for processing: (i) the names of the captures with the reference panel and with the images to be transformed from raw Digital Numbers (DNs) to reflectance, (ii) the reflectance levels of the different bands in the reference panel, a value provided by Micasense with each reference panel, and (iii) whether the DLS should be used. The files of each capture are matched to the bands using the band name written in their metadata (`XMP:BandName`), not the order of the files: in the example images the file `_3` is the Red band and `_6` is the Panchro band. Each result keeps the name of its source file, so `IMG_0010_3.tif` is the Red band both before and after the correction.
+&emsp;&emsp;Next, provide the information required for processing: (i) the names of the captures with the reference panel and with the images to be transformed from raw Digital Numbers (DNs) to reflectance, (ii) the reflectance levels of the different bands in the reference panel, a value provided by MicaSense with each reference panel, and (iii) whether the DLS should be used. The files of each capture are matched to the bands using the band name written in their metadata (`XMP:BandName`), not the order of the files: in the example images the file `_3` is the Red band and `_6` is the Panchro band. Each result keeps the name of its source file, so `IMG_0010_3.tif` is the Red band both before and after the correction.
 
 ```
 # Name of the captures: the reference panel and the images to be corrected
@@ -38,8 +38,8 @@ reference_panel_name = 'IMG_0005'
 image_to_process_name = 'IMG_0010'
 
 # Reflectance level for the different bands in the reference panel -
-# these values are measured and provided by Micasense, marked in the reference panel,
-# but they can also be requested via the Micasense technical support.
+# these values are measured and provided by MicaSense, marked in the reference panel,
+# but they can also be requested via the MicaSense technical support.
 # obs.: the names must be the band names written by the camera (XMP:BandName), the order does not matter.
 reflectance_level_reference_panel = { "Blue": 0.477, "Green": 0.478, "Panchro": 0.479, \
                                       "Red": 0.478, "Red edge": 0.478, "NIR": 0.477 }

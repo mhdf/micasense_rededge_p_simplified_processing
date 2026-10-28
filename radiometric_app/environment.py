@@ -46,8 +46,11 @@ EXIFTOOL_INSTALL = ("Install ExifTool (https://exiftool.org). Windows: download 
                     "libimage-exiftool-perl.")
 TKINTER_INSTALL = ("This Python has no Tkinter (Tcl/Tk). Windows and macOS: install Python from python.org with 'tcl/tk and "
                    "IDLE' selected; conda: conda install tk; Linux: sudo apt install python3-tk.")
-PYZBAR_INSTALL = ("pyzbar needs the zbar library. Windows: the package brings it, but it needs the Visual C++ "
-                  "Redistributable (2013) of Microsoft; macOS: brew install zbar; Linux: sudo apt install libzbar0.")
+PYZBAR_INSTALL = ("pyzbar needs the zbar library. Windows: the package brings it, but the library needs the Microsoft "
+                  "Visual C++ 2013 Redistributable (x64), which a new Windows often lacks (the error says that libzbar-64.dll "
+                  "or one of its dependencies was not found): winget install Microsoft.VCRedist.2013.x64, or download "
+                  "vcredist_x64.exe from Microsoft, and then check again. macOS: brew install zbar. Linux: sudo apt install "
+                  "libzbar0.")
 EXIFTOOL_PACKAGE_INSTALL = ("The module 'exiftool' must be the package PyExifTool (it has ExifToolHelper): pip uninstall "
                             "exiftool, then pip install PyExifTool.")
 

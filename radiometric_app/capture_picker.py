@@ -25,13 +25,13 @@ COLUMNS = 5
 def thumbnail_image(path, size=THUMBNAIL_SIZE):
     """
     A small picture of an image file (raw .tif of one band): reduced first, then stretched between its 1 % and 99.5 %
-    percentiles so that dark raw images can be recognised. Returns a PIL image (8 bits, grey) that fits in size
+    percentiles so that dark raw images can be recognized. Returns a PIL image (8 bits, grey) that fits in size
     """
     import numpy as np
     import tifffile
     from PIL import Image
     data = np.squeeze(tifffile.imread(str(path)))
-    if data.ndim == 3:                                  # colour or several channels: the first one
+    if data.ndim == 3:                                  # color or several channels: the first one
         data = data[..., 0] if data.shape[-1] <= 4 else data[0]
     if data.ndim != 2:
         raise ValueError(f"{path} is not an image")

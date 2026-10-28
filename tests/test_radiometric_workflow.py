@@ -549,12 +549,12 @@ class RunTests(unittest.TestCase):
         self.assertEqual(message, 'DLS ratio of a band more than 10 % from the median of the bands in 1 of 1 capture '
                                   '(departure 12.5 %; bands Red): A_1')
 
-    def test_the_list_of_captures_has_all_of_them_and_neighbours_are_written_as_ranges(self):
+    def test_the_list_of_captures_has_all_of_them_and_neighbors_are_written_as_ranges(self):
         order = [f'IMG_{number:04d}' for number in range(1, 101)]
         self.assertEqual(wf.capture_list_text(order[:2], order), 'IMG_0001, IMG_0002')
         self.assertEqual(wf.capture_list_text(order[:3], order), 'IMG_0001 to IMG_0003')
         self.assertEqual(wf.capture_list_text(order[9:60], order), 'IMG_0010 to IMG_0060')
-        scattered = order[::2]                                                    # 50 captures, none of them neighbours
+        scattered = order[::2]                                                    # 50 captures, none of them neighbors
         text = wf.capture_list_text(scattered, order)
         self.assertEqual(text.split(', '), scattered)                             # no limit: every capture is there
         self.assertEqual(wf.capture_list_text(['IMG_0007', 'IMG_0003'], order), 'IMG_0003, IMG_0007')    # in the order of the run

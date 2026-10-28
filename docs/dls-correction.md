@@ -16,7 +16,7 @@ reflectance(image) = radiance(image) * panel_reflectance / panel_radiance * E_pa
 
 - At the panel capture the ratio is 1, so the result reproduces the panel-only conversion. Panel only is the default and never reads the DLS data.
 - It is a relative correction: it assumes that the panel and the DLS saw the same illumination when the panel was photographed. The scale to SI units (`XMP:IrradianceScaleToSIUnits`) is applied when it exists; it cancels in the ratio, so it must be in both captures or in none.
-- Each image uses only data written in files: its own irradiance (the metadata of that image) and that of the panel capture(s) used. There is no flight-wide reference, no averaging with neighbouring images and no smoothing along the flight.
+- Each image uses only data written in files: its own irradiance (the metadata of that image) and that of the panel capture(s) used. There is no flight-wide reference, no averaging with neighboring images and no smoothing along the flight.
 - The Panchro band is corrected like the others, with the irradiance written in its own file (in the example images its ratio, 0.8842, agrees with those of the multispectral bands, 0.883 to 0.888). A missing or invalid irradiance in any band, Panchro included, raises an error: no ratio is estimated from other bands.
 - The correction does not account for the orientation or the shading of the DLS, so check the data as described below before relying on it.
 
@@ -50,7 +50,7 @@ reflectance(image) = radiance(image) * panel_reflectance / panel_radiance * E_pa
 DLS tilt over 10 deg in 386 of 409 captures (tilt of at least 10.1 to 22.0 deg): IMG_0010 to IMG_0044, IMG_0047, IMG_0050 to IMG_0100, ...
 ```
 
-- Every capture is listed, in the order of the run, and three or more neighbours are written as `first to last` to keep it short. The `flag_groups` of `radiometric_result.json` have the same captures in a list (criterion, label, count, number of captures, captures, range of the values and, for the criteria checked in each band, the bands).
+- Every capture is listed, in the order of the run, and three or more neighbors are written as `first to last` to keep it short. The `flag_groups` of `radiometric_result.json` have the same captures in a list (criterion, label, count, number of captures, captures, range of the values and, for the criteria checked in each band, the bands).
 - The criteria that are counted are the tilt of the camera, its heading against the sun, the tilt of the DLS, the DLS ratio outside its plausible range and the ratio of a band that departs from the other bands, and the spikes and steps of the irradiance (one line for each kind, with the largest change and the number of bands in which it was found).
 - The flags of the panel captures (heading, tilt, the DLS of the panel and the comparison of two panels) are not counted: they are written once with the name of the panel capture. The provenance record of each capture still has all of its own flags.
 

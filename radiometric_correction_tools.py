@@ -2,13 +2,13 @@
 """
 RedEdge Image Class for Radiometric Correction
 
-Simplified from the Micasense RedEdge Image Processing Library to avoid issues with missing 
-Exif metadata in RedEdge-P images (frameware v1.3.1 and v1.4.5)
+Simplified from the MicaSense RedEdge Image Processing Library to avoid issues with missing 
+Exif metadata in RedEdge-P images (firmware v1.3.1 and v1.4.5)
 
 For the original/complete library, see:
 https://github.com/micasense/imageprocessing
 
-The Micasense imagerocessing Library is licensed under the MIT License
+The MicaSense imageprocessing Library is licensed under the MIT License
 """
 
 # Standard Library Imports
@@ -276,7 +276,7 @@ def classify_irradiance_changes(irradiances, threshold=None):
     Find the changes between consecutive captures of the irradiance of one band, in acquisition order
     Inputs: positive irradiances; threshold is the relative change to report (default DLS_CHECKS['jump_threshold'])
     Outputs: list of dictionaries {'index', 'kind', 'change'}: 'spike' is a value that jumps and comes back to the level
-             of its neighbours (a single capture, e.g. a shaded or tilted DLS); 'step' is a change that persists
+             of its neighbors (a single capture, e.g. a shaded or tilted DLS); 'step' is a change that persists
              (e.g. the sun going behind a cloud). 'index' is the first capture after the change; 'change' is the
              relative change from the previous capture
     """
@@ -865,7 +865,7 @@ def read_band_definitions(image_paths, exiftool_path=None):
 class Image(object):
 
     """
-    Create an image object from the path for a micasense rededge image and corresponding metadata
+    Create an image object from the path for a MicaSense RedEdge image and corresponding metadata
     """
 
     def __init__(self, image_path, image_metadata):
@@ -887,7 +887,7 @@ class Image(object):
             _metadata_floats(self.metadata, 'XMP:PerspectiveDistortion', image_path, count=5) )[[0, 1, 3, 4, 2]]
         self.camera_matrix = cv2_camera_matrix(self.principal_point, self.focal_length , self.focal_plane_resolution_px_per_mm)
 
-        # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by Micasense (vignette_map)
+        # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by MicaSense (vignette_map)
         self.k = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2D', image_path) # pol2DCoeff
         self.e = _metadata_floats(self.metadata, 'XMP:VignettingPolynomial2DName', image_path) # pol2DExponents
         if len(self.e) != 2 * len(self.k):
@@ -959,7 +959,7 @@ class Image(object):
     # Convert DNs to radiance
     def digital_numbers_to_radiance(self):
         
-        # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by Micasense (vignette_map)
+        # Pixel-wise polynomial 2D vignetting coefficients, according to functions provided by MicaSense (vignette_map)
         k = self.k
         e = self.e
 
@@ -1104,7 +1104,7 @@ class Image(object):
         if( len(barcode) > 0 ):
             barcode = barcode[0]
             barcode_source = 'undistorted'
-        else: # if barcode is not detected in the undistroted image, use the QR code from the original image
+        else: # if barcode is not detected in the undistorted image, use the QR code from the original image
             gray = (self.image // 256).astype(np.uint8)
             barcode = decode(gray, symbols=[ZBarSymbol.QRCODE])
             if( len(barcode) == 0 ):
@@ -1242,7 +1242,7 @@ class Image(object):
         masked_values_average = panel_radiance.mean()
         # print('Mean Radiance in panel region: {:1.4f} W/m^2/nm/sr'.format( masked_values_average ))
 
-        # Specific calibrated reflectance level for the band - provided by Micasense
+        # Specific calibrated reflectance level for the band - provided by MicaSense
         if self.band_name not in reflectance_level_reference_panel:
             raise KeyError(f"{self.image_path}: band '{self.band_name}' not in the reference panel reflectance levels "
                            f"{list(reflectance_level_reference_panel)}")

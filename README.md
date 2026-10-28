@@ -1,8 +1,8 @@
-# Radiometric Correction for Micasense Multispectral Cameras
+# Radiometric Correction for MicaSense Multispectral Cameras
 
 <div align="justify">
 
-&emsp;&emsp;This Python module provides a simplified alternative for converting raw images from Micasense multispectral cameras into radiance or reflectance, using the reference panel and, optionally, the Downwelling Light Sensor (DLS) data to correct changes in illumination. It was written for the RedEdge-P and tested only with it (see [What has been tested](#what-has-been-tested)). It can be used through a user interface (UI), opened with a launcher on Windows, from the command line (the workflow runner) or as a Python library.
+&emsp;&emsp;This Python module provides a simplified alternative for converting raw images from MicaSense multispectral cameras into radiance or reflectance, using the reference panel and, optionally, the Downwelling Light Sensor (DLS) data to correct changes in illumination. It was written for the RedEdge-P and tested only with it (see [What has been tested](#what-has-been-tested)). It can be used through a user interface (UI), opened with a launcher on Windows, from the command line (the workflow runner) or as a Python library.
 
 **Contents**
 
@@ -30,7 +30,7 @@
 
 ## Quick start
 
-1. **Install** Python 3.10 or newer with Tkinter, in a dedicated environment, the packages of `requirements.txt` (or `conda env create -f environment.yml`) and ExifTool, a separate program that reads the metadata of the images. The details, and what to check on a new computer, are in [Installing and launching](docs/installation.md).
+1. **Install** Python 3.10 or newer (with Tkinter) and, in a dedicated environment, the packages of `requirements.txt` (or run `conda env create -f environment.yml`), plus ExifTool, a separate program that reads the metadata of the images. On Windows, the QR code reader (pyzbar) also needs the Microsoft Visual C++ 2013 Redistributable (x64). The details, and what to check on a new computer, are in [Installing and launching](docs/installation.md).
 2. **Open the UI**: double-click `open_radiometric_window.cmd` (Windows) or run `python -m radiometric_app window --root .` in the project folder. It asks which Python to use, checks the packages and ExifTool, and opens.
 3. **Correct the example images** in `images/raw`: `IMG_0005` shows the reference panel, `IMG_0010` is the capture to correct and `IMG_0422` is a second panel capture, taken after the flight (the example images are three captures of a longer flight; the complete flight is not included). Go through the pages of the UI, described in [The user interface](docs/user-interface.md):
    - *Inputs*: the images folder, the results folder, the capture that shows the panel and the captures to correct.
@@ -60,8 +60,8 @@
 
 ## Background and credits
 
-&emsp;&emsp;All functions are derived from the original [Micasense image processing repository](https://github.com/micasense/imageprocessing) but have been streamlined to mitigate issues caused by Exif metadata inconsistencies. These issues were encountered while pre-processing images captured with the camera firmware v1.4.5 in preparation for geometric correction using photogrammetry software.
+&emsp;&emsp;All functions are derived from the original [MicaSense image processing repository](https://github.com/micasense/imageprocessing) but have been streamlined to mitigate issues caused by Exif metadata inconsistencies. These issues were encountered while pre-processing images captured with the camera firmware v1.4.5 in preparation for geometric correction using photogrammetry software.
 
-&emsp;&emsp;For more details about the steps required for pre-processing Micasense multispectral images see the tutorials (e.g. ['Tutorial 1'](https://github.com/micasense/imageprocessing/blob/master/MicaSense%20Image%20Processing%20Tutorial%201.ipynb)) provided by Micasense in their repository.
+&emsp;&emsp;For more details about the steps required for pre-processing MicaSense multispectral images see the tutorials (e.g. ['Tutorial 1'](https://github.com/micasense/imageprocessing/blob/master/MicaSense%20Image%20Processing%20Tutorial%201.ipynb)) provided by MicaSense in their repository.
 
 </div>

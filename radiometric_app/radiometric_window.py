@@ -1134,7 +1134,7 @@ class RadiometricFrame:
     def _browse(self, key, kind):
         """
         Choose a folder or a file for a field. A folder is chosen in a window that lists its files and shows a picture of
-        the image that is selected (folder_browser), to recognise the folder of the raw images or the one of the results
+        the image that is selected (folder_browser), to recognize the folder of the raw images or the one of the results
         """
         current = self.model.get(key)
         start = wf.resolve_path(self.root_folder, current) if current else self.root_folder
@@ -1569,7 +1569,7 @@ def main(argv=None):
     parser.add_argument('--root', default='.', help="folder from which the relative paths are resolved")
     arguments = parser.parse_args(argv)
     window = tk.Tk()
-    window.title("Radiometric Correction for Micasense Multispectral Cameras")
+    window.title("Radiometric Correction for MicaSense Multispectral Cameras")
     window.geometry("1400x820")
     window.minsize(1150, 620)
     apply_dark_theme(window)

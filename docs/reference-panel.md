@@ -31,7 +31,7 @@
 - `interpolate_time`: each image is weighted by its time between the two panel captures (`EXIF:DateTimeOriginal`): 0 at the first panel, 1 at the second; an image outside them uses the nearest panel.
 - `nearest_time`: each image uses, entirely, the panel captured closest in time to it (the first one if both are equally close).
 - `nearest_illumination` (needs the DLS): each image uses, entirely, the panel whose light was the most like its own (the first one if both are equally like it).
-- `interpolate_illumination` (needs the DLS): both panels are used, weighted by how much their light resembles that of the image: the weight of the second panel is `w = d1^2 / (d1^2 + d2^2)`, where `d1` and `d2` are the illumination distances (see below) from the image to the first and to the second panel. A panel with the light of the image counts alone, equal distances weigh 0.5, and the weight changes smoothly, so neighbouring images do not jump between two panels that disagree (the step that `nearest_illumination` can make where its choice changes, as large as the disagreement of the two panels).
+- `interpolate_illumination` (needs the DLS): both panels are used, weighted by how much their light resembles that of the image: the weight of the second panel is `w = d1^2 / (d1^2 + d2^2)`, where `d1` and `d2` are the illumination distances (see below) from the image to the first and to the second panel. A panel with the light of the image counts alone, equal distances weigh 0.5, and the weight changes smoothly, so neighboring images do not jump between two panels that disagree (the step that `nearest_illumination` can make where its choice changes, as large as the disagreement of the two panels).
 
 &emsp;&emsp;The example images include a second panel capture, `IMG_0422`, taken after the flight, to try these options.
 
@@ -63,6 +63,6 @@ distance = sqrt( mean over the bands of ( ln(E_capture / E_panel) )^2 )
 
 ### Metashape
 
-&emsp;&emsp;How Metashape combines several panel images, and what its sun sensor option is referenced to, is not described in its manual (2.1) or in the forum threads of Agisoft that were read for this project. A Metashape workflow gives all the panel captures of the chunk to `chunk.calibrateReflectance(use_reflectance_panels, use_sun_sensor)` and cannot choose among them, so do not assume that it averages or follows the time: test it with panels of known different factors before relying on one behaviour.
+&emsp;&emsp;How Metashape combines several panel images, and what its sun sensor option is referenced to, is not described in its manual (2.1) or in the forum threads of Agisoft that were read for this project. A Metashape workflow gives all the panel captures of the chunk to `chunk.calibrateReflectance(use_reflectance_panels, use_sun_sensor)` and cannot choose among them, so do not assume that it averages or follows the time: test it with panels of known different factors before relying on one behavior.
 
 </div>

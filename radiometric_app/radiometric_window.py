@@ -52,7 +52,7 @@ FIELD_PAGE = {}
 # The keys that hold the name of a capture, typed or chosen by looking at the captures of the images folder: the text
 # of the choice of no capture, for the key that may be empty
 CAPTURE_KEYS = {'INPUTS.reference_panel_capture': None,
-                'INPUTS.reference_panel_capture_after': 'No second panel capture'}
+                'INPUTS.reference_panel_capture_after': 'No second panel capture'}   # one or several captures each
 
 
 # What the help column says when the pointer and the keyboard focus are not on a field: title and text of each page.
@@ -798,16 +798,21 @@ class RadiometricFrame:
         return {'paths_of': paths_of, 'bands': bands, 'resolve_band': resolve_band}
 
     def choose_panel_capture(self, key):
-        """ Choose the capture of the panel by looking at the captures of the images folder """
+        """
+        Choose the captures of the panel of one moment (one, or several taken one after the other) by looking at the
+        captures of the images folder; for the second moment, choosing none means that there is no second panel capture
+        """
         names = self.capture_names()
         if not names:
             self.log('There are no captures in the images folder (check the folder and the file name pattern).', 'error')
             return
-        chosen = pick_captures(self.parent.winfo_toplevel(), names, selected=[self.model.get(key).strip()],
-                               none_label=CAPTURE_KEYS[key], title='Select the capture that shows the panel',
-                               message='Click the capture that shows the reference panel', **self._picker_arguments())
+        moment = 'before the flight' if key == 'INPUTS.reference_panel_capture' else 'after the flight (none: no second)'
+        chosen = pick_captures(self.parent.winfo_toplevel(), names, selected=wf.capture_names(self.model.get(key)),
+                               multiple=True, title=f'Select the panel capture(s) {moment}',
+                               message='Click the capture that shows the reference panel, or several taken one after the '
+                                       'other (they are averaged)', **self._picker_arguments())
         if chosen is not None:
-            self.set_value(key, chosen)
+            self.set_value(key, ', '.join(chosen))
 
     def choose_captures(self, key='INPUTS.image_captures'):
         """
@@ -1239,7 +1244,7 @@ class RadiometricFrame:
     def _detect_worker(self, config):
         try:
             self.events.put(('bands', (wf.detect_bands(config, self.root_folder),
-                                       config['INPUTS.reference_panel_capture'].strip())))
+                                       (wf.panel_capture_groups(config)[0] or [''])[0])))
         except Exception as error:
             self.events.put(('bands_failed', f"{type(error).__name__}: {error}"))
 
@@ -1454,9 +1459,7 @@ class RadiometricFrame:
 
     def _regions_worker(self, config):
         try:
-            required = list(dict.fromkeys(name for name in (config['INPUTS.reference_panel_capture'].strip(),
-                                                            config['INPUTS.reference_panel_capture_after'].strip())
-                                          if name))
+            required = list(dict.fromkeys(name for group in wf.panel_capture_groups(config) for name in group))
             preloaded = {name: wf.read_capture_images(config, self.root_folder, name) for name in required}
             names = list(required)                                   # the regions are only needed for the panel captures
             path = self.regions_path(config)

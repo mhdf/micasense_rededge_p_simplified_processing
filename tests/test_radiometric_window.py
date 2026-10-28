@@ -1248,21 +1248,24 @@ class CaptureChoiceTests(unittest.TestCase):
         self.assertEqual(entry.winfo_class(), 'TEntry')
         self.assertEqual(self.frame.capture_names(), ['IMG_0005', 'IMG_0010', 'IMG_0422'])
         self.assertEqual(self.frame.capture_names(True), ['', 'IMG_0005', 'IMG_0010', 'IMG_0422'])
-        with mock.patch.object(rw, 'pick_captures', return_value='IMG_0010') as picker:
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0010']) as picker:
             self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
         args, kwargs = picker.call_args
         self.assertEqual(args[1], ['IMG_0005', 'IMG_0010', 'IMG_0422'])
         self.assertEqual(kwargs['selected'], ['IMG_0005'])
-        self.assertIsNone(kwargs['none_label'])                                  # the first panel capture is needed
-        self.assertFalse(kwargs.get('multiple', False))
+        self.assertTrue(kwargs['multiple'])                                      # one capture or several, averaged
         self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture'), 'IMG_0010')
         self.assertEqual(len(kwargs['paths_of']('IMG_0005')), 6)                  # what the window needs to show the pictures
         self.assertEqual(kwargs['bands'], ['Blue', 'Green', 'Panchro', 'Red', 'Red edge', 'NIR'])
         self.assertIn(kwargs['resolve_band']('Red'), range(6))                    # read from the metadata of a capture
+        with mock.patch.object(rw, 'pick_captures', return_value=['IMG_0005', 'IMG_0010']):
+            self.frame.choose_panel_capture('INPUTS.reference_panel_capture')
+        self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture'), 'IMG_0005, IMG_0010')
+        self.frame.set_value('INPUTS.reference_panel_capture', 'IMG_0010')
         self.frame.set_value('INPUTS.reference_panel_capture_after', 'IMG_0010')
-        with mock.patch.object(rw, 'pick_captures', return_value='') as picker:
+        with mock.patch.object(rw, 'pick_captures', return_value=[]) as picker:
             self.frame.choose_panel_capture('INPUTS.reference_panel_capture_after')
-        self.assertEqual(picker.call_args.kwargs['none_label'], 'No second panel capture')
+        self.assertIn('none: no second', picker.call_args.kwargs['title'])
         self.assertEqual(self.frame.model.get('INPUTS.reference_panel_capture_after'), '')
         with mock.patch.object(rw, 'pick_captures', return_value=None):
             self.frame.choose_panel_capture('INPUTS.reference_panel_capture')

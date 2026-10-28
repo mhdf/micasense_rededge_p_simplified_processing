@@ -400,7 +400,7 @@ class RunTests(unittest.TestCase):
         saved = json.loads((folder / wf.RESULT_FILE_NAME).read_text(encoding='utf-8'))
         self.assertEqual(saved['status'], 'completed')
         self.assertEqual(Path(saved['result_file']), folder / wf.RESULT_FILE_NAME)
-        self.assertEqual(set(saved['panel']['before']['bands']), set(wf.BAND_NAMES))
+        self.assertEqual(set(saved['panel']['before']['captures']['IMG_0005']['bands']), set(wf.BAND_NAMES))
         provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
         self.assertEqual(provenance['method'], 'panel_only')
         self.assertEqual(provenance['parameters']['config']['PANEL.percent_inner_area'], 0.7)
@@ -442,7 +442,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(entry['provenance'], 'IMG_0010_provenance.json')
         self.assertEqual(list(entry['dls']), ['median_ratio'])
         self.assertAlmostEqual(entry['geometry']['dls_tilt_deg'], 14.99, places=1)
-        for audit in saved['panel']['before']['bands'].values():
+        for audit in saved['panel']['before']['captures']['IMG_0005']['bands'].values():
             for key in ('image_path', 'band_name', 'sat_threshold', 'percent_inner_area', 'geometry'):
                 self.assertNotIn(key, audit)
         for key in ('format', 'min_coverage'):
@@ -502,7 +502,7 @@ class RunTests(unittest.TestCase):
 
     def test_the_geometry_of_the_panel_and_of_the_images_is_checked_once_for_each(self):
         result = self.panel_only
-        panel = result['panel']['before']['geometry']
+        panel = result['panel']['before']['captures']['IMG_0005']['geometry']
         self.assertAlmostEqual(panel['camera_tilt_deg'], 0.075, places=2)
         self.assertAlmostEqual(panel['heading_to_sun_deg'], 87.0, places=1)
         flags = [flag for flag in result['flags'] if 'panel capture' in flag and 'Heading' in flag]
@@ -590,7 +590,7 @@ class RunTests(unittest.TestCase):
     def test_the_summary_of_the_run(self):
         summary = self.panel_only['summary']
         self.assertEqual((summary['captures'], summary['corrected'], summary['files'], summary['flags']), (1, 1, 6, 2))
-        self.assertEqual(summary['panels']['before']['capture'], 'IMG_0005')
+        self.assertEqual(summary['panels']['IMG_0005']['capture'], 'IMG_0005')
         images = summary['images']
         self.assertEqual(set(images), {'camera_tilt_deg', 'heading_to_sun_deg', 'sun_elevation_deg', 'dls_tilt_deg',
                                        'dls_ratio'})
@@ -623,12 +623,12 @@ class RunTests(unittest.TestCase):
         self.assertTrue(all(entry['factor_ratio'] == 1.0 for entry in comparison['bands'].values()))
 
     def test_a_region_drawn_by_hand_replaces_the_automatic_one_for_that_band_only(self):
-        automatic = self.panel_only['panel']['before']['bands']
+        automatic = self.panel_only['panel']['before']['captures']['IMG_0005']['bands']
         regions = self.folder / 'regions.json'
         wf.save_panel_regions(regions, 'IMG_0005', {'Blue': automatic['Blue']['panel_bounds']})
         result = wf.run(config_for(self.folder / 'manual_blue', **{'PANEL.manual_regions_file': str(regions)}), ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
-        bands = result['panel']['before']['bands']
+        bands = result['panel']['before']['captures']['IMG_0005']['bands']
         self.assertEqual(bands['Blue']['region_source'], 'manual')
         self.assertEqual({band for band, audit in bands.items() if audit['region_source'] == 'automatic'},
                          set(wf.BAND_NAMES) - {'Blue'})
@@ -642,16 +642,17 @@ class RunTests(unittest.TestCase):
                                                              'INPUTS.image_captures': 'IMG_0005',
                                                              'PANEL.manual_regions_file': str(regions)}), ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
-        self.assertTrue(all(audit['region_source'] == 'manual' for audit in result['panel']['before']['bands'].values()))
+        audits = result['panel']['before']['captures']['IMG_0010']['bands']               # the "panel" is IMG_0010 here
+        self.assertTrue(all(audit['region_source'] == 'manual' for audit in audits.values()))
 
     def test_the_origin_of_the_regions_reaches_the_audit_of_the_panel(self):
-        automatic = self.panel_only['panel']['before']['bands']
+        automatic = self.panel_only['panel']['before']['captures']['IMG_0005']['bands']
         regions = self.folder / 'regions_origin.json'
         wf.save_panel_regions(regions, 'IMG_0005', {band: audit['panel_bounds'] for band, audit in automatic.items()},
                               {'Blue': 'accepted_automatic', 'Green': 'edited'})
         result = wf.run(config_for(self.folder / 'origin', **{'PANEL.manual_regions_file': str(regions)}), ROOT)
         self.assertEqual(result['status'], 'completed', result['errors'])
-        bands = result['panel']['before']['bands']
+        bands = result['panel']['before']['captures']['IMG_0005']['bands']
         self.assertEqual((bands['Blue']['region_source'], bands['Blue']['region_origin']), ('manual', 'accepted_automatic'))
         self.assertEqual(bands['Green']['region_origin'], 'edited')
         self.assertIsNone(bands['Red']['region_origin'])                              # a file that does not say it
@@ -677,8 +678,8 @@ class RunTests(unittest.TestCase):
         reflectance = result['panel']['reflectance']
         self.assertEqual(reflectance['source'], 'spectral_file')
         self.assertTrue(all(abs(level - 0.5) < 1e-12 for level in reflectance['levels'].values()))
-        values_run = self.panel_only['panel']['before']['bands']
-        spectral_run = result['panel']['before']['bands']
+        values_run = self.panel_only['panel']['before']['captures']['IMG_0005']['bands']
+        spectral_run = result['panel']['before']['captures']['IMG_0005']['bands']
         for band in wf.BAND_NAMES:
             self.assertAlmostEqual(spectral_run[band]['radiance_to_reflectance_factor'] /
                                    values_run[band]['radiance_to_reflectance_factor'],
@@ -710,7 +711,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result['status'], 'completed', result['errors'])
         self.assertEqual(sorted(Path(path).name for path in result['outputs']),
                          ['IMG_0010_1.tif', 'IMG_0010_2.tif', 'IMG_0010_3.tif'])
-        self.assertEqual(set(result['panel']['before']['bands']), set(three))
+        self.assertEqual(set(result['panel']['before']['captures']['IMG_0005']['bands']), set(three))
         provenance = json.loads((self.folder / 'three_bands' / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
         self.assertEqual([band['band'] for band in provenance['bands']], list(three))
         # a band gives the same result whether the others are processed or not
@@ -999,6 +1000,27 @@ class RunTests(unittest.TestCase):
         self.assertIn("missing: ['Red']", result['captures']['IMG_0010']['errors'][0])
         self.assertEqual(sorted(Path(path).name for path in result['outputs']),            # the other capture is corrected
                          [f'IMG_0422_{number}.tif' for number in range(1, 7)])
+
+    def test_several_panel_captures_of_one_moment_are_averaged_and_their_spread_is_checked(self):
+        # IMG_0005 and IMG_0422 as one group: in the example the light changed, so they disagree (a flag)
+        for use_dls in (False, True):
+            folder = self.folder / f'group_{use_dls}'
+            result = wf.run(config_for(folder, **{'INPUTS.reference_panel_capture': 'IMG_0005, IMG_0422',
+                                                  'CORRECTION.use_dls': use_dls}), ROOT)
+            self.assertEqual(result['status'], 'completed', result['errors'])
+            self.assertEqual(list(result['panel']['before']['captures']), ['IMG_0005', 'IMG_0422'])
+            self.assertEqual(set(result['panel']['before']['spread']), set(wf.BAND_NAMES))
+            averaged = 'panel factor x DLS irradiance' if use_dls else 'panel factor'
+            self.assertTrue(any(f"Panel captures IMG_0005, IMG_0422: the {averaged} of band" in flag
+                                for flag in result['flags']), result['flags'])
+            provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+            blue = provenance['bands'][0]
+            self.assertEqual([panel['weight'] for panel in blue['panels']], [0.5, 0.5])
+            expected = np.mean([panel['adjusted_factor' if use_dls else 'factor'] for panel in blue['panels']])
+            self.assertAlmostEqual(blue['factor_applied'], expected)
+            self.assertEqual(provenance['checks']['compared_with_panel'], 'IMG_0005')     # the closest in time to IMG_0010
+        summary = wf.summary_lines(result)
+        self.assertTrue(any(line.startswith('Panel IMG_0422:') for line in summary))
 
     def test_captures_to_leave_out_are_not_corrected(self):
         result = wf.run(config_for(self.folder / 'left_out', **{'INPUTS.image_captures': '',

@@ -983,7 +983,7 @@ class WindowTests(PanelImagesMixin, unittest.TestCase):
         self.root.deiconify()
         self.root.update()
         self.assertEqual(self.hover(self.window.capture_box), ps.HINTS['capture'])
-        self.assertIn('first one and the one after the flight', ps.HINTS['capture'])
+        self.assertIn('those before the flight and those after it', ps.HINTS['capture'])
 
     # --- the explanation area ------------------------------------------------------------------------------------
 

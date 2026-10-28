@@ -51,6 +51,14 @@ distance = sqrt( mean over the bands of ( ln(E_capture / E_panel) )^2 )
 
 &emsp;&emsp;Without the DLS, the panel factors are averaged with these weights: `factor = (1 - w) f1 + w f2`, where `f1`, `f2` are the factors of the two panels and `w` the weight of the second. With the DLS, each panel is first brought to the light of the image with its own DLS ratio, and then the panels are averaged: `factor = (1 - w) f1 E1 / E + w f2 E2 / E`, where `E1`, `E2` are the irradiances of the panels and `E` that of the image. The image is multiplied by this factor (`rct.combine_panels`). The provenance record of each band lists the panels used, each with its weight, factor, DLS ratio and adjusted factor, and the factor applied (`factor_applied`); the result file has the weight of each capture. The regions of both panel captures are accepted in the same tool, and both must be accepted before saving.
 
+### Several captures of one moment
+
+&emsp;&emsp;Each of the two fields can have several captures, separated by commas, for example `IMG_0005, IMG_0006, IMG_0007` when several photos of the panel are taken one after the other. The captures of one moment are averaged: the weight of the moment is shared equally among them, so one bad photo (a shadow, a tilted panel, a hand) counts less. The time of the moment is the mean of their times, and its light (for the options by illumination) the mean of their DLS irradiances.
+
+&emsp;&emsp;How much the captures of one moment disagree is checked, band by band, on what is averaged: the panel factor without the DLS, and the panel factor x the DLS irradiance with it. A spread (standard deviation / mean) above `CHECKS.panel_capture_spread_tolerance` (0.02, 2 %) raises a flag; the spread is written in the result file (`panel.before.spread`). In the flight of the example, the six panel captures after the flight agree within 0.3 %, but in the seven before it the DLS irradiance rose by about 28 % in 20 seconds while the camera saw the panel change by about 4 %: with the DLS, those captures disagree by 9 %, a sign that the DLS was shaded or not yet stable. Leave out the captures that disagree, or rely on the other moment.
+
+&emsp;&emsp;The DLS checks of each image compare it with the panel capture closest in time, in the moment that weighs most in its calibration.
+
 ### With the DLS, which panel is "the reference"?
 
 &emsp;&emsp;A panel capture calibrates the camera for the light of that moment. Without the DLS this is only right while the light stays as it was, so the choice of panel (or of a mix of both) matters directly. With the DLS, each image is also scaled by the change in irradiance since the panel capture, so what a panel provides is the product of its factor and the irradiance measured at that moment, `f x E`. This product is a constant of the camera that does not depend on the light, so it should be the same for either panel. What matters is which panels contribute to the constant: the first, the nearest or a mean of both.
@@ -63,6 +71,6 @@ distance = sqrt( mean over the bands of ( ln(E_capture / E_panel) )^2 )
 
 ### Metashape
 
-&emsp;&emsp;How Metashape combines several panel images, and what its sun sensor option is referenced to, is not described in its manual (2.1) or in the forum threads of Agisoft that were read for this project. A Metashape workflow gives all the panel captures of the chunk to `chunk.calibrateReflectance(use_reflectance_panels, use_sun_sensor)` and cannot choose among them, so do not assume that it averages or follows the time: test it with panels of known different factors before relying on one behavior.
+&emsp;&emsp;Metashape's manual does not say how several panel images are combined, so it was tested (Metashape Pro 2.3.1, `chunk.calibrateReflectance`, with the 13 panel captures and 4 images of the example flight). For each image Metashape uses only **the last panel capture before it and the first one after it**, interpolated linearly in time; the other panel captures do not change the result. With the sun sensor, each of the two is first multiplied by `E_panel / E_image`, with `E` from `XMP:HorizontalIrradiance`. "Both panels, weighted by time" with those two captures gives the same factors, apart from a difference of 0.6 % in the measurement of the panel. Averaging several captures of one moment, as this program does, is therefore different from Metashape, which relies on a single photo of each moment.
 
 </div>

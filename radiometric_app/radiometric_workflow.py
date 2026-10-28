@@ -22,8 +22,10 @@ import sys
 import traceback
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 # Third-Party Imports
+import numpy as np
 import tifffile
 
 # Local Imports
@@ -140,15 +142,19 @@ FIELDS = [
                   "The window looks for both when it opens and each time this field changes, and says below what it found: "
                   "the program, how it was found, its version and whether the package is installed.")},
     {'key': 'INPUTS.reference_panel_capture', 'group': 'Reference panel', 'kind': 'text', 'default': 'IMG_0005',
-     'label': 'Reference panel capture', 'help': ("The capture that shows the reference panel: choose it from the captures of the images folder, or "
+     'label': 'Reference panel capture(s)', 'help': ("The capture that shows the reference panel: choose it from the captures of the images folder, or "
                   "type its name (for example IMG_0005).\n"
+                  "Several captures taken one after the other (for example IMG_0005, IMG_0006) are averaged, which lessens "
+                  "the effect of one bad photo; how much they disagree is checked (Spread of the panel captures, DLS "
+                  "page).\n"
                   "The panel is photographed with its QR code in view. The program finds the QR code and, from it, the "
                   "region of the panel in each band; the regions can be checked, accepted or drawn by hand with Check / "
                   "draw panel regions, below.\n"
-                  "This capture also gives the irradiance of the panel (E_panel) for the DLS correction.")},
+                  "These captures also give the irradiance of the panel (E_panel) for the DLS correction.")},
     {'key': 'INPUTS.reference_panel_capture_after', 'group': 'Reference panel', 'kind': 'text', 'default': '',
-     'label': 'Second panel capture (optional)',
-     'help': ("A second capture of the panel, taken at the end of the flight (optional).\n"
+     'label': 'Second panel capture(s) (optional)',
+     'help': ("A second capture of the panel, taken at the end of the flight (optional), or several, averaged like those "
+                  "of the first moment.\n"
                   "It is always compared with the first panel capture: a change of the panel factor of a band, or of "
                   "the DLS irradiance relative to the panel, larger than the panel drift tolerance raises a flag.\n"
                   "Whether it also calibrates the images is chosen in 'Panel selection approach' (Reference panel "
@@ -371,7 +377,19 @@ FIELDS = [
                   "DLS followed the light that the panel received, and it is not when the DLS was tilted or shaded in "
                   "one of the photos.\n"
                   "Only used with a second panel capture. A flag does not change the result; whether the second panel "
-                  "also calibrates the images is chosen in 'Panel selection approach'.")},
+                  "also calibrates the images is chosen in 'Panel selection approach'.\n"
+                  "With several captures before or after the flight, their means are compared.")},
+    {'key': 'CHECKS.panel_capture_spread_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
+     'default': 0.02, 'label': 'Spread of the panel captures of one moment',
+     'help': ("When several captures of the panel are taken one after the other (before or after the flight), they are "
+                  "averaged. Largest spread accepted (0.02 = 2 %, standard deviation / mean) of what is averaged, band by "
+                  "band:\n"
+                  "- without the DLS correction, the panel factor: it changes if the light changed between the photos, "
+                  "or if the panel was shaded or held differently in one of them;\n"
+                  "- with the DLS correction, the panel factor x the DLS irradiance, which does not depend on the light: "
+                  "it changes when the DLS was shaded or tilted in one of the photos.\n"
+                  "A flag does not change the result: leave out the captures that disagree, or use the panel captures "
+                  "of the other moment.")},
     {'key': 'CHECKS.panel_illumination_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
      'default': rct.DLS_CHECKS['panel_illumination_tolerance'], 'label': 'Light of the panel: largest difference',
      'help': ("Only used when the panels are chosen by their light (nearest_illumination or interpolate_illumination). "
@@ -509,7 +527,7 @@ def detect_bands(config, root, capture=None):
     Outputs: the dictionary of rct.read_band_definitions
     """
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
-    capture = capture or config['INPUTS.reference_panel_capture'].strip()
+    capture = capture or (panel_capture_groups(config)[0] or [''])[0]
     paths = rct.find_capture_paths(images_folder, capture, config['INPUTS.file_pattern'])
     return rct.read_band_definitions(paths, exiftool_executable(config, root))
 
@@ -517,6 +535,15 @@ def detect_bands(config, root, capture=None):
 def capture_names(text):
     """ Names separated by commas -> list """
     return [name.strip() for name in str(text).split(',') if name.strip()]
+
+
+def panel_capture_groups(config):
+    """
+    The panel captures before and after the flight: two lists of names (INPUTS.reference_panel_capture and
+    INPUTS.reference_panel_capture_after, each one capture or several separated by commas; the second may be empty)
+    """
+    return (list(dict.fromkeys(capture_names(config['INPUTS.reference_panel_capture']))),
+            list(dict.fromkeys(capture_names(config['INPUTS.reference_panel_capture_after']))))
 
 
 def spectral_format(config):
@@ -694,7 +721,8 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
 
     if not 0 < config['PANEL.percent_inner_area'] <= 1:
         problems.append("PANEL.percent_inner_area must be in (0, 1]")
-    if config['PANEL.panels_used'] != 'first' and not config['INPUTS.reference_panel_capture_after'].strip():
+    before_names, after_names = panel_capture_groups(config)
+    if config['PANEL.panels_used'] != 'first' and not after_names:
         problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}' but there is no second panel capture "
                         "(INPUTS.reference_panel_capture_after)")
     if config['PANEL.panels_used'] in rct.PANELS_BY_ILLUMINATION and not config['CORRECTION.use_dls']:
@@ -732,7 +760,8 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
     if config['PANEL.saturation_threshold'] <= 0:
         problems.append("PANEL.saturation_threshold must be positive")
     for key in ('CHECKS.band_ratio_tolerance', 'CHECKS.max_sun_angle_discrepancy_deg', 'CHECKS.jump_threshold',
-                'CHECKS.panel_drift_tolerance', 'CHECKS.panel_illumination_tolerance', 'CHECKS.ratio_range_min',
+                'CHECKS.panel_drift_tolerance', 'CHECKS.panel_illumination_tolerance',
+                'CHECKS.panel_capture_spread_tolerance', 'CHECKS.ratio_range_min',
                 'CHECKS.ratio_range_max'):
         if config[key] <= 0:
             problems.append(f"{key} must be positive")
@@ -776,20 +805,21 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
                                             f"{panel_bands(config)}")
             except (ValueError, OSError) as error:
                 problems.append(str(error))
-    panel = config['INPUTS.reference_panel_capture'].strip()
-    if not panel:
+    if not before_names:
         problems.append("INPUTS.reference_panel_capture is empty")
     excluded = capture_names(config['INPUTS.excluded_captures'])
-    both = [name for name in capture_names(config['INPUTS.image_captures']) if name in excluded]
-    if both:
-        problems.append(f"Captures both selected and left out: {', '.join(both)}")
+    typed = capture_names(config['INPUTS.image_captures'])
+    for text, names in (("both selected and left out", [name for name in typed if name in excluded]),
+                        ("both panel captures and captures to correct",
+                         [name for name in typed if name in before_names + after_names])):
+        if names:
+            problems.append(f"Captures {text}: {', '.join(names)}")
     if images.is_dir() and pattern_problem is None:
         found = rct.list_capture_names(images, config['INPUTS.file_pattern'])
-        named = [panel, config['INPUTS.reference_panel_capture_after'].strip()] + capture_names(config['INPUTS.image_captures'])
-        for name in named + excluded:
-            if name and name not in found:
+        for name in before_names + after_names + typed + excluded:
+            if name not in found:
                 problems.append(f"Capture '{name}' not found in {images}")
-        if not capture_names(config['INPUTS.image_captures']) and not captures_to_correct(config, found):
+        if not typed and not captures_to_correct(config, found):
             problems.append(f"No captures to correct in {images}")
     return problems
 
@@ -802,8 +832,8 @@ def captures_to_correct(config, found):
     typed = capture_names(config['INPUTS.image_captures'])
     if typed:
         return typed
-    left_out = set(capture_names(config['INPUTS.excluded_captures'])) | {
-        config['INPUTS.reference_panel_capture'].strip(), config['INPUTS.reference_panel_capture_after'].strip()}
+    before_names, after_names = panel_capture_groups(config)
+    left_out = set(capture_names(config['INPUTS.excluded_captures']) + before_names + after_names)
     return [name for name in found if name not in left_out]
 
 
@@ -884,27 +914,79 @@ def _light(images, name):
         raise rct.MetadataError(f"{name}: {error}") from error
 
 
-def _second_panel_weight(mode, second_present, image, first_panel, second_panel, names):
+# The panel captures of one moment (before or after the flight) are a group: {capture name: {band: rct.Image}}, each
+# capture after the detection of the panel. A group of several captures is used as their mean
+def _group_light(group):
+    """ {band: DLS irradiance} of a group of panel captures, the mean of its captures """
+    lights = [_light(images, name) for name, images in group.items()]
+    return {band: float(np.mean([light[band] for light in lights])) for band in lights[0]}
+
+
+def _capture_time(images, name):
+    return rct.capture_time(next(iter(images.values())).metadata, name)
+
+
+def _group_time(group):
+    """ The time of a group of panel captures, the mean of the times of its captures """
+    return float(np.mean([_capture_time(images, name) for name, images in group.items()]))
+
+
+def _second_panel_weight(mode, image, first_group, second_group, name):
     """
-    Weight of the second panel for one image (see rct.panel_weight)
-    Inputs: the mode, whether there is a second panel, and the capture, the first panel and the second panel as
-            {band: rct.Image}; names are those of the three captures
+    Weight of the second group of panel captures for one image (see rct.panel_weight)
+    Inputs: the mode, the capture as {band: rct.Image} and its name, and the two groups of panel captures (the second one
+            None when there is none)
     Outputs: (weight, distances), where distances is {'first': ..., 'second': ...}, how different the light of the image is
-             from that of each panel (see rct.illumination_distance), for the modes by illumination, and None for the others
+             from that of each group (see rct.illumination_distance), for the modes by illumination, and None for the others
     """
-    if not second_present or mode == 'first':
+    if second_group is None or mode == 'first':
         return 0.0, None
     if mode in rct.PANELS_BY_ILLUMINATION:
-        light = _light(image, names[0])
-        distances = (rct.illumination_distance(light, _light(first_panel, names[1])),
-                     rct.illumination_distance(light, _light(second_panel, names[2])))
+        light = _light(image, name)
+        distances = (rct.illumination_distance(light, _group_light(first_group)),
+                     rct.illumination_distance(light, _group_light(second_group)))
         return rct.panel_weight(mode, distances=distances), {'first': distances[0], 'second': distances[1]}
     if mode not in ('interpolate_time', 'nearest_time'):
         return rct.panel_weight(mode), None
-    band = next(iter(image))
-    return rct.panel_weight(mode, rct.capture_time(image[band].metadata, names[0]),
-                            rct.capture_time(first_panel[band].metadata, names[1]),
-                            rct.capture_time(second_panel[band].metadata, names[2])), None
+    return rct.panel_weight(mode, _capture_time(image, name), _group_time(first_group), _group_time(second_group)), None
+
+
+def _group_mean(group):
+    """
+    The mean of a group of panel captures, band by band, in the form that rct.compare_panel_captures reads: the panel
+    factor, the irradiance estimated from the panel and the DLS irradiance (MetadataError if a capture has none)
+    """
+    def mean_light(band):
+        return float(np.mean([images[band].dls_irradiance() for images in group.values()]))
+    bands = next(iter(group.values()))
+    return {band: SimpleNamespace(
+        panel_audit={key: float(np.mean([images[band].panel_audit[key] for images in group.values()]))
+                     for key in ('radiance_to_reflectance_factor', 'panel_irradiance_estimate')},
+        dls_irradiance=lambda band=band: mean_light(band)) for band in bands}
+
+
+def group_spread(group, use_dls):
+    """
+    How much the captures of a group disagree, band by band: std / mean of what is averaged, the panel factor or, with the
+    DLS, the panel factor x DLS irradiance (a constant of the camera that does not depend on the light). {} for one capture
+    """
+    if len(group) < 2:
+        return {}
+    spread = {}
+    for band in next(iter(group.values())):
+        values = [images[band].panel_audit['radiance_to_reflectance_factor'] *
+                  (images[band].dls_irradiance() if use_dls else 1.0) for images in group.values()]
+        spread[band] = float(np.std(values) / np.mean(values))
+    return spread
+
+
+def _nearest_capture(group, image, name):
+    """ The capture of a group taken closest in time to the image (the first one when the times are not known) """
+    try:
+        time = _capture_time(image, name)
+        return min(group, key=lambda capture: abs(_capture_time(group[capture], capture) - time))
+    except rct.MetadataError:
+        return next(iter(group))
 
 
 def _read_capture(images_folder, name, bands, exiftool_path, pattern=None, ignored=()):
@@ -932,42 +1014,57 @@ def _run_stages(config, root, results_folder, result, progress):
     use_dls = config['CORRECTION.use_dls']
 
     # LOAD_CAPTURES
-    panel_name = config['INPUTS.reference_panel_capture'].strip()
-    panel_after_name = config['INPUTS.reference_panel_capture_after'].strip()
+    before_names, after_names = panel_capture_groups(config)
     names = captures_to_correct(config, rct.list_capture_names(images_folder, config['INPUTS.file_pattern']))
-    _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct; panel capture {panel_name}", 0, len(names))
+    _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct; panel capture(s) {', '.join(before_names)}",
+              0, len(names))
 
     # PANEL_CALIBRATION
     regions, origins = {}, {}
     if config['PANEL.manual_regions_file']:
         regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
         regions, origins = load_panel_regions(regions_file), load_panel_origins(regions_file)
-    panels = {}
-    for label, name in (('before', panel_name), ('after', panel_after_name)):
-        if not name:
+    panels, spread_limit = {}, config['CHECKS.panel_capture_spread_tolerance']
+    for label, group_names in (('before', before_names), ('after', after_names)):
+        if not group_names:
             continue
-        _progress(progress, 'PANEL_CALIBRATION', f"Detecting the reference panel in {name}")
-        objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
-        for band, image in objects.items():
-            try:
-                image.detect_reference_panel(levels, config['PANEL.percent_inner_area'],
-                                             config['PANEL.saturation_threshold'],
-                                             manual_bounds=regions.get(name, {}).get(band),
-                                             region_origin=origins.get(name, {}).get(band))
-            except Exception as error:
-                raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
-        panels[label] = objects
-        result['panel'][label] = {'capture': name, 'bands': {band: rct._jsonable(rct.compact_panel_audit(image.panel_audit))
-                                                              for band, image in objects.items()}}
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter('always')
-            geometry = rct.check_panel_geometry(objects)
-        result['panel'][label]['geometry'] = rct._jsonable(geometry['values'])
-        result['flags'].extend(f"{name}: {flag}" for flag in geometry['flags'])
+        group, result['panel'][label] = {}, {'captures': {}}
+        for name in group_names:
+            _progress(progress, 'PANEL_CALIBRATION', f"Detecting the reference panel in {name}")
+            objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
+            for band, image in objects.items():
+                try:
+                    image.detect_reference_panel(levels, config['PANEL.percent_inner_area'],
+                                                 config['PANEL.saturation_threshold'],
+                                                 manual_bounds=regions.get(name, {}).get(band),
+                                                 region_origin=origins.get(name, {}).get(band))
+                except Exception as error:
+                    raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
+            group[name] = objects
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter('always')
+                geometry = rct.check_panel_geometry(objects)
+            result['panel'][label]['captures'][name] = {
+                'bands': {band: rct._jsonable(rct.compact_panel_audit(image.panel_audit)) for band, image in objects.items()},
+                'geometry': rct._jsonable(geometry['values'])}
+            result['flags'].extend(f"{name}: {flag}" for flag in geometry['flags'])
+        panels[label] = group
+        try:
+            spread = group_spread(group, use_dls)
+        except rct.MetadataError as error:
+            spread = {}
+            result['flags'].append(f"Panel captures {', '.join(group_names)}: their spread was not checked ({error})")
+        if spread:
+            result['panel'][label]['spread'] = spread
+            averaged = 'panel factor x DLS irradiance' if use_dls else 'panel factor'
+            for band, value in spread.items():
+                if value > spread_limit:
+                    result['flags'].append(f"Panel captures {', '.join(group_names)}: the {averaged} of band '{band}' varies "
+                                           f"{100 * value:.1f} % between them (limit {100 * spread_limit:g} %)")
     if 'after' in panels:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            comparison = rct.compare_panel_captures(panels['before'], panels['after'])
+            comparison = rct.compare_panel_captures(_group_mean(panels['before']), _group_mean(panels['after']))
         result['panel']['comparison'] = rct._jsonable(comparison)
         result['flags'].extend(comparison['flags'])
 
@@ -980,19 +1077,22 @@ def _run_stages(config, root, results_folder, result, progress):
         entry = {'outputs': [], 'errors': []}
         result['captures'][name] = entry
         written, flags, details = [], [], []
-        checked_panel = panel_name
+        checked_panel = before_names[0]
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter('always')
                 objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
                 second = panels.get('after')
-                weight, distances = _second_panel_weight(config['PANEL.panels_used'], second is not None, objects,
-                                                         panels['before'], second, (name, panel_name, panel_after_name))
+                weight, distances = _second_panel_weight(config['PANEL.panels_used'], objects, panels['before'], second,
+                                                         name)
                 entry['panels'] = {'used': config['PANEL.panels_used'] if second is not None else 'first',
                                    'weight_of_the_second_panel': weight}
                 if distances:
                     entry['panels']['light_difference'] = distances
-                weighted = [(panels['before'], 1 - weight)] + ([(second, weight)] if second is not None else [])
+                # the weight of a group is shared by its captures
+                weighted = [(capture, (1 - weight) / len(panels['before'])) for capture in panels['before'].values()]
+                if second is not None:
+                    weighted += [(capture, weight / len(second)) for capture in second.values()]
                 # the factors of all the bands first, so that nothing is written for a capture that cannot be corrected
                 factors = {band: rct.combine_panels([(capture[band], share) for capture, share in weighted],
                                                     objects[band] if use_dls else None) for band in bands}
@@ -1006,13 +1106,15 @@ def _run_stages(config, root, results_folder, result, progress):
                     records.append(rct.band_record(output_path, image, reflectance, used, factor))
                     written.append(str(output_path))
                     entry['outputs'].append(output_path.name)           # the files are in the results folder
-                # the DLS checks compare the image with the panel that weighs most in its calibration (the first if equal)
+                # the DLS checks compare the image with the panel capture closest in time of the group that weighs most
+                # in its calibration (the first group if both weigh the same)
                 label = 'after' if weight > 0.5 else 'before'
-                checked_panel = result['panel'][label]['capture']
-                checks = rct.check_dls_capture(panels[label], objects)
+                checked_panel = _nearest_capture(panels[label], objects, name)
+                checks = rct.check_dls_capture(panels[label][checked_panel], objects)
                 checks['compared_with_panel'] = checked_panel
                 geometry = rct.check_image_geometry(objects)
-                checks['geometry'] = {'panel': result['panel'][label]['geometry'], 'image': geometry['values']}
+                checks['geometry'] = {'panel': result['panel'][label]['captures'][checked_panel]['geometry'],
+                                      'image': geometry['values']}
                 checks['flags'] = list(checks['flags']) + geometry['flags']
                 checks['unavailable'] = list(checks['unavailable']) + geometry['unavailable']
                 flags, details = list(checks['flags']), checks['flag_details'] + geometry['flag_details']
@@ -1188,8 +1290,9 @@ def build_summary(result, config):
         if stats:
             stats['outside'] = None if outside is None else sum(outside(value) for value in values if value is not None)
             images[name] = stats
-    panels = {label: dict(result['panel'][label]['geometry'], capture=result['panel'][label]['capture'])
-              for label in ('before', 'after') if result['panel'].get(label, {}).get('geometry')}
+    panels = {name: dict(capture['geometry'], capture=name)
+              for label in ('before', 'after') for name, capture in result['panel'].get(label, {}).get('captures', {}).items()
+              if capture.get('geometry')}
     weights = [entry['panels']['weight_of_the_second_panel'] for entry in done if entry.get('panels')]
     mode = config['PANEL.panels_used']
     panel_weights = None

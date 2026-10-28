@@ -43,6 +43,10 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(wf.path_length_problems(Path(tempfile.gettempdir()) / 'results'), [])
         with mock.patch.object(wf, 'windows_long_paths_enabled', return_value=True):
             self.assertEqual(wf.path_length_problems(long_folder), [])
+        # the path as it is written counts, not where a mapped drive leads (os.path.abspath does not resolve)
+        with mock.patch.object(wf, 'windows_long_paths_enabled', return_value=False), \
+                mock.patch.object(wf.os.path, 'abspath', return_value='R:\\results\\reflectance'):
+            self.assertEqual(wf.path_length_problems('R:\\results\\reflectance'), [])
 
     def test_the_configuration_is_found_in_what_a_run_wrote(self):
         values = {'PANEL.percent_inner_area': 0.5}

@@ -721,11 +721,14 @@ def windows_long_paths_enabled():
 
 
 def path_length_problems(results_folder):
-    """ A problem when the files of the results folder would have paths too long for Windows """
-    length = len(str(Path(results_folder).resolve())) + 1 + RESULT_NAME_ALLOWANCE
-    if length <= WINDOWS_PATH_LIMIT or windows_long_paths_enabled():
+    """
+    A problem when the files of the results folder would have paths too long for Windows. The path is measured as it is
+    written (made absolute, not resolved): Windows applies the limit to it, also on a drive mapped to a long folder
+    """
+    folder = os.path.abspath(str(results_folder))
+    if len(folder) + 1 + RESULT_NAME_ALLOWANCE <= WINDOWS_PATH_LIMIT or windows_long_paths_enabled():
         return []
-    return [f"The results folder path is too long for Windows: {len(str(Path(results_folder).resolve()))} characters, "
+    return [f"The results folder path is too long for Windows: {len(folder)} characters, "
             f"and with the names of the files it would pass the limit of {WINDOWS_PATH_LIMIT + 1}. Choose a shorter "
             f"folder (or turn on long paths in Windows)"]
 

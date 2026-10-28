@@ -811,8 +811,8 @@ class RadiometricFrame:
         moment = 'before the flight' if key == 'INPUTS.reference_panel_capture' else 'after the flight (none: no second)'
         chosen = pick_captures(self.parent.winfo_toplevel(), names, selected=wf.capture_names(self.model.get(key)),
                                multiple=True, title=f'Select the panel capture(s) {moment}',
-                               message='Click the capture that shows the reference panel, or several taken one after the '
-                                       'other (they are averaged)', **self._picker_arguments())
+                               message='Click the panel capture, or several taken in a row (averaged)',
+                               **self._picker_arguments())
         if chosen is not None:
             self.set_value(key, ', '.join(chosen))
 

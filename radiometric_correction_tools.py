@@ -205,7 +205,8 @@ DLS_CHECKS = { 'ratio_range': (0.5, 2.0),            # plausible E_panel / E_ima
 def check_dls_capture(panel_images, images, ratios=None):
     """
     Check the DLS data of one capture against the panel (see DLS_CHECKS for the limits)
-    Inputs: dictionaries {band name: rct.Image} for the panel capture (after detect_reference_panel) and the image
+    Inputs: dictionaries {band name: rct.Image} for the panel capture (after detect_reference_panel; {} without a panel, then
+            only the image is checked) and the image
             capture, and optionally the output of capture_dls_ratios
     Outputs: dictionary with the values checked and 'flags', a list of messages (also issued as RuntimeWarning), and
              'flag_details', one dictionary per flag (same order) saying what was checked, so that the same criterion can be
@@ -216,6 +217,8 @@ def check_dls_capture(panel_images, images, ratios=None):
     if ratios is None:
         ratios = {}
         for band, image in images.items():
+            if band not in panel_images:           # no panel capture (reflectance from the DLS alone): no ratio
+                continue
             try:
                 ratios[band] = (dls_irradiance_ratio(panel_images[band], image), 'metadata')
             except MetadataError as error:
@@ -254,6 +257,8 @@ def check_dls_capture(panel_images, images, ratios=None):
     # DLS pointing: sun angle seen by the DLS against the solar zenith
     result['sun_angle_discrepancy_deg'] = {}
     for name, group in (('panel', panel_images), ('image', images)):
+        if not group:
+            continue
         angles = [ image.dls_sun_angle_discrepancy_deg() for image in group.values() ]
         angles = [ angle for angle in angles if angle is not None ]
         if not angles:
@@ -586,14 +591,39 @@ def combine_panels(panels, image=None):
     return sum(entry['weight'] * entry['adjusted_factor'] for entry in used), used
 
 
-def band_record(output_path, image, reflectance, panels, factor_applied):
+def irradiance_si(image):
+    """
+    The DLS horizontal irradiance of an image in W/m2/nm, for the reflectance from the DLS alone, as MicaSense's
+    irradiance_scale_factor(): XMP:HorizontalIrradiance x XMP:IrradianceScaleToSIUnits, or x 0.01 when the image has no
+    scale (a DLS 2 that writes the irradiance in uW/cm2/nm). The ratios of the panel correction do not need the scale
+    Outputs: (irradiance, scale, where the scale came from: 'metadata' or 'assumed')
+    """
+    if image.irradiance_scale_to_si is not None:
+        return image.dls_irradiance(), float(image.irradiance_scale_to_si), 'metadata'
+    return image.dls_irradiance() * 0.01, 0.01, 'assumed'
+
+
+def dls_reflectance_factor(image):
+    """
+    The factor that turns the radiance of an image into reflectance with the DLS alone, without a panel:
+    reflectance = pi x radiance / E (Lambertian surface), with E the DLS irradiance in W/m2/nm (see irradiance_si)
+    Outputs: (factor, {'irradiance', 'scale', 'scale_source'})
+    """
+    irradiance, scale, source = irradiance_si(image)
+    return np.pi / irradiance, {'irradiance': irradiance, 'scale': scale, 'scale_source': source}
+
+
+def band_record(output_path, image, reflectance, panels, factor_applied, dls_only=None, output='reflectance'):
     """
     Describe how one output band was produced
-    Inputs: path of the saved file, the image (rct.Image) of the band, the reflectance array that was saved, and the panels
-            and the factor from combine_panels (the reflectance is the radiance of the image x factor_applied)
+    Inputs: path of the saved file, the image (rct.Image) of the band, the array that was saved, and the panels and the
+            factor from combine_panels (the reflectance is the radiance of the image x factor_applied); for the reflectance
+            from the DLS alone, no panels and the details of dls_reflectance_factor; for radiance, no panels, no factor
+            and output 'radiance'
     Outputs: dictionary that can be saved as json (see write_provenance)
     """
     return _jsonable({ 'band': image.band_name,
+                       'output': output,
                        'output_file': str(output_path),
                        'output_dtype': str(reflectance.dtype),
                        'output_shape': reflectance.shape,
@@ -609,7 +639,8 @@ def band_record(output_path, image, reflectance, panels, factor_applied):
                                      'horizontal_irradiance': entry['panel'].horizontal_irradiance,
                                      'irradiance_scale_to_si': entry['panel'].irradiance_scale_to_si,
                                      'audit': getattr(entry['panel'], 'panel_audit', None) } for entry in panels ],
-                       'dls': { 'used': any(entry['dls_ratio'] is not None for entry in panels),
+                       'dls_only': dls_only,
+                       'dls': { 'used': dls_only is not None or any(entry['dls_ratio'] is not None for entry in panels),
                                 'attitude_as_written': { key: image.metadata.get('XMP:' + key)
                                                                     for key in ('Roll', 'Pitch', 'Yaw') },
                                 'sun_angle_discrepancy_deg': image.dls_sun_angle_discrepancy_deg(),
@@ -655,11 +686,16 @@ def compact_band_records(band_records):
         for record in records:
             record.pop('image_capture_id', None)
     panel_ids = {json.dumps([panel.get('capture_id') for panel in record['panels']]) for record in records}
-    if len(panel_ids) == 1:
+    if len(panel_ids) == 1 and json.loads(next(iter(panel_ids))):
         capture['panel_capture_ids'] = json.loads(panel_ids.pop())
         for record in records:
             for panel in record['panels']:
                 panel.pop('capture_id', None)
+    for record in records:                       # what a reflectance from the DLS alone or a radiance does not have
+        for key, empty in (('output', 'reflectance'), ('dls_only', None), ('panels', []), ('factor_applied', None)):
+            if key in record and record[key] == empty:
+                record.pop(key)
+        record.setdefault('panels', [])
     attitudes = [json.dumps(record['dls'].get('attitude_as_written'), sort_keys=True) for record in records]
     if records and len(set(attitudes)) == 1 and records[0]['dls'].get('attitude_as_written'):
         capture['camera_attitude_as_written'] = {key: _number(value) for key, value
@@ -703,8 +739,17 @@ def write_provenance(path, band_records, parameters=None, checks=None):
     code = Path(__file__).read_bytes().replace(b'\r\n', b'\n')
     dls_used = any(record['dls']['used'] for record in band_records)
     capture, bands = compact_band_records(band_records)
+    if any(record.get('output') == 'radiance' for record in band_records):
+        method = 'radiance'
+    elif any(record.get('dls_only') for record in band_records):
+        method = 'dls_only'
+    else:
+        method = 'panel_and_dls' if dls_used else 'panel_only'
+    for band in bands:
+        if not band['panels']:
+            band.pop('panels')
     record = { 'created_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-               'method': 'panel_and_dls' if dls_used else 'panel_only',
+               'method': method,
                'software': { 'radiometric_correction_tools_sha256': hashlib.sha256(code).hexdigest(),
                              'python': platform.python_version(),
                              'numpy': np.__version__,

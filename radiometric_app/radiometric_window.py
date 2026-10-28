@@ -62,6 +62,8 @@ PAGE_HELP = {
                "Where the images are, which captures show the reference panel and which captures are corrected.\n"
                "# The steps\n"
                "- Choose the images folder and the results folder.\n"
+               "- Choose what is written: reflectance with the panel (the usual), reflectance from the DLS only, or "
+               "radiance.\n"
                "- Choose the capture that shows the reference panel (and the one taken after the flight, if there is one).\n"
                "- Choose the captures to correct.\n"
                "- Then check the inputs and the regions of the panel in the Reference panel page."),

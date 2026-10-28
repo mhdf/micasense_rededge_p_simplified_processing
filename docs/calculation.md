@@ -37,6 +37,16 @@ reflectance  = radiance x panel factor x E_panel / E_image  (with the DLS)
 
 &emsp;&emsp;`E_panel` and `E_image` are the irradiances estimated by the DLS at the panel capture and at the image (see [Optional DLS correction](dls-correction.md)). With two panel captures, each panel gives its own factor (and, with the DLS, its own ratio), and the results are averaged with the weights of the [panel selection approach](reference-panel.md#how-the-panels-are-combined). The factor applied to each band of each capture is saved in its provenance record (`factor_applied`).
 
+## What is written
+
+&emsp;&emsp;"What is written" (`INPUTS.output_product`, Inputs page) chooses the images of the results folder:
+
+- **Reflectance, calibrated with the reference panel** (`panel_reflectance`, the default): as above, with the DLS correction if it is turned on. The most accurate.
+- **Reflectance from the DLS only** (`dls_reflectance`): `reflectance = pi x radiance / E_DLS`, without a panel, for flights without a photo of the panel. It relies on the absolute calibration of the DLS, which can differ from the camera: in the example images, at the panel capture, it is 5 % lower than the panel in Blue and 32 to 57 % higher in the other bands. When panel captures are given, they do not calibrate the images, but the end of the log and the result file (`panel.dls_only_check`) say how far the DLS-only reflectance of each panel capture is from its known reflectance. Images that do not write `XMP:IrradianceScaleToSIUnits` are read in µW/cm²/nm (scale 0.01), as MicaSense does for the DLS 2; the provenance record says which scale was used.
+- **Radiance** (`radiance`): the radiance of step 4, from the metadata of each image alone, for example to calibrate it later with targets of known reflectance on the ground. Neither the panel nor the DLS is used, and the DLS correction setting is ignored.
+
+&emsp;&emsp;The number format (`INPUTS.output_data_type`) is 32-bit float by default: about seven significant digits, far more than the precision of the camera, in half the size of 64-bit floats. The provenance record of each capture says which output it holds (`method`: `panel_only`, `panel_and_dls`, `dls_only` or `radiance`).
+
 ## Geometry of the images
 
 &emsp;&emsp;The lens also distorts the geometry of the image (straight lines look curved towards the edges). The panel is found and measured on the undistorted image, where its QR code and its square shape are reliable. The output images keep the original, distorted geometry of the camera, like the raw images, because photogrammetry software (Metashape, for example) corrects the distortion itself when it builds the orthomosaic.

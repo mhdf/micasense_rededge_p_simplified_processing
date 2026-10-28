@@ -767,6 +767,26 @@ class ExampleImageTests(unittest.TestCase):
         _, used = rct.combine_panels([(panel['Panchro'], 1.0)], target['Panchro'])
         self.assertAlmostEqual(used[0]['dls_ratio'], expected)
 
+    def test_the_reflectance_from_the_dls_alone_uses_the_irradiance_in_si_units(self):
+        _, target = self.capture_dicts()
+        blue = target['Blue']                                 # no XMP:IrradianceScaleToSIUnits: uW/cm2/nm, as MicaSense
+        factor, details = rct.dls_reflectance_factor(blue)
+        self.assertEqual((details['scale'], details['scale_source']), (0.01, 'assumed'))
+        self.assertAlmostEqual(factor, np.pi / (0.01 * 156.04327208007237))
+        scaled = self.changed(blue, **{'XMP:IrradianceScaleToSIUnits': 0.02})
+        self.assertEqual(rct.irradiance_si(scaled)[1:], (0.02, 'metadata'))
+        self.assertAlmostEqual(rct.irradiance_si(scaled)[0], 0.02 * 156.04327208007237)
+
+    def test_without_a_panel_only_the_dls_of_the_image_is_checked(self):
+        _, target = self.capture_dicts()
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter('always')
+            checks = rct.check_dls_capture({}, target)
+        self.assertEqual(checks['band_ratios'], {})
+        self.assertNotIn('panel', checks['sun_angle_discrepancy_deg'])
+        self.assertIn('image', checks['sun_angle_discrepancy_deg'])
+        self.assertEqual(checks['unavailable'], [])
+
     def test_capture_ratios_use_the_metadata_of_every_band(self):
         panel, target = self.capture_dicts()
         ratios = rct.capture_dls_ratios(panel, target)

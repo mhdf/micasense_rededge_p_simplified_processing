@@ -996,7 +996,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.frame.scroll_pages['CORRECTION'].body.winfo_children()[0].cget('text'),
                          'DLS (Downwelling Light Sensor)')
         keys = ['CORRECTION.use_dls'] + [field['key'] for field in wf.FIELDS if field['key'].startswith('CHECKS.')]
-        self.assertEqual(len(keys), 12)
+        self.assertEqual(len(keys), 13)
         for key in keys:
             self.assertIn(key, self.frame.variables)
         for key in keys[1:]:
@@ -1029,7 +1029,7 @@ class WindowTests(unittest.TestCase):
     def test_the_inputs_page_has_headings_for_its_groups(self):
         headings = [child.cget('text') for child in self.frame.scroll_pages['INPUTS'].body.winfo_children()
                     if child.winfo_class() == 'TLabel']
-        self.assertEqual(headings[1:], ['Folders and tools', 'Reference panel', 'Images to correct',
+        self.assertEqual(headings[1:], ['Folders and tools', 'Output', 'Reference panel', 'Images to correct',
                                         'Python environment'])
 
     def test_the_messages_follow_the_width_of_the_page_and_the_help_column_keeps_its_width(self):

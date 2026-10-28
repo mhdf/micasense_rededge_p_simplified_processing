@@ -392,8 +392,8 @@ class RunTests(unittest.TestCase):
                                                 list(wf.BAND_NAMES))['Blue'])
         expected = target.digital_numbers_to_reflectance(factor)
         saved = tifffile.imread(folder / 'IMG_0010_1.tif')
-        self.assertEqual(saved.dtype, np.float64)
-        self.assertTrue(np.array_equal(saved, expected))
+        self.assertEqual(saved.dtype, np.float32)                                # the default number format
+        self.assertTrue(np.array_equal(saved, expected.astype(np.float32)))
 
     def test_result_and_provenance_files_are_saved(self):
         folder = self.folder / 'panel_only'
@@ -477,7 +477,7 @@ class RunTests(unittest.TestCase):
         self.assertAlmostEqual(ratios['Panchro'], 99.211212701455025 / 112.20932502581493)
         ratio = tifffile.imread(folder / 'IMG_0010_6.tif').mean() / \
                 tifffile.imread(self.folder / 'panel_only' / 'IMG_0010_6.tif').mean()
-        self.assertAlmostEqual(ratio, ratios['Panchro'])
+        self.assertAlmostEqual(ratio, ratios['Panchro'], delta=1e-6)                     # 32-bit images
 
     def test_dls_run_reports_the_tilt_flag_of_the_example(self):
         flags = self.with_dls['flags']
@@ -1021,6 +1021,52 @@ class RunTests(unittest.TestCase):
             self.assertEqual(provenance['checks']['compared_with_panel'], 'IMG_0005')     # the closest in time to IMG_0010
         summary = wf.summary_lines(result)
         self.assertTrue(any(line.startswith('Panel IMG_0422:') for line in summary))
+
+    def test_the_images_are_written_as_32_bit_floats_unless_64_are_chosen(self):
+        self.assertEqual(tifffile.imread(self.folder / 'panel_only' / 'IMG_0010_1.tif').dtype, np.float32)
+        result = wf.run(config_for(self.folder / 'float64', **{'INPUTS.output_data_type': 'float64'}), ROOT)
+        self.assertEqual(result['output'], {'product': 'panel_reflectance', 'data_type': 'float64'})
+        wide = tifffile.imread(self.folder / 'float64' / 'IMG_0010_1.tif')
+        self.assertEqual(wide.dtype, np.float64)
+        self.assertTrue(np.allclose(wide, tifffile.imread(self.folder / 'panel_only' / 'IMG_0010_1.tif'), rtol=1e-6))
+
+    def test_reflectance_from_the_dls_alone_compared_with_the_panel(self):
+        folder = self.folder / 'dls_only'
+        result = wf.run(config_for(folder, **{'INPUTS.output_product': 'dls_reflectance'}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(provenance['method'], 'dls_only')
+        blue = provenance['bands'][0]
+        self.assertNotIn('panels', blue)
+        self.assertEqual(blue['dls_only']['scale_source'], 'assumed')
+        self.assertAlmostEqual(blue['factor_applied'], np.pi / (0.01 * 156.04327208007237))
+        image = rct.Image(*rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0010'), list(wf.BAND_NAMES))['Blue'])
+        self.assertTrue(np.allclose(tifffile.imread(folder / 'IMG_0010_1.tif'),
+                                    image.digital_numbers_to_radiance() * blue['factor_applied'], rtol=1e-6))
+        check = result['panel']['dls_only_check']['IMG_0005']                    # the panel is only compared
+        self.assertEqual(set(check), set(wf.BAND_NAMES))
+        self.assertTrue(any(line.startswith('Reflectance from the DLS only of the panel in IMG_0005')
+                            for line in wf.summary_lines(result)))
+        # without a panel capture there is nothing to compare, and nothing about the panel is needed
+        config = wf.merge_config(config_for(folder, **{'INPUTS.output_product': 'dls_reflectance',
+                                                       'INPUTS.reference_panel_capture': '',
+                                                       'PANEL.reflectance_source': 'spectral_file',
+                                                       'PANEL.spectral_file': 'missing.csv'}))
+        self.assertEqual(wf.validate_config(config, ROOT), [])
+
+    def test_radiance_uses_neither_the_panel_nor_the_dls(self):
+        folder = self.folder / 'radiance'
+        result = wf.run(config_for(folder, **{'INPUTS.output_product': 'radiance', 'CORRECTION.use_dls': True,
+                                              'INPUTS.reference_panel_capture': ''}), ROOT)
+        self.assertEqual(result['status'], 'completed', result['errors'])
+        self.assertNotIn('before', result['panel'])
+        provenance = json.loads((folder / 'IMG_0010_provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(provenance['method'], 'radiance')
+        self.assertEqual(provenance['bands'][0]['output'], 'radiance')
+        self.assertNotIn('factor_applied', provenance['bands'][0])
+        image = rct.Image(*rct.read_band_files(rct.find_capture_paths(RAW, 'IMG_0010'), list(wf.BAND_NAMES))['Blue'])
+        self.assertTrue(np.allclose(tifffile.imread(folder / 'IMG_0010_1.tif'), image.digital_numbers_to_radiance(),
+                                    rtol=1e-6))
 
     def test_captures_to_leave_out_are_not_corrected(self):
         result = wf.run(config_for(self.folder / 'left_out', **{'INPUTS.image_captures': '',

@@ -141,6 +141,30 @@ FIELDS = [
                   "The Python package pyexiftool must be installed as well (pip install pyexiftool).\n"
                   "The window looks for both when it opens and each time this field changes, and says below what it found: "
                   "the program, how it was found, its version and whether the package is installed.")},
+    {'key': 'INPUTS.output_product', 'group': 'Output', 'kind': 'choice',
+     'choices': ['panel_reflectance', 'dls_reflectance', 'radiance'], 'default': 'panel_reflectance',
+     'labels': {'panel_reflectance': 'Reflectance, calibrated with the reference panel',
+                'dls_reflectance': 'Reflectance from the DLS only (no panel; less accurate)',
+                'radiance': 'Radiance (no panel, no DLS)'},
+     'label': 'What is written',
+     'help': ("What the images of the results folder hold.\n"
+                  "# Choices (the name that is saved is in brackets)\n"
+                  "- Reflectance, calibrated with the reference panel (panel_reflectance): the panel sets the scale, and "
+                  "the DLS optionally corrects the changes of the light (DLS page). The most accurate.\n"
+                  "- Reflectance from the DLS only (dls_reflectance): pi x radiance / DLS irradiance, without a panel, "
+                  "for flights without a photo of the panel. It relies on the absolute calibration of the DLS, which can "
+                  "differ from the camera by tens of percent in some bands. When panel captures are given, they are not "
+                  "used for the correction: the log says how far the DLS-only reflectance of the panel is from its known "
+                  "reflectance. Images whose irradiance has no scale are read in uW/cm2/nm, as MicaSense does.\n"
+                  "- Radiance (radiance): W/m2/sr/nm, from the metadata of each image alone, for example to calibrate it "
+                  "later with targets on the ground. The panel and the DLS are not used.")},
+    {'key': 'INPUTS.output_data_type', 'group': 'Output', 'kind': 'choice', 'choices': ['float32', 'float64'],
+     'default': 'float32', 'labels': {'float32': '32-bit float (half the size)', 'float64': '64-bit float'},
+     'label': 'Number format of the images',
+     'help': ("How the values are stored in the images that are written.\n"
+                  "- 32-bit float: about 7 significant digits, far more than the precision of the camera; the files are "
+                  "half the size.\n"
+                  "- 64-bit float: about 16 digits; the format of the versions before this option.")},
     {'key': 'INPUTS.reference_panel_capture', 'group': 'Reference panel', 'kind': 'text', 'default': 'IMG_0005',
      'label': 'Reference panel capture(s)', 'help': ("The capture that shows the reference panel: choose it from the captures of the images folder, or "
                   "type its name (for example IMG_0005).\n"
@@ -722,10 +746,14 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
     if not 0 < config['PANEL.percent_inner_area'] <= 1:
         problems.append("PANEL.percent_inner_area must be in (0, 1]")
     before_names, after_names = panel_capture_groups(config)
-    if config['PANEL.panels_used'] != 'first' and not after_names:
+    output = config['INPUTS.output_product']
+    # the panel calibrates the images, or (reflectance from the DLS alone) is only compared with the DLS when it is given
+    calibrates = output == 'panel_reflectance'
+    needs_panel = calibrates or (output == 'dls_reflectance' and bool(before_names))
+    if calibrates and config['PANEL.panels_used'] != 'first' and not after_names:
         problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}' but there is no second panel capture "
                         "(INPUTS.reference_panel_capture_after)")
-    if config['PANEL.panels_used'] in rct.PANELS_BY_ILLUMINATION and not config['CORRECTION.use_dls']:
+    if calibrates and config['PANEL.panels_used'] in rct.PANELS_BY_ILLUMINATION and not config['CORRECTION.use_dls']:
         problems.append(f"PANEL.panels_used is '{config['PANEL.panels_used']}', which chooses the panel by the light read "
                         "by the DLS, but CORRECTION.use_dls is off: turn the DLS correction on or choose another way to "
                         "use the panels")
@@ -746,7 +774,7 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
     elif set(ignored) & set(config['PANEL.reflectance_by_band']):
         problems.append(f"INPUTS.ignored_bands has bands that are also processed: "
                         f"{sorted(set(ignored) & set(config['PANEL.reflectance_by_band']))}")
-    elif config['PANEL.reflectance_source'] == 'spectral_file':
+    elif needs_panel and config['PANEL.reflectance_source'] == 'spectral_file':
         spectral_file = config['PANEL.spectral_file'].strip()
         if not spectral_file:
             problems.append("PANEL.spectral_file is empty (PANEL.reflectance_source is spectral_file)")
@@ -789,7 +817,7 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
                             f"INPUTS.exiftool_path")
     if not pyexiftool_installed():
         problems.append("The Python package pyexiftool is not installed (pip install pyexiftool)")
-    if config['PANEL.manual_regions_file']:
+    if needs_panel and config['PANEL.manual_regions_file']:
         regions_file = resolve_path(root, config['PANEL.manual_regions_file'])
         if not regions_file.is_file():
             if not regions_file_may_be_missing:
@@ -805,7 +833,7 @@ def validate_config(config, root='.', regions_file_may_be_missing=False):
                                             f"{panel_bands(config)}")
             except (ValueError, OSError) as error:
                 problems.append(str(error))
-    if not before_names:
+    if calibrates and not before_names:
         problems.append("INPUTS.reference_panel_capture is empty")
     excluded = capture_names(config['INPUTS.excluded_captures'])
     typed = capture_names(config['INPUTS.image_captures'])
@@ -1003,20 +1031,97 @@ def compact_reflectance_info(info):
     return compact
 
 
+
+class _Done(Exception):
+    """ The capture was written and checked by a path that does not use the panel """
+
+
+def _irradiance_series(series, bands, objects, name):
+    """ Add the DLS irradiance of a capture to the series of each band (the bands without it are skipped) """
+    for band in bands:
+        try:
+            series[band].append((name, objects[band].dls_irradiance()))
+        except rct.MetadataError:
+            pass
+
+
+def _write_without_panel(output, data_type, objects, results_folder, entry, written):
+    """
+    Write a capture as reflectance from the DLS alone or as radiance (no panel)
+    Outputs: (the records of the bands, the checks of the capture, its geometry)
+    """
+    # the factors of all the bands first, so that nothing is written for a capture that cannot be corrected
+    factors = ({band: rct.dls_reflectance_factor(image) for band, image in objects.items()}
+               if output == 'dls_reflectance' else {})
+    records = []
+    for band, image in objects.items():
+        if output == 'radiance':
+            data, factor, details = image.digital_numbers_to_radiance(), None, None
+        else:
+            factor, details = factors[band]
+            data = image.digital_numbers_to_reflectance(factor)
+        data = data.astype(data_type, copy=False)
+        output_path = results_folder / Path(image.image_path).name
+        tifffile.imwrite(output_path, data)
+        records.append(rct.band_record(output_path, image, data, [], factor, dls_only=details,
+                                       output='radiance' if output == 'radiance' else 'reflectance'))
+        written.append(str(output_path))
+        entry['outputs'].append(output_path.name)
+    geometry = rct.check_image_geometry(objects)
+    if output == 'dls_reflectance':                 # the DLS of the image is checked (its tilt), without a panel
+        checks = rct.check_dls_capture({}, objects)
+    else:
+        checks = {'flags': [], 'flag_details': [], 'unavailable': []}
+    checks['geometry'] = {'image': geometry['values']}
+    checks['flags'] = list(checks['flags']) + geometry['flags']
+    checks['flag_details'] = list(checks['flag_details']) + geometry['flag_details']
+    checks['unavailable'] = list(checks['unavailable']) + geometry['unavailable']
+    return records, checks, geometry
+
+
+def dls_only_panel_check(panels):
+    """
+    How far the reflectance from the DLS alone is from the known reflectance of the panel, in each panel capture and band:
+    pi x mean radiance of the panel / DLS irradiance, divided by the reflectance of the panel, minus 1 (0.10 = 10 % too high)
+    Outputs: {capture: {band: difference, or None when the capture has no usable irradiance}}
+    """
+    check = {}
+    for group in panels.values():
+        for name, images in group.items():
+            check[name] = {}
+            for band, image in images.items():
+                audit = image.panel_audit
+                try:
+                    reflectance = np.pi * audit['radiance_mean'] / rct.irradiance_si(image)[0]
+                    check[name][band] = float(reflectance / audit['reflectance_level'] - 1)
+                except rct.MetadataError:
+                    check[name][band] = None
+    return check
+
+
 def _run_stages(config, root, results_folder, result, progress):
     images_folder = resolve_path(root, config['INPUTS.images_folder'])
     exiftool_path = exiftool_executable(config, root)
     ignored = capture_names(config['INPUTS.ignored_bands'])
-    levels, reflectance_info = panel_reflectance_levels(config, root)
-    reflectance_info = compact_reflectance_info(reflectance_info)
-    result['panel']['reflectance'] = rct._jsonable({'levels': levels, **reflectance_info})
+    before_names, after_names = panel_capture_groups(config)
+    output, data_type = config['INPUTS.output_product'], np.dtype(config['INPUTS.output_data_type'])
+    calibrates = output == 'panel_reflectance'                 # else the panel, if given, is only compared with the DLS
+    needs_panel = calibrates or (output == 'dls_reflectance' and bool(before_names))
+    if needs_panel:
+        levels, reflectance_info = panel_reflectance_levels(config, root)
+        reflectance_info = compact_reflectance_info(reflectance_info)
+        result['panel']['reflectance'] = rct._jsonable({'levels': levels, **reflectance_info})
+    else:
+        levels, reflectance_info = dict(config['PANEL.reflectance_by_band']), {}
+    result['output'] = {'product': output, 'data_type': str(data_type)}
     bands = list(levels)
-    use_dls = config['CORRECTION.use_dls']
+    use_dls = config['CORRECTION.use_dls'] and calibrates
 
     # LOAD_CAPTURES
-    before_names, after_names = panel_capture_groups(config)
     names = captures_to_correct(config, rct.list_capture_names(images_folder, config['INPUTS.file_pattern']))
-    _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct; panel capture(s) {', '.join(before_names)}",
+    written_as = {'panel_reflectance': f"reflectance with the panel capture(s) {', '.join(before_names)}",
+                  'dls_reflectance': 'reflectance from the DLS only', 'radiance': 'radiance'}[output]
+    _progress(progress, 'LOAD_CAPTURES', f"{len(names)} capture(s) to correct, written as {written_as} ({data_type})",
               0, len(names))
 
     # PANEL_CALIBRATION
@@ -1026,7 +1131,7 @@ def _run_stages(config, root, results_folder, result, progress):
         regions, origins = load_panel_regions(regions_file), load_panel_origins(regions_file)
     panels, spread_limit = {}, config['CHECKS.panel_capture_spread_tolerance']
     for label, group_names in (('before', before_names), ('after', after_names)):
-        if not group_names:
+        if not group_names or not needs_panel:
             continue
         group, result['panel'][label] = {}, {'captures': {}}
         for name in group_names:
@@ -1039,7 +1144,14 @@ def _run_stages(config, root, results_folder, result, progress):
                                                  manual_bounds=regions.get(name, {}).get(band),
                                                  region_origin=origins.get(name, {}).get(band))
                 except Exception as error:
-                    raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
+                    if calibrates:
+                        raise RuntimeError(f"Panel of band '{band}' in {name}: {error}") from error
+                    result['flags'].append(f"{name}: the panel of band '{band}' was not measured, so it is not compared "
+                                           f"with the DLS ({error})")
+                    objects = None
+                    break
+            if objects is None:
+                continue
             group[name] = objects
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter('always')
@@ -1049,6 +1161,8 @@ def _run_stages(config, root, results_folder, result, progress):
                 'geometry': rct._jsonable(geometry['values'])}
             result['flags'].extend(f"{name}: {flag}" for flag in geometry['flags'])
         panels[label] = group
+        if not calibrates:
+            continue
         try:
             spread = group_spread(group, use_dls)
         except rct.MetadataError as error:
@@ -1061,7 +1175,9 @@ def _run_stages(config, root, results_folder, result, progress):
                 if value > spread_limit:
                     result['flags'].append(f"Panel captures {', '.join(group_names)}: the {averaged} of band '{band}' varies "
                                            f"{100 * value:.1f} % between them (limit {100 * spread_limit:g} %)")
-    if 'after' in panels:
+    if output == 'dls_reflectance' and panels:
+        result['panel']['dls_only_check'] = dls_only_panel_check(panels)
+    if calibrates and 'after' in panels:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             comparison = rct.compare_panel_captures(_group_mean(panels['before']), _group_mean(panels['after']))
@@ -1071,17 +1187,31 @@ def _run_stages(config, root, results_folder, result, progress):
     # REFLECTANCE and DLS_CHECKS of each capture
     series = {band: [] for band in bands}
     events, checked = [], 0                      # the flags of the captures, to be counted by criterion (group_flag_events)
-    parameters = {'config': config, 'panel_reflectance_levels': levels, 'panel_reflectance_source': reflectance_info}
+    parameters = {'config': config}
+    if needs_panel:
+        parameters.update({'panel_reflectance_levels': levels, 'panel_reflectance_source': reflectance_info})
     for number, name in enumerate(names, start=1):
         _progress(progress, 'REFLECTANCE', f"Correcting {name}", number - 1, len(names))
         entry = {'outputs': [], 'errors': []}
         result['captures'][name] = entry
         written, flags, details = [], [], []
-        checked_panel = before_names[0]
+        checked_panel = before_names[0] if before_names else None
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter('always')
                 objects = _read_capture(images_folder, name, bands, exiftool_path, config['INPUTS.file_pattern'], ignored)
+                if not calibrates:
+                    records, checks, geometry = _write_without_panel(output, data_type, objects, results_folder, entry,
+                                                                     written)
+                    flags, details = list(checks['flags']), list(checks['flag_details'])
+                    checked += 1
+                    entry['geometry'] = rct._jsonable(geometry['values'])
+                    provenance = rct.write_provenance(results_folder / (name + '_provenance.json'), records,
+                                                      parameters=parameters, checks=checks)
+                    entry['provenance'] = Path(provenance).name
+                    _irradiance_series(series, bands, objects, name)
+                    result['outputs'].extend(written)
+                    raise _Done
                 second = panels.get('after')
                 weight, distances = _second_panel_weight(config['PANEL.panels_used'], objects, panels['before'], second,
                                                          name)
@@ -1100,7 +1230,7 @@ def _run_stages(config, root, results_folder, result, progress):
                 for band in bands:
                     image = objects[band]
                     factor, used = factors[band]
-                    reflectance = image.digital_numbers_to_reflectance(factor)
+                    reflectance = image.digital_numbers_to_reflectance(factor).astype(data_type, copy=False)
                     output_path = results_folder / Path(image.image_path).name
                     tifffile.imwrite(output_path, reflectance)
                     records.append(rct.band_record(output_path, image, reflectance, used, factor))
@@ -1132,12 +1262,10 @@ def _run_stages(config, root, results_folder, result, progress):
                 provenance = rct.write_provenance(results_folder / (name + '_provenance.json'), records,
                                                   parameters=parameters, checks=checks)
                 entry['provenance'] = Path(provenance).name
-            for band in bands:
-                try:
-                    series[band].append((name, objects[band].dls_irradiance()))
-                except rct.MetadataError:
-                    pass
+            _irradiance_series(series, bands, objects, name)
             result['outputs'].extend(written)
+        except _Done:
+            pass
         except Exception as error:
             entry['errors'].append(f"{type(error).__name__}: {error}")
             result['errors'].append(f"{name}: {error}")
@@ -1324,6 +1452,10 @@ def summary_lines(result):
                      f"{number(panel.get('heading_to_sun_deg'))} deg from the sun (0 = facing it, 180 = the back to it); "
                      f"DLS tilt {number(panel.get('dls_tilt_deg'), 1)} deg; sun elevation "
                      f"{number(panel.get('sun_elevation_deg'))} deg.")
+    for capture, bands in (result.get('panel', {}).get('dls_only_check') or {}).items():
+        values = ', '.join(f"{band} {100 * value:+.0f} %" for band, value in bands.items() if value is not None)
+        lines.append(f"Reflectance from the DLS only of the panel in {capture}, against its known reflectance: "
+                     f"{values or 'no irradiance'}.")
     used = summary.get('panel_weights')
     if used:
         lines.append(f"Panels ({used['mode']}): the first panel alone in {used['first_only']} capture(s), the second alone in "

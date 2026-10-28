@@ -38,7 +38,7 @@
    - *Reference panel*: the reflectance of the panel (typed, or computed from its spectral response file; the one of the example panel is in `reference_panel_spectral_response`), then "Check / draw panel regions..." to accept the region of the panel in each band.
    - *DLS* (optional): corrects the changes in illumination between the panel capture and each image.
    - *Run and results*: "Check inputs", then "Run".
-4. **Read the results** in the results folder: a reflectance image (float values) for each band, with the name of its source file (`IMG_0010_3.tif` is the Red band before and after the correction), a `<capture>_provenance.json` for each capture with what was used to make it, and `radiometric_result.json` with the status of the run, the flags of the checks and the settings.
+4. **Read the results** in the results folder: a reflectance image (32-bit float values) for each band, with the name of its source file (`IMG_0010_3.tif` is the Red band before and after the correction), a `<capture>_provenance.json` for each capture with what was used to make it, and `radiometric_result.json` with the status of the run, the flags of the checks and the settings.
 
 <p align="center">
   <img src="docs/screenshots/window_inputs.png" width="800" alt="The Inputs page of the user interface">

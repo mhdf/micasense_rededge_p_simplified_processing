@@ -89,7 +89,8 @@ GROUP_NOTES = {
         "the image capture.\n"
         "- Jump: change of the irradiance of a band between consecutive captures: a spike if it comes back, a "
         "step if it stays.\n"
-        "- Panel drift: the two panel captures against each other (only with a second panel capture).",
+        "- Panel drift: the panel captures before and after the flight against each other (only when there are "
+        "both).",
     "Acquisition geometry (limits)":
         "These checks look at how the camera was pointed in each capture. They only raise flags: they never "
         "change the result.\n"
@@ -183,40 +184,43 @@ FIELDS = [
                   "flight: its captures are the panel after the flight whatever their time. The UI moves them to "
                   "Reference panel captures, where the moments are found from the times.")},
     {'key': 'PANEL.panels_used', 'kind': 'choice', 'choices': list(rct.PANELS_USED), 'default': 'first',
-     'labels': {'first': 'First panel only', 'last': 'Last panel only', 'mean': 'Average of the two panels',
-                'interpolate_time': 'Both panels, weighted by time', 'nearest_time': 'Nearest panel in time',
-                'nearest_illumination': 'Nearest panel in light (uses the DLS)',
-                'interpolate_illumination': 'Both panels, weighted by light (uses the DLS)',
-                'adjacent_time': 'Closest capture before and after each image, by time (as Metashape)'},
+     'labels': {'first': 'Before the flight only', 'last': 'After the flight only',
+                'mean': 'Average of before and after', 'interpolate_time': 'Before and after, weighted by time',
+                'nearest_time': 'Before or after, the nearer in time',
+                'nearest_illumination': 'Before or after, the nearer in light (uses the DLS)',
+                'interpolate_illumination': 'Before and after, weighted by light (uses the DLS)',
+                'adjacent_time': 'Closest single capture before and after each image, by time (as Metashape)'},
      'group': 'Reference panel', 'label': 'Panel selection approach',
-     'help': ("How the panel captures calibrate the images when there are panel captures before and after the flight "
-                  "(the first panel is the one before the flight, the last one the one after it).\n"
+     'help': ("How the panel captures calibrate the images. The panel captures are those before the flight and those "
+                  "after it (found from their times); the captures of one moment are averaged, except in the last "
+                  "choice.\n"
                   "# Choices (the name that is saved is in brackets)\n"
-                  "- First panel only (first): only the first panel calibrates the images; the second is only compared "
-                  "with it.\n"
-                  "- Last panel only (last): only the second panel, the one after the flight, calibrates the images; the "
-                  "first is only compared with it.\n"
-                  "- Average of the two panels (mean).\n"
-                  "- Both panels, weighted by time (interpolate_time): each image is weighted by its time between the two "
-                  "panel captures (times from EXIF:DateTimeOriginal).\n"
-                  "- Nearest panel in time (nearest_time): each image uses the panel captured closest in time to it.\n"
-                  "- Nearest panel in light (nearest_illumination): each image uses the panel whose light was the most "
-                  "like its own, compared with the DLS irradiance of all the bands (their level and how it is spread over "
-                  "the bands).\n"
-                  "- Both panels, weighted by light (interpolate_illumination): the same comparison, but both panels are "
-                  "used, each weighted by 1 / (difference of the light) squared: a panel with the light of the image counts "
-                  "alone, and the weight changes smoothly with the light, so there is no step between neighboring images "
-                  "that would use different panels.\n"
-                  "The two choices by the light use the DLS data of the images and of both panel captures: choosing one "
+                  "- Before the flight only (first): only the panel captures before the flight calibrate the images; "
+                  "those after it are only compared with them.\n"
+                  "- After the flight only (last): only the panel captures after the flight calibrate the images.\n"
+                  "- Average of before and after (mean): the two moments weigh the same.\n"
+                  "- Before and after, weighted by time (interpolate_time): each image is weighted by its time between "
+                  "the two moments (times from EXIF:DateTimeOriginal).\n"
+                  "- Before or after, the nearer in time (nearest_time): each image uses the moment closest in time to "
+                  "it.\n"
+                  "- Before or after, the nearer in light (nearest_illumination): each image uses the moment whose light "
+                  "was the most like its own, compared with the DLS irradiance of all the bands (their level and how it "
+                  "is spread over the bands).\n"
+                  "- Before and after, weighted by light (interpolate_illumination): the same comparison, but both "
+                  "moments are used, each weighted by 1 / (difference of the light) squared: a moment with the light of "
+                  "the image counts alone, and the weight changes smoothly with the light, so there is no step between "
+                  "neighboring images that would use different moments.\n"
+                  "The two choices by the light use the DLS data of the images and of the panel captures: choosing one "
                   "turns on 'Correct illumination changes with the DLS' (DLS page), and turning that off takes the choice "
-                  "back to the first panel.\n"
-                  "- Closest capture before and after each image, by time (adjacent_time): of all the panel captures "
-                  "(of both moments), only the last one taken before the image and the first one after it are used, "
-                  "weighted by time; an image before the first or after the last uses the closest. This is what "
-                  "Metashape 2.3.1 does; the other options average the captures of each moment.\n"
+                  "back to 'Before the flight only'.\n"
+                  "- Closest single capture before and after each image, by time (adjacent_time): of all the panel "
+                  "captures, only the last one taken before the image and the first one after it are used, weighted by "
+                  "time, without averaging; an image before the first or after the last uses the closest. This is what "
+                  "Metashape 2.3.1 does.\n"
+                  "With only one moment (all the panel captures before the flight, for example), every choice uses it.\n"
                   "This choice changes the result: it decides which panel data are used.\n"
-                  "With the DLS correction on, each panel is first adjusted to the light of the image with its own DLS "
-                  "reading (panel factor x E_panel / E_image), and then the panels are combined.")},
+                  "With the DLS correction on, each panel capture is first adjusted to the light of the image with its own "
+                  "DLS reading (panel factor x E_panel / E_image), and then they are combined.")},
     {'key': 'PANEL.panel_orientation', 'kind': 'text', 'default': 'all', 'group': 'Reference panel',
      'label': 'Panel captures used, by orientation',
      'help': ("The panel can be photographed with the camera facing the sun, with its back to it or with the sun at its "
@@ -418,8 +422,8 @@ FIELDS = [
                   "photos, divided by the change of the irradiance that the camera sees on the panel. It is 1 if the "
                   "DLS followed the light that the panel received, and it is not when the DLS was tilted or shaded in "
                   "one of the photos.\n"
-                  "Only used with a second panel capture. A flag does not change the result; whether the second panel "
-                  "also calibrates the images is chosen in 'Panel selection approach'.\n"
+                  "Only used with panel captures before and after the flight. A flag does not change the result; whether "
+                  "those after the flight also calibrate the images is chosen in 'Panel selection approach'.\n"
                   "With several captures before or after the flight, their means are compared.")},
     {'key': 'CHECKS.panel_capture_spread_tolerance', 'group': 'Checks of the DLS data (limits)', 'kind': 'float',
      'default': 0.02, 'label': 'Spread of the panel captures of one moment',
@@ -1780,7 +1784,7 @@ def summary_lines(result):
                      f"{values or 'no irradiance'}.")
     used = summary.get('panel_weights')
     if used:
-        lines.append(f"Panels ({used['mode']}): the first panel alone in {used['first_only']} capture(s), the second alone in "
+        lines.append(f"Panels ({used['mode']}): the panel before the flight alone in {used['first_only']} capture(s), after it alone in "
                      f"{used['second_only']}, both in {used['both']}.")
     images, limits = summary['images'], summary['limits']
     descriptions = (

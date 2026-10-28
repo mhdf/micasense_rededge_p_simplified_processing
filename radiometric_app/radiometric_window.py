@@ -52,7 +52,7 @@ FIELD_PAGE = {'PANEL.panels_used': 'INPUTS', 'PANEL.panel_orientation': 'INPUTS'
 # The keys that hold the name of a capture, typed or chosen by looking at the captures of the images folder: the text
 # of the choice of no capture, for the key that may be empty
 CAPTURE_KEYS = {'INPUTS.reference_panel_capture': None,
-                'INPUTS.reference_panel_capture_after': 'No second panel capture'}   # one or several captures each
+                'INPUTS.reference_panel_capture_after': 'No panel capture after the flight'}   # kept for old configurations
 
 
 # What the help column says when the pointer and the keyboard focus are not on a field: title and text of each page.
@@ -847,7 +847,7 @@ class RadiometricFrame:
     def choose_panel_capture(self, key):
         """
         Choose the captures of the panel of one moment (one, or several taken one after the other) by looking at the
-        captures of the images folder; for the second moment, choosing none means that there is no second panel capture
+        captures of the images folder (all of them, before and after the flight, in one field)
         """
         names = self.capture_names()
         if not names:
@@ -1050,7 +1050,7 @@ class RadiometricFrame:
             return                                   # a profile keeps its values: the check of the inputs reports them
         previous = self.model.fields['PANEL.panels_used']['labels'][chosen.get()]
         chosen.set('first')
-        self.status.configure(text=f"The panel selection approach was '{previous}' and is now 'First panel only': it needs the "
+        self.status.configure(text=f"The panel selection approach was '{previous}' and is now 'Before the flight only': it needs the "
                                    "DLS correction, which is off.", style='Muted.TLabel')
 
     def _follow_results_folder(self):
@@ -1256,7 +1256,7 @@ class RadiometricFrame:
         tree = ttk.Treeview(frame, columns=columns, selectmode='extended', height=min(max(len(rows), 4), 16))
         for column, title, width in (('#0', 'Capture', 110), ('time', 'Time', 80), ('moment', 'Moment', 70),
                                      ('heading', 'Heading', 70), ('orientation', 'Orientation', 170),
-                                     ('departure', 'Departure', 130), ('flag', 'Flag', 300)):
+                                     ('departure', 'Largest departure (band)', 170), ('flag', 'Flag', 300)):
             tree.heading(column, text=title, anchor='w')
             tree.column(column, width=width, anchor='w', stretch=column == 'flag')
         tree.tag_configure('flagged', foreground=COLORS['automatic'])                 # the colour of the flags of the log

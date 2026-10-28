@@ -788,7 +788,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual([panel['weight'] for panel in provenance['bands'][0]['panels']], [1.0])
         single = self.run_with_two_panels('last_without_second', 'last', **{'INPUTS.reference_panel_capture_after': ''})
         self.assertEqual(single['status'], 'completed', single['errors'])          # one moment only: used alone
-        self.assertIn("There are panel captures of one moment only: 'Last panel only' uses them alone", single['flags'])
+        self.assertIn("There are panel captures of one moment only: 'After the flight only' uses them alone", single['flags'])
 
     def test_with_the_dls_the_last_panel_gives_the_reflectance_of_its_own_light(self):
         result = self.run_with_a_second_light('last_dls', 'last', 0.5)            # the second panel read half the irradiance
@@ -962,7 +962,7 @@ class RunTests(unittest.TestCase):
         result = self.run_with_a_second_light('light_summary', 'nearest_illumination', 1.13)
         self.assertEqual(result['summary']['panel_weights'], {'mode': 'nearest_illumination', 'first_only': 0,
                                                               'second_only': 1, 'both': 0})
-        self.assertIn('Panels (nearest_illumination): the first panel alone in 0 capture(s), the second alone in 1, both in 0.',
+        self.assertIn('Panels (nearest_illumination): the panel before the flight alone in 0 capture(s), after it alone in 1, both in 0.',
                       wf.summary_lines(result))
         soft = self.run_with_a_second_light('light_summary_soft', 'interpolate_illumination', 0.9)
         self.assertEqual(soft['summary']['panel_weights']['both'], 1)
@@ -1075,7 +1075,7 @@ class RunTests(unittest.TestCase):
         # only one moment: an approach that needs two uses it alone, with a flag
         alone = wf.run(config_for(self.folder / 'alone', **{'PANEL.panels_used': 'mean'}), ROOT)
         self.assertEqual(alone['status'], 'completed', alone['errors'])
-        self.assertIn("There are panel captures of one moment only: 'Average of the two panels' uses them alone",
+        self.assertIn("There are panel captures of one moment only: 'Average of before and after' uses them alone",
                       alone['flags'])
 
     def test_the_panel_captures_can_be_checked_without_a_run(self):

@@ -1146,9 +1146,9 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(entry.winfo_class(), 'TCombobox')
         self.assertEqual(str(entry.cget('state')), 'readonly')                          # a list, not a box to type in
         self.assertGreaterEqual(int(entry.cget('width')), max(map(len, labels.values())))
-        self.assertEqual(entry.get(), 'First panel only')
+        self.assertEqual(entry.get(), 'Before the flight only')
         self.frame.set_value('PANEL.panels_used', 'nearest_time')
-        self.assertEqual(entry.get(), 'Nearest panel in time')
+        self.assertEqual(entry.get(), 'Before or after, the nearer in time')
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'nearest_time')   # what is saved is the name
         for name in ('nearest_illumination', 'interpolate_illumination'):
             self.assertIn('uses the DLS', labels[name])
@@ -1166,7 +1166,7 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(use.get())                                                      # and the DLS correction is on
         self.assertTrue(self.frame.model.config()[0]['CORRECTION.use_dls'])
         text = self.frame.status.cget('text')
-        self.assertIn("'Nearest panel in light (uses the DLS)' uses the DLS data", text)
+        self.assertIn("'Before or after, the nearer in light (uses the DLS)' uses the DLS data", text)
         self.assertIn('was turned on', text)
         self.frame.set_value('CORRECTION.use_dls', False)                               # turning it off takes it back
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
@@ -1196,7 +1196,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')
         self.assertEqual(self.frame.variables['PANEL.panels_used'].get(), 'first')
         text = self.frame.status.cget('text')
-        self.assertIn("was 'Both panels, weighted by light (uses the DLS)' and is now 'First panel only'", text)
+        self.assertIn("was 'Before and after, weighted by light (uses the DLS)' and is now 'Before the flight only'", text)
         self.assertIn('needs the DLS correction', text)
         self.frame.set_value('CORRECTION.use_dls', True)                         # turning it on changes nothing else
         self.assertEqual(self.frame.model.config()[0]['PANEL.panels_used'], 'first')

@@ -29,7 +29,7 @@
 
 &emsp;&emsp;The program is prepared for other MicaSense cameras (RedEdge-M/MX, Altum, Altum-PT, dual-camera systems): the bands, the file names and the bands that are left out are configurable, and the bands can be read from the images themselves (see [Other cameras](docs/other-cameras.md)). For now, however, it has been tested **only with images of the MicaSense RedEdge-P**. The presets of the other models come from the documentation of the manufacturer, not from images, and cameras of other makers (for example Sentera) have not been tried. Use "Detect from capture" and compare the result with your own data before relying on them.
 
-&emsp;&emsp;The reflectance calibration of Agisoft Metashape 2.3.1 was compared with this program on a RedEdge-P flight: with one panel capture before and one after the flight, Metashape interpolates them in time, which is "Both panels, weighted by time" here; with several, it uses only the last capture before each image and the first after it, which is "Closest capture before and after each image, by time". The panel factors of the two programs differ by 0.6 % (see [Metashape](docs/reference-panel.md#metashape)).
+&emsp;&emsp;The reflectance calibration of Agisoft Metashape 2.3.1 was compared with this program on a RedEdge-P flight: with one panel capture before and one after the flight, Metashape interpolates them in time, which is "Before and after, weighted by time" here; with several, it uses only the last capture before each image and the first after it, which is "Closest single capture before and after each image, by time". The panel factors of the two programs differ by 0.6 % (see [Metashape](docs/reference-panel.md#metashape)).
 
 ## Quick start
 

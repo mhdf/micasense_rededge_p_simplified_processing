@@ -96,5 +96,20 @@ class LinkTests(unittest.TestCase):
                                                      f'{destination.name}: #{anchor}')
 
 
+class WebsiteTests(unittest.TestCase):
+    """The website (_config.yml, GitHub Pages): every page of docs/ is in the side bar, in the order of the table of the README"""
+
+    def test_every_page_is_in_the_side_bar_in_the_order_of_the_readme(self):
+        config = (PROJECT / '_config.yml').read_text(encoding='utf-8')
+        pages_in_bar = re.findall(r'scope: \{path: "([^"]+)"\}\s*\n\s*values: \{title: "[^"]+", nav_order: (\d+)', config)
+        order = [path for path, _ in sorted(pages_in_bar, key=lambda item: int(item[1]))]
+        self.assertEqual(order[0], 'README.md')
+        self.assertEqual(sorted(order[1:]), sorted(f'docs/{page.name}' for page in DOCS.glob('*.md')),
+                         'every page of docs/ needs its line in the defaults of _config.yml')
+        table = re.findall(r'^\| \[[^\]]+\]\((docs/[^)]+\.md)\) \|', README.read_text(encoding='utf-8'), flags=re.M)
+        self.assertEqual(order[1:], table, 'the side bar must follow the table of the documentation in README.md')
+        self.assertEqual(len({number for _, number in pages_in_bar}), len(pages_in_bar), 'two pages have one place')
+
+
 if __name__ == '__main__':
     unittest.main()

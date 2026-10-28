@@ -50,6 +50,8 @@
 
 ## Documentation
 
+&emsp;&emsp;The same pages are also published as a website, with a side bar and a search: [mhdf.github.io/micasense_radiometric_correction](https://mhdf.github.io/micasense_radiometric_correction/).
+
 | Page | What is in it |
 |---|---|
 | [Installing and launching](docs/installation.md) | What the program needs (Python, packages, ExifTool), choosing the Python, the check of the computer and the Windows launchers |

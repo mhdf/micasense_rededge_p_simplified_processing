@@ -4,7 +4,7 @@
 title: MicaSense Radiometric Correction
 description: Raw images of MicaSense multispectral cameras to reflectance (reference panel, optional DLS) or radiance
 remote_theme: just-the-docs/just-the-docs@v0.12.0
-color_scheme: dark                    # like the UI; the size of the title in the side bar is in _sass/custom/custom.scss
+color_scheme: dark                    # like the UI; the side bar has no title box on a wide screen (_sass/custom/custom.scss)
 plugins:
   - jekyll-remote-theme
 
